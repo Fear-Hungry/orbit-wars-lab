@@ -1,0 +1,14 @@
+[package]
+name = "orbit_wars_py"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "orbit_wars_rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+orbit_wars_core = { path = "../orbit_wars_core" }
+pyo3 = { version = "0.27", features = ["extension-module"] }
+serde_json = "1.0"

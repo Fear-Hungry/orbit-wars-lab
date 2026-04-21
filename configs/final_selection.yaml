@@ -1,0 +1,9 @@
+final_selection:
+  retained_seeds: [17, 53, 101, 149, 233, 317, 401, 463]
+  games_per_pair: 2
+  include_2p: true
+  include_4p: true
+  episode_steps: 500
+  enable_comets: true
+  bad_replay_count: 8
+  export_top_k: 2

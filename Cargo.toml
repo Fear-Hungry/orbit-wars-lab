@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/orbit_wars_core",
+    "crates/orbit_wars_py",
+]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+authors = ["Orbit Wars Lab"]
+license = "MIT"

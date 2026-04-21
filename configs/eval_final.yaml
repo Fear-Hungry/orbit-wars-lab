@@ -1,0 +1,12 @@
+eval:
+  seeds: 512
+  games_per_pair: 8
+  include_2p: true
+  include_4p: true
+  metrics:
+    - win_rate
+    - median_score_margin
+    - worst_decile_score_margin
+    - invalid_action_rate
+    - timeout_rate
+    - ships_lost_to_sun

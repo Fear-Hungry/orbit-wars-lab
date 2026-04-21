@@ -1,0 +1,10 @@
+env:
+  num_players: 2
+  episode_steps: 300
+  ship_speed: 6.0
+  comet_speed: 4.0
+  enable_comets: false
+curriculum:
+  phase: static_no_comets
+  disable_orbits: true
+  dense_reward: true

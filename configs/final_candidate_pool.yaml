@@ -1,0 +1,19 @@
+population:
+  - id: greedy_candidate
+    kind: heuristic
+    policy: greedy
+    role: league
+  - id: defensive_candidate
+    kind: heuristic
+    policy: defensive
+    role: league
+  - id: rush_candidate
+    kind: heuristic
+    policy: rush
+    role: league
+  - id: anti_meta_candidate
+    kind: heuristic
+    policy: anti_meta
+    role: league
+hall_of_fame: []
+heuristics: []

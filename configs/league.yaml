@@ -1,0 +1,47 @@
+population:
+  size: 32
+  elite_frac: 0.25
+  hall_of_fame_size: 128
+hall_of_fame:
+  promote_top_k: 4
+  sample_size: 4
+  min_league_win_rate: 0.5
+  max_crash_rate_increase: 0.0
+  max_timeout_rate_increase: 0.0
+  min_seed_margin_improvement: 0.0
+  min_seed_improved_fraction: 0.5
+matchmaking:
+  pairs_per_agent: 6
+  seeds_per_pair: 4
+  repeats_per_seed: 2
+pbt:
+  mutate_decoder: true
+  mutate_hparams: true
+map_elites:
+  enabled: true
+  sample_size: 4
+  bins:
+    expansion: 4
+    aggression: 4
+    defense: 4
+    fleet_size: 4
+heuristics:
+  - greedy
+  - defensive
+  - rush
+  - anti_meta
+  - weak_random
+opponents:
+  current_population: 0.40
+  hall_of_fame: 0.25
+  heuristics: 0.15
+  anti_meta: 0.10
+  weak_random: 0.10
+fitness:
+  win_rate: 2.0
+  score_margin: 0.8
+  hof_win_rate: 0.5
+  robustness: 0.25
+  novelty: 0.20
+  crash_penalty: 1.0
+  invalid_action_penalty: 0.20

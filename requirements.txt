@@ -1,0 +1,13 @@
+numpy>=1.26
+scipy>=1.11
+pyyaml>=6.0
+rich>=13.7
+tqdm>=4.66
+pytest>=8.0
+ruff>=0.4
+maturin>=1.7
+gymnasium>=0.29
+pettingzoo>=1.24
+torch>=2.2
+tensorboard>=2.16
+kaggle-environments>=1.16

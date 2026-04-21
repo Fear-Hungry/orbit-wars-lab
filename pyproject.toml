@@ -1,0 +1,18 @@
+[project]
+name = "orbit-wars-lab"
+version = "0.1.0"
+description = "Local Rust + Python lab for Kaggle Orbit Wars agents"
+requires-python = ">=3.10"
+readme = "README.md"
+
+[tool.ruff]
+line-length = 100
+src = ["python", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+pythonpath = [".", "python"]
+testpaths = ["tests"]

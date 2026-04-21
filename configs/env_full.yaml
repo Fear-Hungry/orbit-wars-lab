@@ -1,0 +1,16 @@
+env:
+  num_players: 2
+  episode_steps: 500
+  ship_speed: 6.0
+  comet_speed: 4.0
+  enable_comets: true
+  max_planets: 96
+  max_fleets: 4096
+encoder:
+  max_planets: 96
+  max_fleets: 256
+  include_fleets: true
+decoder:
+  fractions: [0.10, 0.25, 0.50, 0.75]
+  angle_offsets_deg: [-15, -7.5, 0, 7.5, 15]
+  max_moves_per_turn: 8

@@ -1,0 +1,9 @@
+objective_validation:
+  max_crash_rate: 0.0
+  max_timeout_rate: 0.0
+  max_invalid_action_rate: 0.0
+  min_selection_win_rate: 0.45
+  min_mean_score_margin: 0.0
+  min_worst_decile_score_margin: -1.0
+  require_2p_self_play: true
+  require_4p_self_play: true
