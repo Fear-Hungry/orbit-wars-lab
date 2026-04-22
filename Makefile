@@ -1,4 +1,4 @@
-.PHONY: install build test smoke bench fmt lint clean
+.PHONY: install build test smoke bench fmt lint clean docker-build docker-shell docker-codex docker-smoke docker-test docker-train docker-gpu-build docker-gpu-shell docker-gpu-codex docker-gpu-check docker-gpu-train
 
 install:
 	pip install -U pip
@@ -26,3 +26,36 @@ lint:
 
 clean:
 	rm -rf target .pytest_cache .ruff_cache __pycache__ python/**/__pycache__ tests/**/__pycache__
+
+docker-build:
+	docker compose build lab
+
+docker-shell:
+	docker compose run --rm lab
+
+docker-codex:
+	docker compose run --rm lab codex
+
+docker-smoke:
+	docker compose run --rm lab python scripts/smoke_test.py
+
+docker-test:
+	docker compose run --rm lab pytest -q
+
+docker-train:
+	docker compose run --rm lab python -m python.train.train_league --config configs/league.yaml
+
+docker-gpu-build:
+	docker compose --profile gpu build lab-gpu
+
+docker-gpu-shell:
+	docker compose --profile gpu run --rm lab-gpu
+
+docker-gpu-codex:
+	docker compose --profile gpu run --rm lab-gpu codex
+
+docker-gpu-check:
+	docker compose --profile gpu run --rm lab-gpu python -c "import torch; print({'cuda': torch.cuda.is_available(), 'devices': torch.cuda.device_count()})"
+
+docker-gpu-train:
+	docker compose --profile gpu run --rm lab-gpu python -m python.train.train_league --config configs/league.yaml

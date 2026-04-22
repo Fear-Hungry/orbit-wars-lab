@@ -1,0 +1,488 @@
+{
+  "enable_comets": true,
+  "episode_steps": 500,
+  "formats": [
+    {
+      "format": "2p",
+      "opponents": [
+        {
+          "format": "2p",
+          "opponent": "greedy",
+          "records": [
+            {
+              "crashes": 0.0,
+              "decision_turns": 234.0,
+              "elapsed_seconds": 1.0935148311036755,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 0.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 204.0,
+              "elapsed_seconds": 0.9405390750107472,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 0.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 346.0,
+              "elapsed_seconds": 0.6877021639884333,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 1.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 417.0,
+              "elapsed_seconds": 0.8818231680124882,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 1.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 191.0,
+              "elapsed_seconds": 0.6918081699841423,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 2.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 233.0,
+              "elapsed_seconds": 0.7654179790260969,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 2.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            }
+          ],
+          "summary": {
+            "crash_rate": 0.0,
+            "games": 6,
+            "invalid_action_rate": 0.0,
+            "mean_decision_ms": 3.1143417766926667,
+            "mean_score_margin": 1.0,
+            "timeout_rate": 0.0,
+            "win_rate": 1.0
+          }
+        },
+        {
+          "format": "2p",
+          "opponent": "defensive",
+          "records": [
+            {
+              "crashes": 0.0,
+              "decision_turns": 256.0,
+              "elapsed_seconds": 1.0192151910305256,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 0.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 255.0,
+              "elapsed_seconds": 0.9537517909921007,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 0.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 245.0,
+              "elapsed_seconds": 0.3744880129597732,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 1.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 264.0,
+              "elapsed_seconds": 0.40242213295277907,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 1.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 317.0,
+              "elapsed_seconds": 0.952110372018069,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 2.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 290.0,
+              "elapsed_seconds": 0.9657181639777264,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 2.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            }
+          ],
+          "summary": {
+            "crash_rate": 0.0,
+            "games": 6,
+            "invalid_action_rate": 0.0,
+            "mean_decision_ms": 2.868903296822971,
+            "mean_score_margin": 1.0,
+            "timeout_rate": 0.0,
+            "win_rate": 1.0
+          }
+        },
+        {
+          "format": "2p",
+          "opponent": "rush",
+          "records": [
+            {
+              "crashes": 0.0,
+              "decision_turns": 248.0,
+              "elapsed_seconds": 0.7312198418876505,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 0.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 228.0,
+              "elapsed_seconds": 0.7425436910270946,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 0.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 379.0,
+              "elapsed_seconds": 0.6372572950422182,
+              "invalid_actions": 0.0,
+              "normalized_margin": -1.0,
+              "seed": 1.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 0.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 297.0,
+              "elapsed_seconds": 0.4123868029055302,
+              "invalid_actions": 0.0,
+              "normalized_margin": -1.0,
+              "seed": 1.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 0.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 111.0,
+              "elapsed_seconds": 0.2560332030043355,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 2.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 111.0,
+              "elapsed_seconds": 0.23880176897364436,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 2.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            }
+          ],
+          "summary": {
+            "crash_rate": 0.0,
+            "games": 6,
+            "invalid_action_rate": 0.0,
+            "mean_decision_ms": 2.1966831170600245,
+            "mean_score_margin": 0.3333333333333333,
+            "timeout_rate": 0.0,
+            "win_rate": 0.6666666666666666
+          }
+        },
+        {
+          "format": "2p",
+          "opponent": "anti_meta",
+          "records": [
+            {
+              "crashes": 0.0,
+              "decision_turns": 225.0,
+              "elapsed_seconds": 0.6805978280099225,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 0.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 202.0,
+              "elapsed_seconds": 0.6950034109904664,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 0.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 446.0,
+              "elapsed_seconds": 0.8085598520337953,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 1.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 410.0,
+              "elapsed_seconds": 0.7749025620432803,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 1.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 214.0,
+              "elapsed_seconds": 0.5652370279713068,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 2.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 219.0,
+              "elapsed_seconds": 0.6018252790163388,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 2.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            }
+          ],
+          "summary": {
+            "crash_rate": 0.0,
+            "games": 6,
+            "invalid_action_rate": 0.0,
+            "mean_decision_ms": 2.4045023077302505,
+            "mean_score_margin": 1.0,
+            "timeout_rate": 0.0,
+            "win_rate": 1.0
+          }
+        },
+        {
+          "format": "2p",
+          "opponent": "weak_random",
+          "records": [
+            {
+              "crashes": 0.0,
+              "decision_turns": 243.0,
+              "elapsed_seconds": 0.9136652489905828,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 0.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 295.0,
+              "elapsed_seconds": 1.4230849360174034,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 0.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 338.0,
+              "elapsed_seconds": 0.5681676370295463,
+              "invalid_actions": 0.0,
+              "normalized_margin": -1.0,
+              "seed": 1.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 0.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 281.0,
+              "elapsed_seconds": 0.5330661379994126,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 1.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 251.0,
+              "elapsed_seconds": 0.8340640929454821,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 2.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 325.0,
+              "elapsed_seconds": 0.8517903509637108,
+              "invalid_actions": 0.0,
+              "normalized_margin": -1.0,
+              "seed": 2.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 0.0
+            }
+          ],
+          "summary": {
+            "crash_rate": 0.0,
+            "games": 6,
+            "invalid_action_rate": 0.0,
+            "mean_decision_ms": 2.956629200199733,
+            "mean_score_margin": 0.3333333333333333,
+            "timeout_rate": 0.0,
+            "win_rate": 0.6666666666666666
+          }
+        }
+      ]
+    },
+    {
+      "format": "4p",
+      "opponents": [
+        "greedy",
+        "defensive",
+        "rush",
+        "anti_meta",
+        "weak_random"
+      ],
+      "records": [
+        {
+          "crashes": 0.0,
+          "decision_turns": 265.0,
+          "elapsed_seconds": 0.4015016110643046,
+          "invalid_actions": 0.0,
+          "lineup": [
+            "anti_meta",
+            "defensive",
+            "rush"
+          ],
+          "normalized_margin": 1.0,
+          "seed": 0.0,
+          "timeouts": 0.0,
+          "win_points": 1.0
+        },
+        {
+          "crashes": 0.0,
+          "decision_turns": 388.0,
+          "elapsed_seconds": 0.31619743996998295,
+          "invalid_actions": 0.0,
+          "lineup": [
+            "defensive",
+            "weak_random",
+            "weak_random"
+          ],
+          "normalized_margin": 1.0,
+          "seed": 1.0,
+          "timeouts": 0.0,
+          "win_points": 1.0
+        },
+        {
+          "crashes": 0.0,
+          "decision_turns": 500.0,
+          "elapsed_seconds": 0.44725620402459754,
+          "invalid_actions": 0.0,
+          "lineup": [
+            "anti_meta",
+            "defensive",
+            "weak_random"
+          ],
+          "normalized_margin": -1.0,
+          "seed": 2.0,
+          "timeouts": 0.0,
+          "win_points": 0.0
+        }
+      ],
+      "summary": {
+        "crash_rate": 0.0,
+        "games": 3,
+        "invalid_action_rate": 0.0,
+        "mean_decision_ms": 1.0103688248559282,
+        "mean_score_margin": 0.3333333333333333,
+        "timeout_rate": 0.0,
+        "win_rate": 0.6666666666666666
+      }
+    }
+  ],
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "submission": "artifacts/submission.py"
+}

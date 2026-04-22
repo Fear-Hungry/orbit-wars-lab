@@ -84,6 +84,85 @@ maturin develop --release -m crates/orbit_wars_py/Cargo.toml
 python scripts/smoke_test.py
 ```
 
+## Docker para treino limitado
+
+O repositório agora inclui um ambiente de container com:
+
+- Python 3.11 em imagem `slim`;
+- toolchain Rust para recompilar o binding PyO3 quando necessário;
+- binding `orbit_wars_rs` já compilado no build da imagem;
+- `git`, `ripgrep` e `tini`;
+- `node` no container para executar o `codex` já instalado no host.
+
+Há duas variantes:
+
+- `lab`: imagem menor, com `torch` CPU;
+- `lab-gpu`: imagem com `torch` CUDA para treino em GPU NVIDIA.
+
+O `compose.yaml` aplica limites conservadores por padrão para evitar oversubscription de CPU/RAM durante treino local:
+
+- `TRAIN_CPUS=4.0`
+- `TRAIN_MEMORY=8g`
+- `TRAIN_PIDS=512`
+- `TRAIN_SHM_SIZE=1g`
+- `OMP_NUM_THREADS=1`
+- `OPENBLAS_NUM_THREADS=1`
+- `MKL_NUM_THREADS=1`
+- `NUMEXPR_NUM_THREADS=1`
+- `RAYON_NUM_THREADS=4`
+
+Build e shell:
+
+```bash
+docker compose build lab
+docker compose run --rm lab
+```
+
+Build e shell com GPU:
+
+```bash
+docker compose --profile gpu build lab-gpu
+docker compose --profile gpu run --rm lab-gpu
+```
+
+Atalhos via `Makefile`:
+
+```bash
+make docker-build
+make docker-shell
+make docker-smoke
+make docker-test
+make docker-train
+make docker-codex
+make docker-gpu-build
+make docker-gpu-shell
+make docker-gpu-check
+make docker-gpu-train
+make docker-gpu-codex
+```
+
+Para usar o Codex CLI dentro do container, basta manter sua configuração local em `${HOME}/.codex`.
+O `compose.yaml` também monta `${HOME}/.local/bin` e `${HOME}/.local/lib/node_modules`, então o container reutiliza exatamente o `codex` já instalado no host. Na prática, ele compartilha o mesmo `auth.json`, histórico e configuração do notebook/ambiente local, sem exigir novo login nem nova exposição de `OPENAI_API_KEY` a cada container.
+
+Para usar GPU no Docker, o host precisa ter GPU NVIDIA disponível e suporte a GPU no Docker/Compose.
+
+Exemplos:
+
+```bash
+docker compose run --rm lab codex
+TRAIN_CPUS=6 TRAIN_MEMORY=12g docker compose run --rm lab python -m python.train.train_league --config configs/league.yaml
+docker compose run --rm lab maturin develop --release -m crates/orbit_wars_py/Cargo.toml
+docker compose --profile gpu run --rm lab-gpu codex
+GPU_COUNT=1 docker compose --profile gpu run --rm lab-gpu python -c "import torch; print(torch.cuda.is_available())"
+TRAIN_CPUS=8 TRAIN_MEMORY=16g docker compose --profile gpu run --rm lab-gpu python -m python.train.train_league --config configs/league.yaml
+```
+
+Por padrão, a variante GPU usa `TORCH_COMPUTE_PLATFORM=cu118` para maximizar compatibilidade. Se o seu host suportar outra variante CUDA do PyTorch, você pode sobrescrever no build:
+
+```bash
+TORCH_COMPUTE_PLATFORM=cu126 docker compose --profile gpu build lab-gpu
+```
+
 ## Caminho de treino recomendado
 
 ```bash

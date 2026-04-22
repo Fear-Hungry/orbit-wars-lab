@@ -74,6 +74,36 @@ def test_submission_template_exports_self_contained_agent(tmp_path: Path):
     _assert_moves_are_legal(SAMPLE_OBS, moves)
 
 
+def test_submission_template_accepts_dict_entities(tmp_path: Path):
+    rendered = render_submission(
+        Path("python/submission/submission_template.py").read_text(encoding="utf-8"),
+        checkpoint=None,
+    )
+    out = tmp_path / "submission.py"
+    out.write_text(rendered, encoding="utf-8")
+
+    spec = importlib.util.spec_from_file_location("submission_dict_module", out)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    obs = {
+        "player": 0,
+        "angular_velocity": 0.03,
+        "planets": [
+            {"id": 0, "owner": 0, "x": 20.0, "y": 20.0, "radius": 2.0, "ships": 24, "production": 3},
+            {"id": 1, "owner": 0, "x": 26.0, "y": 24.0, "radius": 2.0, "ships": 12, "production": 2},
+            {"id": 2, "owner": -1, "x": 40.0, "y": 35.0, "radius": 2.0, "ships": 8, "production": 3},
+            {"id": 3, "owner": 1, "x": 76.0, "y": 72.0, "radius": 2.0, "ships": 20, "production": 4},
+        ],
+        "fleets": [],
+    }
+
+    moves = module.agent(obs)
+    _assert_moves_are_legal(obs, moves)
+
+
 def test_exported_submission_falls_back_on_illegal_output(tmp_path: Path):
     rendered = render_submission(
         Path("python/submission/submission_template.py").read_text(encoding="utf-8"),

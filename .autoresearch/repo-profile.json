@@ -1,0 +1,214 @@
+{
+  "ci": [],
+  "docs": [
+    "README.md",
+    "docs/BLUEPRINT.md",
+    "docs/PARITY.md",
+    "docs/SUBMISSION.md",
+    "docs/TRAINING.md"
+  ],
+  "file_scan": {
+    "count": 90,
+    "truncated": false
+  },
+  "git": {
+    "branch": "main",
+    "head": "89c7288",
+    "is_git_repo": true,
+    "status_short": "M Makefile\n M README.md\n M pyproject.toml\n M python/submission/submission_template.py\n M tests/test_submission_pipeline.py\n?? .dockerignore\n?? Dockerfile\n?? compose.yaml\n?? scripts/benchmark_submission.py"
+  },
+  "harness_candidates": [
+    {
+      "command": "make bench",
+      "confidence": "high",
+      "reason": "Makefile target"
+    },
+    {
+      "command": "cargo test",
+      "confidence": "high",
+      "reason": "Cargo project"
+    },
+    {
+      "command": "make smoke",
+      "confidence": "high",
+      "reason": "Makefile target"
+    },
+    {
+      "command": "make test",
+      "confidence": "high",
+      "reason": "Makefile target"
+    },
+    {
+      "command": "pytest",
+      "confidence": "medium",
+      "reason": "tests directory detected"
+    },
+    {
+      "command": "make docker-gpu-check",
+      "confidence": "high",
+      "reason": "Makefile target"
+    },
+    {
+      "command": "make docker-smoke",
+      "confidence": "high",
+      "reason": "Makefile target"
+    },
+    {
+      "command": "make docker-test",
+      "confidence": "high",
+      "reason": "Makefile target"
+    },
+    {
+      "command": "make lint",
+      "confidence": "high",
+      "reason": "Makefile target"
+    }
+  ],
+  "languages": [
+    {
+      "count": 52,
+      "language": "Python"
+    },
+    {
+      "count": 9,
+      "language": "YAML"
+    },
+    {
+      "count": 9,
+      "language": "Rust"
+    },
+    {
+      "count": 7,
+      "language": "Markdown"
+    },
+    {
+      "count": 4,
+      "language": "TOML"
+    },
+    {
+      "count": 2,
+      "language": "Shell"
+    },
+    {
+      "count": 1,
+      "language": "JSON"
+    }
+  ],
+  "markers": {
+    "python": [
+      "pyproject.toml",
+      "requirements.txt"
+    ],
+    "rust": [
+      "Cargo.toml"
+    ]
+  },
+  "mode_rationale": "Multiple toolchains and several plausible edit surfaces suggest harvesting first.",
+  "mutable_surface_candidates": [
+    {
+      "path": "crates/orbit_wars_core/src/batch.rs",
+      "reason": "lives under `crates/`",
+      "score": 20
+    },
+    {
+      "path": "crates/orbit_wars_core/src/combat.rs",
+      "reason": "lives under `crates/`",
+      "score": 20
+    },
+    {
+      "path": "crates/orbit_wars_core/src/config.rs",
+      "reason": "lives under `crates/`",
+      "score": 20
+    },
+    {
+      "path": "crates/orbit_wars_core/src/generator.rs",
+      "reason": "lives under `crates/`",
+      "score": 20
+    },
+    {
+      "path": "crates/orbit_wars_core/src/geometry.rs",
+      "reason": "lives under `crates/`",
+      "score": 20
+    },
+    {
+      "path": "crates/orbit_wars_core/src/lib.rs",
+      "reason": "lives under `crates/`",
+      "score": 20
+    },
+    {
+      "path": "crates/orbit_wars_core/src/step.rs",
+      "reason": "lives under `crates/`",
+      "score": 20
+    },
+    {
+      "path": "crates/orbit_wars_core/src/types.rs",
+      "reason": "lives under `crates/`",
+      "score": 20
+    },
+    {
+      "path": "crates/orbit_wars_py/src/lib.rs",
+      "reason": "lives under `crates/`",
+      "score": 20
+    },
+    {
+      "path": "python/agents/heuristics.py",
+      "reason": "lives under `python/`",
+      "score": 20
+    },
+    {
+      "path": "python/agents/policy.py",
+      "reason": "lives under `python/`",
+      "score": 20
+    },
+    {
+      "path": "python/agents/submission_adapter.py",
+      "reason": "lives under `python/`",
+      "score": 20
+    }
+  ],
+  "repo_kinds": [
+    "python",
+    "rust"
+  ],
+  "repo_path": "/home/marcusvinicius/Repositorios/orbit-wars-lab",
+  "suggested_mode": "knowledge-harvest",
+  "tests": [
+    "tests/test_action_decoder.py",
+    "tests/test_backend_smoke.py",
+    "tests/test_elo.py",
+    "tests/test_encoding.py",
+    "tests/test_evaluate_population.py",
+    "tests/test_final_selection.py",
+    "tests/test_heuristics.py",
+    "tests/test_league_loop.py",
+    "tests/test_objective_validation.py",
+    "tests/test_official_snapshots.py",
+    "tests/test_official_spec.py",
+    "tests/test_parity_tolerances.py",
+    "tests/test_submission_pipeline.py",
+    "tests/test_training_generator_distribution.py",
+    "tests/test_training_phase0.py"
+  ],
+  "top_level_entries": [
+    ".dockerignore",
+    ".gitignore",
+    "Cargo.lock",
+    "Cargo.toml",
+    "DECISIONS.md",
+    "Dockerfile",
+    "EXPERIMENTS.md",
+    "Makefile",
+    "README.md",
+    "artifacts",
+    "compose.yaml",
+    "configs",
+    "crates",
+    "docs",
+    "orbit_wars_gym",
+    "pyproject.toml",
+    "python",
+    "requirements.txt",
+    "scripts",
+    "tests"
+  ]
+}

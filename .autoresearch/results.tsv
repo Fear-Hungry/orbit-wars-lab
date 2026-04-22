@@ -1,0 +1,2 @@
+iteration	commit	metric_name	metric_value	direction	status	verify_command	changed_files	description
+0	89c7288+dirty	4p_win_rate	0.6667	higher	baseline_validated_auth_blocked	docker compose run --rm lab python scripts/benchmark_submission.py --submission artifacts/submission.py --seeds 3 --out artifacts/submission_benchmark.json	python/submission/submission_template.py	Docker baseline passed; exported submission is ready locally but Kaggle auth is blocked by 401 on the host token

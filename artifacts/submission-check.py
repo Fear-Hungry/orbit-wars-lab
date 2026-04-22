@@ -102,14 +102,10 @@ def _distance(a, b):
     return hypot(a[0] - b[0], a[1] - b[1])
 
 
-def _reserve_for_source(source, own_count, enemies, action):
+def _reserve_for_source(source, own_count, enemies):
     reserve = RESERVE_HOME_SHIPS
     if own_count <= 2:
         reserve += 4
-    if action.get("ffa"):
-        reserve += 4
-    if action.get("pressure"):
-        reserve += 2
     if _planet_production(source) >= 4:
         reserve += 2
     if enemies:
@@ -122,8 +118,8 @@ def _reserve_for_source(source, own_count, enemies, action):
     return reserve
 
 
-def _source_priority(source, own_count, enemies, action):
-    reserve = _reserve_for_source(source, own_count, enemies, action)
+def _source_priority(source, own_count, enemies):
+    reserve = _reserve_for_source(source, own_count, enemies)
     surplus = max(0, _planet_ships(source) - reserve)
     return (
         surplus,
@@ -138,7 +134,6 @@ def encode(obs):
     own = [planet for planet in planets if _planet_owner(planet) == player]
     enemies = [planet for planet in planets if _planet_owner(planet) not in (-1, player)]
     neutrals = [planet for planet in planets if _planet_owner(planet) == -1]
-    enemy_owners = sorted({_planet_owner(planet) for planet in enemies})
 
     owner_totals = {}
     owner_prod = {}
@@ -158,7 +153,6 @@ def encode(obs):
         "player": player,
         "own_count": len(own),
         "enemy_count": len(enemies),
-        "enemy_players": len(enemy_owners),
         "neutral_count": len(neutrals),
         "own_ships": sum(_planet_ships(planet) for planet in own),
         "enemy_ships": sum(_planet_ships(planet) for planet in enemies),
@@ -170,22 +164,15 @@ def encode(obs):
 
 
 def policy_forward(features):
-    ffa = features["enemy_players"] >= 2
     pressure = features["enemy_ships"] >= max(features["own_ships"] - 4, 1)
     behind_on_econ = features["enemy_prod"] > features["own_prod"]
     neutrals_open = features["neutral_count"] > 0
-    expand = neutrals_open and (
-        features["own_count"] <= 3
-        or ffa
-        or not (pressure or behind_on_econ)
-    )
+    expand = neutrals_open and (features["own_count"] <= 3 or not (pressure or behind_on_econ))
     return {
         "expand": bool(expand),
-        "ffa": bool(ffa),
         "pressure": bool(pressure),
         "behind_on_econ": bool(behind_on_econ),
         "leader_owner": features["leader_owner"],
-        "neutral_count": int(features["neutral_count"]),
     }
 
 
@@ -211,7 +198,6 @@ def _target_value(obs, source, target, committed, action, own, enemies):
     owner = _planet_owner(target)
     production = _planet_production(target)
     ships = _planet_ships(target)
-    ffa = bool(action.get("ffa"))
 
     own_proximity = min(
         (_distance((_planet_x(planet), _planet_y(planet)), target_xy) for planet in own if _planet_id(planet) != _planet_id(source)),
@@ -224,35 +210,22 @@ def _target_value(obs, source, target, committed, action, own, enemies):
 
     value = production * (14.0 if owner == -1 else 17.0)
     if owner == -1:
-        value += 8.0
-        if ffa:
-            value += 4.0
+        value += 6.0
     else:
-        value += 8.0
+        value += 10.0
     if owner == action.get("leader_owner"):
         value += 5.0
     if action.get("expand") and owner == -1:
-        value += 8.0
+        value += 4.0
     if action.get("pressure") and owner not in (-1, int(obs.get("player", 0))):
         value += 3.0
-    if action.get("expand") and action.get("neutral_count", 0) > 0 and owner != -1:
-        value -= 10.0
-    if ffa and owner not in (-1, action.get("leader_owner")):
-        value -= 6.0
-    if ffa and owner == action.get("leader_owner"):
-        value += 3.0
     if enemy_proximity < 18.0:
-        value += 2.5 if owner == -1 else 1.5
+        value += 2.5
     if own_proximity < 16.0:
-        value += 2.5 if owner == -1 else 1.0
+        value += 1.5
 
     roi = value / max(required, 1)
-    distance_penalty = 0.16 * distance
-    if ffa:
-        distance_penalty += 0.06 * distance
-    if action.get("expand") and owner != -1:
-        distance_penalty += 0.08 * distance
-    return value + 24.0 * roi - distance_penalty - 0.22 * ships, required, target_xy
+    return value + 24.0 * roi - 0.16 * distance - 0.22 * ships, required, target_xy
 
 
 def decode(action, obs):
@@ -269,14 +242,13 @@ def decode(action, obs):
     used_targets = set()
     moves = []
 
-    max_moves = 4 if action.get("ffa") else MAX_MOVES_PER_TURN
-    sources = sorted(own, key=lambda planet: _source_priority(planet, len(own), enemies, action), reverse=True)
+    sources = sorted(own, key=lambda planet: _source_priority(planet, len(own), enemies), reverse=True)
 
     for source in sources:
-        if len(moves) >= max_moves:
+        if len(moves) >= MAX_MOVES_PER_TURN:
             break
         source_id = _planet_id(source)
-        reserve = _reserve_for_source(source, len(own), enemies, action)
+        reserve = _reserve_for_source(source, len(own), enemies)
         available = _planet_ships(source) - reserve - launched_by_source.get(source_id, 0)
         if available < MIN_SHIPS_TO_LAUNCH:
             continue
