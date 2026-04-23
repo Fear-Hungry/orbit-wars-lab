@@ -18,6 +18,9 @@ Do not tune behavior to specific seeds. Validate candidates with `python/train/o
 ## Docker-Only Training & Experiments
 All training runs, experiment loops, population evaluation, objective validation, benchmarks, and GPU checks must run inside Docker, not directly on the host. Use the provided constrained targets such as `make docker-check`, `make docker-smoke`, `make docker-train`, `make docker-gpu-check`, and `make docker-gpu-train`; for custom commands, run them through `docker compose run --rm lab ...` or `docker compose --profile gpu run --rm lab-gpu ...`. Do not start long-running training or experimental jobs outside the container limits.
 
+## Competitive Runtime Budget
+Competitive training, evaluation, benchmarks, and objective validation may take as long as needed to produce trustworthy results. Do not stop a Docker-contained competitive run only because it is slow or exceeds an informal iteration budget. Let it finish unless it hits a real failure, violates the configured Docker resource limits, hangs without useful process activity, or the user explicitly asks to stop it.
+
 ## Failure Handling
 Never add fallback behavior under any circumstances. If a model, heuristic, export path, benchmark, config, dependency, or any other required component cannot perform the requested operation, fail immediately, stop the workflow, and surface the original error log or traceback with enough context to debug it. Do not silently substitute another policy, skip invalid work, downgrade behavior, retry with a different path, or mask exceptions with default behavior. When touching legacy code that already has fallback paths, remove or harden them so they fail fast and expose the real error instead of expanding them.
 
