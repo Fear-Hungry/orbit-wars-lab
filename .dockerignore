@@ -1,6 +1,10 @@
 .git
+.codex
+.env
+.env.*
 .github
 .venv
+.autoresearch
 .pytest_cache
 .ruff_cache
 __pycache__
@@ -14,6 +18,8 @@ dist
 target
 artifacts
 runs
+autoresearch-*.json
+autoresearch-*.md
 submission.py
 .mypy_cache
 .nox
