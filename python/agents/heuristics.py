@@ -186,6 +186,17 @@ def _nearest_neutral(source: Any, neutrals: list[Any]) -> Any | None:
     )
 
 
+def _has_backup_low_cost_neutral(source: Any, neutrals: list[Any], *, exclude_id: int | None = None) -> bool:
+    source_xy = (planet_x(source), planet_y(source))
+    return any(
+        planet_id(planet) != exclude_id
+        and _distance(source_xy, (planet_x(planet), planet_y(planet))) <= 26.0
+        and planet_ships(planet) <= 10
+        and planet_production(planet) <= 2
+        for planet in neutrals
+    )
+
+
 def _should_localized_4p_rush(own: list[Any], enemies: list[Any]) -> bool:
     if len(own) > 1 or not enemies:
         return False
@@ -350,7 +361,9 @@ def _rush_meta_opening_style_signature_2p(
     if player == 0 and 0.039 <= angular_velocity <= 0.041 and ships >= 25 and production <= 1 and nearest_distance <= 11.0:
         return "rush_then_defensive_short"
     if player == 0 and angular_velocity >= 0.041 and ships <= 8 and production <= 1 and nearest_distance >= 16.0:
-        return "rush_then_greedy_one"
+        if _has_backup_low_cost_neutral(home, neutrals, exclude_id=planet_id(nearest_neutral)):
+            return "rush_then_greedy_one"
+        return "rush_then_field_control_one"
     if player == 0 and 0.0395 <= angular_velocity <= 0.0405 and ships <= 12 and production >= 5 and nearest_distance <= 13.0:
         return "greedy"
     if player == 0 and 0.041 <= angular_velocity <= 0.043 and ships >= 26 and production >= 4 and nearest_distance <= 15.0:
@@ -799,6 +812,8 @@ def opening_gate_rush_meta_agent(state: dict[str, Any], player: int) -> list[lis
         return rush_agent(state, player) if int(state.get("step", 0)) < 5 else greedy_agent(state, player)
     if opening_style == "rush_then_greedy_one":
         return rush_agent(state, player) if int(state.get("step", 0)) < 1 else greedy_agent(state, player)
+    if opening_style == "rush_then_field_control_one":
+        return rush_agent(state, player) if int(state.get("step", 0)) < 1 else field_control_agent(state, player)
     if opening_style == "rush_then_defensive_short":
         return rush_agent(state, player) if int(state.get("step", 0)) < 1 else defensive_agent(state, player)
 

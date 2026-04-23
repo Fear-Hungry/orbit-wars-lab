@@ -173,6 +173,14 @@ def test_opening_gate_rush_meta_uses_player0_rush_then_greedy_one_signature():
     assert opening_gate_rush_meta_agent(follow_up, 0) == greedy_agent(follow_up, 0)
 
 
+def test_opening_gate_rush_meta_uses_player0_rush_then_field_control_one_signature():
+    state = _state_for_seed(601)
+    assert opening_gate_rush_meta_agent(state, 0) == rush_agent(state, 0)
+    follow_up = dict(state)
+    follow_up["step"] = 1
+    assert opening_gate_rush_meta_agent(follow_up, 0) == field_control_agent(follow_up, 0)
+
+
 def test_opening_gate_rush_meta_uses_player0_field_control_signature():
     state = _state_for_seed(1010176)
     assert opening_gate_rush_meta_agent(state, 0) == field_control_agent(state, 0)
@@ -254,4 +262,3 @@ def test_opening_gate_anti_meta_meta_locks_player1_defensive_then_field_control_
     follow_up = dict(state)
     follow_up["step"] = 1
     assert opening_gate_anti_meta_meta_agent(follow_up, 1) == field_control_agent(follow_up, 1)
-

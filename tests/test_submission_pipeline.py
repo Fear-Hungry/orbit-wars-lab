@@ -225,6 +225,7 @@ def test_opening_gate_rush_meta_template_matches_local_policy_on_reference_state
         (2330000, 0, [opening_gate_rush_meta_agent, greedy_agent]),
         (2330237, 0, [opening_gate_rush_meta_agent, greedy_agent]),
         (530146, 0, [opening_gate_rush_meta_agent, opening_gate_anti_meta_meta_agent]),
+        (601, 0, [opening_gate_rush_meta_agent, greedy_agent]),
         (1010060, 0, [opening_gate_rush_meta_agent, opening_gate_anti_meta_meta_agent]),
         (1010176, 0, [opening_gate_rush_meta_agent, opening_gate_anti_meta_meta_agent]),
         (1490090, 0, [opening_gate_rush_meta_agent, opening_gate_anti_meta_meta_agent]),
