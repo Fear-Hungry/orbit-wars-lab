@@ -113,11 +113,16 @@ def _point_to_segment_distance(point, start, end):
 
 def _sun_safe_angle(source_xy, target_xy):
     base_angle = atan2(target_xy[1] - source_xy[1], target_xy[0] - source_xy[0])
-    if _point_to_segment_distance((BOARD_CENTER, BOARD_CENTER), source_xy, target_xy) >= SUN_RADIUS + 1.0:
+    if (
+        _point_to_segment_distance((BOARD_CENTER, BOARD_CENTER), source_xy, target_xy)
+        >= SUN_RADIUS + 1.0
+    ):
         return base_angle
     to_center = atan2(BOARD_CENTER - source_xy[1], BOARD_CENTER - source_xy[0])
     candidates = [to_center + pi / 2.0, to_center - pi / 2.0]
-    return min(candidates, key=lambda angle: abs(atan2(sin(angle - base_angle), cos(angle - base_angle))))
+    return min(
+        candidates, key=lambda angle: abs(atan2(sin(angle - base_angle), cos(angle - base_angle)))
+    )
 
 
 def _planet_pressure(planet, neighbors):
@@ -141,7 +146,10 @@ def _fleet_pressure(planet, fleets):
 
 def _frontline_bias(planet, enemies, own):
     px, py = _planet_x(planet), _planet_y(planet)
-    enemy_dist = min((_distance((px, py), (_planet_x(enemy), _planet_y(enemy))) for enemy in enemies), default=80.0)
+    enemy_dist = min(
+        (_distance((px, py), (_planet_x(enemy), _planet_y(enemy))) for enemy in enemies),
+        default=80.0,
+    )
     own_dist = min(
         (
             _distance((px, py), (_planet_x(friend), _planet_y(friend)))
@@ -155,15 +163,31 @@ def _frontline_bias(planet, enemies, own):
 
 def _target_value(state, target, player, own, enemies, friendly_fleets, enemy_fleets):
     owner = _planet_owner(target)
-    friendly_pressure = _planet_pressure(target, own) + 0.6 * _fleet_pressure(target, friendly_fleets)
+    friendly_pressure = _planet_pressure(target, own) + 0.6 * _fleet_pressure(
+        target, friendly_fleets
+    )
     enemy_pressure = _planet_pressure(target, enemies) + 0.7 * _fleet_pressure(target, enemy_fleets)
     production_value = 8.0 * _planet_production(target)
     ship_penalty = 1.15 * _planet_ships(target)
-    centrality = 3.0 * (1.0 - min(1.0, _distance((_planet_x(target), _planet_y(target)), (BOARD_CENTER, BOARD_CENTER)) / 60.0))
+    centrality = 3.0 * (
+        1.0
+        - min(
+            1.0,
+            _distance((_planet_x(target), _planet_y(target)), (BOARD_CENTER, BOARD_CENTER)) / 60.0,
+        )
+    )
     frontier = _frontline_bias(target, enemies, own)
     if owner == -1:
         denial = max(0.0, enemy_pressure - friendly_pressure) * 0.7
-        return production_value - ship_penalty + 0.35 * friendly_pressure - 0.2 * enemy_pressure + centrality + frontier + denial
+        return (
+            production_value
+            - ship_penalty
+            + 0.35 * friendly_pressure
+            - 0.2 * enemy_pressure
+            + centrality
+            + frontier
+            + denial
+        )
     if owner == player:
         threat = max(0.0, enemy_pressure - friendly_pressure - 0.35 * _planet_ships(target))
         return 11.0 * threat + 4.5 * _planet_production(target) + frontier
@@ -181,7 +205,9 @@ def _source_reserve(source, enemies, enemy_fleets):
 def _coalition_source_reserve(source, enemies, enemy_fleets):
     local_threat = _planet_pressure(source, enemies) + 0.9 * _fleet_pressure(source, enemy_fleets)
     frontier_tax = max(0.0, _frontline_bias(source, enemies, [source]))
-    reserve = 12 + int(0.55 * _planet_production(source) + 0.45 * local_threat + 1.25 * frontier_tax)
+    reserve = 12 + int(
+        0.55 * _planet_production(source) + 0.45 * local_threat + 1.25 * frontier_tax
+    )
     return max(12, min(30, reserve))
 
 
@@ -189,7 +215,9 @@ def _leader_owner(enemies):
     owner_strength = {}
     for enemy in enemies:
         owner = _planet_owner(enemy)
-        owner_strength[owner] = owner_strength.get(owner, 0.0) + _planet_ships(enemy) + 6.0 * _planet_production(enemy)
+        owner_strength[owner] = (
+            owner_strength.get(owner, 0.0) + _planet_ships(enemy) + 6.0 * _planet_production(enemy)
+        )
     if not owner_strength:
         return None
     return max(owner_strength, key=owner_strength.get)
@@ -199,7 +227,9 @@ def _nearest_neutral(source, neutrals):
     if not neutrals:
         return None
     source_xy = (_planet_x(source), _planet_y(source))
-    return min(neutrals, key=lambda planet: _distance(source_xy, (_planet_x(planet), _planet_y(planet))))
+    return min(
+        neutrals, key=lambda planet: _distance(source_xy, (_planet_x(planet), _planet_y(planet)))
+    )
 
 
 def _has_backup_low_cost_neutral(source, neutrals, exclude_id=None):
@@ -217,10 +247,21 @@ def _should_localized_4p_rush(own, enemies):
     if len(own) > 1 or not enemies:
         return False
     home = own[0]
-    nearest_enemy = min(enemies, key=lambda planet: _distance((_planet_x(home), _planet_y(home)), (_planet_x(planet), _planet_y(planet))))
+    nearest_enemy = min(
+        enemies,
+        key=lambda planet: _distance(
+            (_planet_x(home), _planet_y(home)), (_planet_x(planet), _planet_y(planet))
+        ),
+    )
     dx = abs(_planet_x(nearest_enemy) - _planet_x(home))
     dy = abs(_planet_y(nearest_enemy) - _planet_y(home))
-    return _distance((_planet_x(home), _planet_y(home)), (_planet_x(nearest_enemy), _planet_y(nearest_enemy))) <= 20.0 and min(dx, dy) <= 5.0
+    return (
+        _distance(
+            (_planet_x(home), _planet_y(home)), (_planet_x(nearest_enemy), _planet_y(nearest_enemy))
+        )
+        <= 20.0
+        and min(dx, dy) <= 5.0
+    )
 
 
 def _should_localized_2p_anti_rush(own, neutrals, angular_velocity):
@@ -229,8 +270,15 @@ def _should_localized_2p_anti_rush(own, neutrals, angular_velocity):
     nearest_neutral = _nearest_neutral(own[0], neutrals)
     if nearest_neutral is None:
         return False
-    distance = _distance((_planet_x(own[0]), _planet_y(own[0])), (_planet_x(nearest_neutral), _planet_y(nearest_neutral)))
-    return _planet_ships(nearest_neutral) <= 14 and _planet_production(nearest_neutral) >= 4 and distance <= 20.0
+    distance = _distance(
+        (_planet_x(own[0]), _planet_y(own[0])),
+        (_planet_x(nearest_neutral), _planet_y(nearest_neutral)),
+    )
+    return (
+        _planet_ships(nearest_neutral) <= 14
+        and _planet_production(nearest_neutral) >= 4
+        and distance <= 20.0
+    )
 
 
 def _opening_style_signature_2p(own, neutrals, angular_velocity):
@@ -293,7 +341,11 @@ def _opening_style_signature_2p(own, neutrals, angular_velocity):
             if _planet_id(neutral) == _planet_id(nearest_neutral):
                 continue
             neutral_distance = _distance(home_xy, (_planet_x(neutral), _planet_y(neutral)))
-            if neutral_distance <= 22.0 and _planet_production(neutral) >= 4 and _planet_ships(neutral) <= 18:
+            if (
+                neutral_distance <= 22.0
+                and _planet_production(neutral) >= 4
+                and _planet_ships(neutral) <= 18
+            ):
                 return "field_control"
     return None
 
@@ -310,15 +362,54 @@ def _rush_meta_opening_style_signature_2p(own, neutrals, angular_velocity, playe
     ships = _planet_ships(nearest_neutral)
     production = _planet_production(nearest_neutral)
 
-    if player == 0 and 0.039 <= angular_velocity <= 0.041 and ships >= 25 and production <= 1 and nearest_distance <= 11.0:
+    if (
+        player == 1
+        and angular_velocity < 0.033
+        and nearest_distance <= 13.5
+        and ships >= 40
+        and production >= 3
+    ):
+        return "field_control"
+    if (
+        0.042 <= angular_velocity <= 0.044
+        and nearest_distance <= 13.5
+        and 10 <= ships <= 14
+        and production >= 4
+    ):
+        return "field_control"
+    if (
+        player == 0
+        and 0.039 <= angular_velocity <= 0.041
+        and ships >= 25
+        and production <= 1
+        and nearest_distance <= 11.0
+    ):
         return "rush_then_defensive_short"
-    if player == 0 and angular_velocity >= 0.041 and ships <= 8 and production <= 1 and nearest_distance >= 16.0:
+    if (
+        player == 0
+        and angular_velocity >= 0.041
+        and ships <= 8
+        and production <= 1
+        and nearest_distance >= 16.0
+    ):
         if _has_backup_low_cost_neutral(home, neutrals, exclude_id=_planet_id(nearest_neutral)):
             return "rush_then_greedy_one"
         return "rush_then_field_control_one"
-    if player == 0 and 0.0395 <= angular_velocity <= 0.0405 and ships <= 12 and production >= 5 and nearest_distance <= 13.0:
+    if (
+        player == 0
+        and 0.0395 <= angular_velocity <= 0.0405
+        and ships <= 12
+        and production >= 5
+        and nearest_distance <= 13.0
+    ):
         return "greedy"
-    if player == 0 and 0.041 <= angular_velocity <= 0.043 and ships >= 26 and production >= 4 and nearest_distance <= 15.0:
+    if (
+        player == 0
+        and 0.041 <= angular_velocity <= 0.043
+        and ships >= 26
+        and production >= 4
+        and nearest_distance <= 15.0
+    ):
         return "field_control"
     return _opening_style_signature_2p(own, neutrals, angular_velocity)
 
@@ -327,7 +418,9 @@ def _locked_opening_style(state, player, own, enemies, neutrals):
     enemy_owner_count = len({_planet_owner(enemy) for enemy in enemies})
     if int(state.get("step", 0)) == 0:
         _OPENING_STYLE_BY_PLAYER[player] = (
-            _rush_meta_opening_style_signature_2p(own, neutrals, float(state.get("angular_velocity", 0.0)), player=player)
+            _rush_meta_opening_style_signature_2p(
+                own, neutrals, float(state.get("angular_velocity", 0.0)), player=player
+            )
             if enemy_owner_count == 1
             else None
         )
@@ -337,12 +430,16 @@ def _locked_opening_style(state, player, own, enemies, neutrals):
     return _OPENING_STYLE_BY_PLAYER.get(player)
 
 
-def _required_commitment(state, source, target, player, own, enemies, friendly_fleets, enemy_fleets, committed):
+def _required_commitment(
+    state, source, target, player, own, enemies, friendly_fleets, enemy_fleets, committed
+):
     source_xy = (_planet_x(source), _planet_y(source))
     guess_ships = max(6, int(max(_planet_ships(source) - 8, 0) * 0.55))
     target_xy = _predict_target_xy(state, source_xy, target, guess_ships)
     travel_steps = max(1, ceil(_distance(source_xy, target_xy) / _fleet_speed(max(guess_ships, 2))))
-    friendly_pressure = _planet_pressure(target, own) + 0.6 * _fleet_pressure(target, friendly_fleets)
+    friendly_pressure = _planet_pressure(target, own) + 0.6 * _fleet_pressure(
+        target, friendly_fleets
+    )
     enemy_pressure = _planet_pressure(target, enemies) + 0.7 * _fleet_pressure(target, enemy_fleets)
     owner = _planet_owner(target)
     if owner == player:
@@ -350,9 +447,19 @@ def _required_commitment(state, source, target, player, own, enemies, friendly_f
         return max(0, int(ceil(vulnerability + 2.0)) - committed)
     growth = max(0.0, float(_planet_production(target)) * travel_steps)
     if owner == -1:
-        need = _planet_ships(target) + 1 + 0.2 * growth + 0.15 * max(0.0, enemy_pressure - friendly_pressure)
+        need = (
+            _planet_ships(target)
+            + 1
+            + 0.2 * growth
+            + 0.15 * max(0.0, enemy_pressure - friendly_pressure)
+        )
     else:
-        need = _planet_ships(target) + 1 + 0.55 * growth + 0.4 * max(0.0, enemy_pressure - friendly_pressure)
+        need = (
+            _planet_ships(target)
+            + 1
+            + 0.55 * growth
+            + 0.4 * max(0.0, enemy_pressure - friendly_pressure)
+        )
     return max(0, int(ceil(need)) - committed)
 
 
@@ -366,7 +473,9 @@ def _build_move(state, source, target, ships):
 
 
 def _moves_are_legal(state, player, moves):
-    own_ids = {_planet_id(planet) for planet in state.get("planets", []) if _planet_owner(planet) == player}
+    own_ids = {
+        _planet_id(planet) for planet in state.get("planets", []) if _planet_owner(planet) == player
+    }
     for move in moves:
         if not isinstance(move, list) or len(move) != 3:
             return False
@@ -387,7 +496,8 @@ def fallback_greedy(state):
         own = [
             planet
             for planet in planets
-            if _planet_owner(planet) == player and _planet_ships(planet) > RESERVE_HOME_SHIPS + MIN_SHIPS_TO_LAUNCH
+            if _planet_owner(planet) == player
+            and _planet_ships(planet) > RESERVE_HOME_SHIPS + MIN_SHIPS_TO_LAUNCH
         ]
         targets = [planet for planet in planets if _planet_owner(planet) != player]
         moves = []
@@ -433,13 +543,19 @@ def fallback_anti_meta(state):
                     -sum(
                         1
                         for neutral in neutrals
-                        if _distance((_planet_x(neutral), _planet_y(neutral)), (_planet_x(planet), _planet_y(planet))) < 20.0
+                        if _distance(
+                            (_planet_x(neutral), _planet_y(neutral)),
+                            (_planet_x(planet), _planet_y(planet)),
+                        )
+                        < 20.0
                     ),
                 ),
             )
             focus = targets[0]
         elif neutrals:
-            focus = max(neutrals, key=lambda planet: (_planet_production(planet), -_planet_ships(planet)))
+            focus = max(
+                neutrals, key=lambda planet: (_planet_production(planet), -_planet_ships(planet))
+            )
         else:
             return fallback_greedy(state)
 
@@ -448,7 +564,9 @@ def fallback_anti_meta(state):
             ships = max(0, _planet_ships(source) - 7)
             if ships <= 0:
                 continue
-            angle = atan2(_planet_y(focus) - _planet_y(source), _planet_x(focus) - _planet_x(source))
+            angle = atan2(
+                _planet_y(focus) - _planet_y(source), _planet_x(focus) - _planet_x(source)
+            )
             moves.append([_planet_id(source), float(angle), int(max(1, ships * 0.6))])
         return moves
     except Exception:
@@ -465,7 +583,13 @@ def _defensive_policy(state, player, own, neutrals):
         if ships <= 0:
             continue
         sx, sy = _planet_x(source), _planet_y(source)
-        target = min(neutrals, key=lambda planet: float(_planet_ships(planet)) + 0.08 * hypot(_planet_x(planet) - sx, _planet_y(planet) - sy))
+        target = min(
+            neutrals,
+            key=lambda planet: (
+                float(_planet_ships(planet))
+                + 0.08 * hypot(_planet_x(planet) - sx, _planet_y(planet) - sy)
+            ),
+        )
         move = _build_move(state, source, target, int(ships * 0.5))
         if move is not None:
             moves.append(move)
@@ -483,7 +607,9 @@ def _rush_policy(state, player, own, enemies):
         ships = max(0, _planet_ships(source) - 5)
         if ships <= 0:
             continue
-        angle = atan2(_planet_y(enemy_home) - _planet_y(source), _planet_x(enemy_home) - _planet_x(source))
+        angle = atan2(
+            _planet_y(enemy_home) - _planet_y(source), _planet_x(enemy_home) - _planet_x(source)
+        )
         moves.append([_planet_id(source), float(angle), int(ships)])
     return moves
 
@@ -509,35 +635,63 @@ def _field_control_policy(state, player, coalition_mode=False):
 
     threatened = sorted(
         (planet for planet in own if _planet_ships(planet) > 0),
-        key=lambda planet: _target_value(state, planet, player, own, enemies, friendly_fleets, enemy_fleets),
+        key=lambda planet: _target_value(
+            state, planet, player, own, enemies, friendly_fleets, enemy_fleets
+        ),
         reverse=True,
     )
     neutral_targets = sorted(
         neutrals,
-        key=lambda planet: _target_value(state, planet, player, own, enemies, friendly_fleets, enemy_fleets),
+        key=lambda planet: _target_value(
+            state, planet, player, own, enemies, friendly_fleets, enemy_fleets
+        ),
         reverse=True,
     )
     enemy_targets = sorted(
         enemies,
-        key=lambda planet: _target_value(state, planet, player, own, enemies, friendly_fleets, enemy_fleets),
+        key=lambda planet: _target_value(
+            state, planet, player, own, enemies, friendly_fleets, enemy_fleets
+        ),
         reverse=True,
     )
 
     if coalition_mode:
-        leader_targets = [planet for planet in enemy_targets if _planet_owner(planet) == leader_owner]
-        other_enemy_targets = [planet for planet in enemy_targets if _planet_owner(planet) != leader_owner]
-        top_threat = _target_value(state, threatened[0], player, own, enemies, friendly_fleets, enemy_fleets) if threatened else 0.0
-        want_expand = bool(neutral_targets) and (own_prod <= enemy_prod or own_ships <= enemy_ships + 12 or len(own) < 4)
-        if top_threat > 8.0:
-            target_priority = threatened + leader_targets[:2] + neutral_targets[:2] + other_enemy_targets[:1]
-        elif want_expand:
-            target_priority = neutral_targets + threatened[:2] + leader_targets[:2] + other_enemy_targets[:1]
-        else:
-            target_priority = leader_targets + threatened[:2] + neutral_targets[:2] + other_enemy_targets[:1]
-    else:
-        top_threat = _target_value(state, threatened[0], player, own, enemies, friendly_fleets, enemy_fleets) if threatened else 0.0
+        leader_targets = [
+            planet for planet in enemy_targets if _planet_owner(planet) == leader_owner
+        ]
+        other_enemy_targets = [
+            planet for planet in enemy_targets if _planet_owner(planet) != leader_owner
+        ]
+        top_threat = (
+            _target_value(state, threatened[0], player, own, enemies, friendly_fleets, enemy_fleets)
+            if threatened
+            else 0.0
+        )
         want_expand = bool(neutral_targets) and (
-            own_prod <= enemy_prod + 1 or own_ships <= enemy_ships + 10 or len(own) < max(3, len(enemies))
+            own_prod <= enemy_prod or own_ships <= enemy_ships + 12 or len(own) < 4
+        )
+        if top_threat > 8.0:
+            target_priority = (
+                threatened + leader_targets[:2] + neutral_targets[:2] + other_enemy_targets[:1]
+            )
+        elif want_expand:
+            target_priority = (
+                neutral_targets + threatened[:2] + leader_targets[:2] + other_enemy_targets[:1]
+            )
+        else:
+            target_priority = (
+                leader_targets + threatened[:2] + neutral_targets[:2] + other_enemy_targets[:1]
+            )
+    else:
+        top_threat = (
+            _target_value(state, threatened[0], player, own, enemies, friendly_fleets, enemy_fleets)
+            if threatened
+            else 0.0
+        )
+        want_expand = bool(neutral_targets) and (
+            own_prod <= enemy_prod + 1
+            or own_ships <= enemy_ships + 10
+            or len(own) < max(3, len(enemies))
         )
         if top_threat > 8.0:
             target_priority = threatened + neutral_targets[:2] + enemy_targets[:2]
@@ -589,15 +743,23 @@ def _field_control_policy(state, player, coalition_mode=False):
                 enemy_fleets,
                 committed.get(_planet_id(target), 0),
             )
-            strategic = _target_value(state, target, player, own, enemies, friendly_fleets, enemy_fleets)
+            strategic = _target_value(
+                state, target, player, own, enemies, friendly_fleets, enemy_fleets
+            )
             if coalition_mode and _planet_owner(target) == leader_owner:
                 strategic += 4.0
             elif coalition_mode and _planet_owner(target) not in (-1, player):
                 strategic -= 4.0
             source_xy = (_planet_x(source), _planet_y(source))
-            target_xy = _predict_target_xy(state, source_xy, target, max(2, min(surplus, max(need, 6))))
+            target_xy = _predict_target_xy(
+                state, source_xy, target, max(2, min(surplus, max(need, 6)))
+            )
             dist_penalty = (0.15 if coalition_mode else 0.12) * _distance(source_xy, target_xy)
-            score = strategic - dist_penalty - ((0.35 if coalition_mode else 0.25) * max(0, need - surplus))
+            score = (
+                strategic
+                - dist_penalty
+                - ((0.35 if coalition_mode else 0.25) * max(0, need - surplus))
+            )
             if score > best_score:
                 best_score = score
                 best_target = target
@@ -610,7 +772,10 @@ def _field_control_policy(state, player, coalition_mode=False):
         if owner == player:
             ships = min(surplus, max(2, best_need))
         elif owner == -1:
-            ships = min(surplus, max(2, int(ceil(max(best_need, surplus * (0.38 if coalition_mode else 0.45))))))
+            ships = min(
+                surplus,
+                max(2, int(ceil(max(best_need, surplus * (0.38 if coalition_mode else 0.45))))),
+            )
         elif coalition_mode and owner == leader_owner:
             ships = min(surplus, max(2, int(ceil(max(best_need * 1.05, surplus * 0.48)))))
         elif coalition_mode:
@@ -654,13 +819,29 @@ def _opening_gate_rush_meta_agent(state, player):
     if opening_style == "greedy":
         return fallback_greedy(state)
     if opening_style == "rush_then_greedy":
-        return _rush_policy(state, player, own, enemies) if int(state.get("step", 0)) < 5 else fallback_greedy(state)
+        return (
+            _rush_policy(state, player, own, enemies)
+            if int(state.get("step", 0)) < 5
+            else fallback_greedy(state)
+        )
     if opening_style == "rush_then_greedy_one":
-        return _rush_policy(state, player, own, enemies) if int(state.get("step", 0)) < 1 else fallback_greedy(state)
+        return (
+            _rush_policy(state, player, own, enemies)
+            if int(state.get("step", 0)) < 1
+            else fallback_greedy(state)
+        )
     if opening_style == "rush_then_field_control_one":
-        return _rush_policy(state, player, own, enemies) if int(state.get("step", 0)) < 1 else _field_control_policy(state, player, coalition_mode=False)
+        return (
+            _rush_policy(state, player, own, enemies)
+            if int(state.get("step", 0)) < 1
+            else _field_control_policy(state, player, coalition_mode=False)
+        )
     if opening_style == "rush_then_defensive_short":
-        return _rush_policy(state, player, own, enemies) if int(state.get("step", 0)) < 1 else _defensive_policy(state, player, own, neutrals)
+        return (
+            _rush_policy(state, player, own, enemies)
+            if int(state.get("step", 0)) < 1
+            else _defensive_policy(state, player, own, neutrals)
+        )
 
     nearest_neutral = _nearest_neutral(own[0], neutrals)
     angular_velocity = float(state.get("angular_velocity", 0.0))
@@ -681,7 +862,9 @@ def agent(obs):
         player = int(obs.get("player", 0))
         moves = _opening_gate_rush_meta_agent(obs, player)
         if not _moves_are_legal(obs, player, moves):
-            raise ValueError(f"submission policy produced illegal moves for player={player}: {moves!r}")
+            raise ValueError(
+                f"submission policy produced illegal moves for player={player}: {moves!r}"
+            )
         return list(moves)
     except Exception:
         return fallback_greedy(obs)

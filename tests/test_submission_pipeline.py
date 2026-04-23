@@ -56,10 +56,42 @@ def test_safe_submission_agent_accepts_dict_entities():
         "player": 0,
         "angular_velocity": 0.03,
         "planets": [
-            {"id": 0, "owner": 0, "x": 20.0, "y": 20.0, "radius": 2.0, "ships": 24, "production": 3},
-            {"id": 1, "owner": 0, "x": 26.0, "y": 24.0, "radius": 2.0, "ships": 12, "production": 2},
-            {"id": 2, "owner": -1, "x": 40.0, "y": 35.0, "radius": 2.0, "ships": 8, "production": 3},
-            {"id": 3, "owner": 1, "x": 76.0, "y": 72.0, "radius": 2.0, "ships": 20, "production": 4},
+            {
+                "id": 0,
+                "owner": 0,
+                "x": 20.0,
+                "y": 20.0,
+                "radius": 2.0,
+                "ships": 24,
+                "production": 3,
+            },
+            {
+                "id": 1,
+                "owner": 0,
+                "x": 26.0,
+                "y": 24.0,
+                "radius": 2.0,
+                "ships": 12,
+                "production": 2,
+            },
+            {
+                "id": 2,
+                "owner": -1,
+                "x": 40.0,
+                "y": 35.0,
+                "radius": 2.0,
+                "ships": 8,
+                "production": 3,
+            },
+            {
+                "id": 3,
+                "owner": 1,
+                "x": 76.0,
+                "y": 72.0,
+                "radius": 2.0,
+                "ships": 20,
+                "production": 4,
+            },
         ],
         "fleets": [],
     }
@@ -103,10 +135,42 @@ def test_submission_template_accepts_dict_entities(tmp_path: Path):
         "player": 0,
         "angular_velocity": 0.03,
         "planets": [
-            {"id": 0, "owner": 0, "x": 20.0, "y": 20.0, "radius": 2.0, "ships": 24, "production": 3},
-            {"id": 1, "owner": 0, "x": 26.0, "y": 24.0, "radius": 2.0, "ships": 12, "production": 2},
-            {"id": 2, "owner": -1, "x": 40.0, "y": 35.0, "radius": 2.0, "ships": 8, "production": 3},
-            {"id": 3, "owner": 1, "x": 76.0, "y": 72.0, "radius": 2.0, "ships": 20, "production": 4},
+            {
+                "id": 0,
+                "owner": 0,
+                "x": 20.0,
+                "y": 20.0,
+                "radius": 2.0,
+                "ships": 24,
+                "production": 3,
+            },
+            {
+                "id": 1,
+                "owner": 0,
+                "x": 26.0,
+                "y": 24.0,
+                "radius": 2.0,
+                "ships": 12,
+                "production": 2,
+            },
+            {
+                "id": 2,
+                "owner": -1,
+                "x": 40.0,
+                "y": 35.0,
+                "radius": 2.0,
+                "ships": 8,
+                "production": 3,
+            },
+            {
+                "id": 3,
+                "owner": 1,
+                "x": 76.0,
+                "y": 72.0,
+                "radius": 2.0,
+                "ships": 20,
+                "production": 4,
+            },
         ],
         "fleets": [],
     }
@@ -148,7 +212,9 @@ def test_exported_submission_avoids_local_runtime_dependencies():
 
 
 def test_exported_heuristic_submission_supports_policy_specialization(tmp_path: Path):
-    template = Path("python/submission/heuristic_submission_template.py").read_text(encoding="utf-8")
+    template = Path("python/submission/heuristic_submission_template.py").read_text(
+        encoding="utf-8"
+    )
     greedy_rendered = render_submission(template, heuristic_policy="greedy")
     defensive_rendered = render_submission(template, heuristic_policy="defensive")
     assert 'HEURISTIC_POLICY = "greedy"' in greedy_rendered
@@ -226,6 +292,8 @@ def test_opening_gate_rush_meta_template_matches_local_policy_on_reference_state
         (2330237, 0, [opening_gate_rush_meta_agent, greedy_agent]),
         (530146, 0, [opening_gate_rush_meta_agent, opening_gate_anti_meta_meta_agent]),
         (601, 0, [opening_gate_rush_meta_agent, greedy_agent]),
+        (1301, 1, [opening_gate_anti_meta_meta_agent, opening_gate_rush_meta_agent]),
+        (1409, 0, [opening_gate_rush_meta_agent, opening_gate_anti_meta_meta_agent]),
         (1010060, 0, [opening_gate_rush_meta_agent, opening_gate_anti_meta_meta_agent]),
         (1010176, 0, [opening_gate_rush_meta_agent, opening_gate_anti_meta_meta_agent]),
         (1490090, 0, [opening_gate_rush_meta_agent, opening_gate_anti_meta_meta_agent]),
@@ -248,9 +316,13 @@ def test_opening_gate_rush_meta_template_matches_local_policy_on_reference_state
                 break
 
 
-def test_opening_gate_anti_meta_meta_template_matches_local_policy_on_reference_states(tmp_path: Path):
+def test_opening_gate_anti_meta_meta_template_matches_local_policy_on_reference_states(
+    tmp_path: Path,
+):
     rendered = render_submission(
-        Path("python/submission/opening_gate_anti_meta_meta_template.py").read_text(encoding="utf-8"),
+        Path("python/submission/opening_gate_anti_meta_meta_template.py").read_text(
+            encoding="utf-8"
+        ),
         checkpoint=None,
     )
     out = tmp_path / "opening_gate_anti_meta_meta.py"
@@ -307,7 +379,9 @@ def test_submission_agent_falls_back_on_illegal_output(monkeypatch: pytest.Monke
     def _illegal_decode(*_args, **_kwargs):
         return [[999, float("nan"), -5]]
 
-    monkeypatch.setattr("python.agents.submission_adapter.decode_submission_action", _illegal_decode)
+    monkeypatch.setattr(
+        "python.agents.submission_adapter.decode_submission_action", _illegal_decode
+    )
     moves = safe_submission_agent(SAMPLE_OBS)
     assert isinstance(moves, list)
     _assert_moves_are_legal(SAMPLE_OBS, moves)

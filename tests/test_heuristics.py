@@ -71,8 +71,24 @@ def test_coalition_field_control_agent_accepts_dict_entities():
     ffa_state = {
         "planets": STATE_DICT["planets"]
         + [
-            {"id": 5, "owner": 2, "x": 68.0, "y": 28.0, "radius": 2.0, "ships": 14, "production": 3},
-            {"id": 6, "owner": 3, "x": 72.0, "y": 32.0, "radius": 2.0, "ships": 19, "production": 4},
+            {
+                "id": 5,
+                "owner": 2,
+                "x": 68.0,
+                "y": 28.0,
+                "radius": 2.0,
+                "ships": 14,
+                "production": 3,
+            },
+            {
+                "id": 6,
+                "owner": 3,
+                "x": 72.0,
+                "y": 32.0,
+                "radius": 2.0,
+                "ships": 19,
+                "production": 4,
+            },
         ],
         "fleets": [],
         "step": 9,
@@ -103,11 +119,35 @@ def test_opening_gate_anti_meta_meta_agent_accepts_dict_entities():
 def test_opening_gate_rush_meta_uses_rush_on_close_axis_ffa_opening():
     ffa_state = {
         "planets": [
-            {"id": 4, "owner": 0, "x": 98.8, "y": 56.2, "radius": 2.0, "ships": 10, "production": 1},
+            {
+                "id": 4,
+                "owner": 0,
+                "x": 98.8,
+                "y": 56.2,
+                "radius": 2.0,
+                "ships": 10,
+                "production": 1,
+            },
             {"id": 5, "owner": 1, "x": 1.2, "y": 56.2, "radius": 2.0, "ships": 10, "production": 1},
-            {"id": 6, "owner": 2, "x": 98.8, "y": 43.8, "radius": 2.0, "ships": 10, "production": 1},
+            {
+                "id": 6,
+                "owner": 2,
+                "x": 98.8,
+                "y": 43.8,
+                "radius": 2.0,
+                "ships": 10,
+                "production": 1,
+            },
             {"id": 7, "owner": 3, "x": 1.2, "y": 43.8, "radius": 2.0, "ships": 10, "production": 1},
-            {"id": 20, "owner": -1, "x": 82.5, "y": 65.1, "radius": 2.0, "ships": 19, "production": 2},
+            {
+                "id": 20,
+                "owner": -1,
+                "x": 82.5,
+                "y": 65.1,
+                "radius": 2.0,
+                "ships": 19,
+                "production": 2,
+            },
         ],
         "fleets": [],
         "step": 0,
@@ -119,10 +159,34 @@ def test_opening_gate_rush_meta_uses_rush_on_close_axis_ffa_opening():
 def test_opening_gate_rush_meta_uses_anti_meta_on_localized_2p_rush_state():
     rush_state = {
         "planets": [
-            {"id": 4, "owner": 0, "x": 59.1, "y": 97.7, "radius": 2.0, "ships": 10, "production": 2},
+            {
+                "id": 4,
+                "owner": 0,
+                "x": 59.1,
+                "y": 97.7,
+                "radius": 2.0,
+                "ships": 10,
+                "production": 2,
+            },
             {"id": 7, "owner": 1, "x": 40.9, "y": 2.3, "radius": 2.0, "ships": 10, "production": 2},
-            {"id": 28, "owner": -1, "x": 76.0, "y": 91.8, "radius": 2.0, "ships": 14, "production": 4},
-            {"id": 16, "owner": -1, "x": 74.4, "y": 78.7, "radius": 2.0, "ships": 12, "production": 1},
+            {
+                "id": 28,
+                "owner": -1,
+                "x": 76.0,
+                "y": 91.8,
+                "radius": 2.0,
+                "ships": 14,
+                "production": 4,
+            },
+            {
+                "id": 16,
+                "owner": -1,
+                "x": 74.4,
+                "y": 78.7,
+                "radius": 2.0,
+                "ships": 12,
+                "production": 1,
+            },
         ],
         "fleets": [],
         "step": 0,
@@ -186,6 +250,19 @@ def test_opening_gate_rush_meta_uses_player0_field_control_signature():
     assert opening_gate_rush_meta_agent(state, 0) == field_control_agent(state, 0)
 
 
+def test_opening_gate_rush_meta_uses_player1_field_control_on_live_low_spin_rich_heavy():
+    state = _state_for_seed(1301)
+    assert opening_gate_rush_meta_agent(state, 1) == field_control_agent(state, 1)
+
+
+def test_opening_gate_rush_meta_locks_high_spin_rich_cheap_close_field_control():
+    state = _state_for_seed(1409)
+    assert opening_gate_rush_meta_agent(state, 0) == field_control_agent(state, 0)
+    follow_up = dict(state)
+    follow_up["step"] = 1
+    assert opening_gate_rush_meta_agent(follow_up, 0) == field_control_agent(follow_up, 0)
+
+
 def test_opening_gate_rush_meta_uses_player0_greedy_signature():
     state = _state_for_seed(1490090)
     assert opening_gate_rush_meta_agent(state, 0) == greedy_agent(state, 0)
@@ -194,11 +271,35 @@ def test_opening_gate_rush_meta_uses_player0_greedy_signature():
 def test_opening_gate_anti_meta_meta_uses_anti_meta_on_close_axis_ffa_opening():
     ffa_state = {
         "planets": [
-            {"id": 4, "owner": 0, "x": 98.8, "y": 56.2, "radius": 2.0, "ships": 10, "production": 1},
+            {
+                "id": 4,
+                "owner": 0,
+                "x": 98.8,
+                "y": 56.2,
+                "radius": 2.0,
+                "ships": 10,
+                "production": 1,
+            },
             {"id": 5, "owner": 1, "x": 1.2, "y": 56.2, "radius": 2.0, "ships": 10, "production": 1},
-            {"id": 6, "owner": 2, "x": 98.8, "y": 43.8, "radius": 2.0, "ships": 10, "production": 1},
+            {
+                "id": 6,
+                "owner": 2,
+                "x": 98.8,
+                "y": 43.8,
+                "radius": 2.0,
+                "ships": 10,
+                "production": 1,
+            },
             {"id": 7, "owner": 3, "x": 1.2, "y": 43.8, "radius": 2.0, "ships": 10, "production": 1},
-            {"id": 20, "owner": -1, "x": 82.5, "y": 65.1, "radius": 2.0, "ships": 19, "production": 2},
+            {
+                "id": 20,
+                "owner": -1,
+                "x": 82.5,
+                "y": 65.1,
+                "radius": 2.0,
+                "ships": 19,
+                "production": 2,
+            },
         ],
         "fleets": [],
         "step": 0,
