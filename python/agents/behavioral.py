@@ -171,6 +171,112 @@ def neutral_economy_greed_agent(state: dict[str, Any], player: int) -> list[list
     return moves
 
 
+def _local_strength(planets_: list[Any]) -> float:
+    return sum(float(planet_ships(planet)) + 7.0 * float(planet_production(planet)) for planet in planets_)
+
+
+def _neutral_frontier_score(state: dict[str, Any], source: Any, target: Any, player: int) -> float:
+    return (
+        19.0 * planet_production(target)
+        - 1.05 * planet_ships(target)
+        - 0.20 * distance(source, target)
+        - 0.60 * nearby_enemy_pressure(state, target, player)
+    )
+
+
+def _enemy_frontier_score(state: dict[str, Any], source: Any, target: Any, player: int) -> float:
+    return (
+        12.0 * planet_production(target)
+        + 0.25 * planet_ships(target)
+        - 0.18 * distance(source, target)
+        - 0.25 * nearby_enemy_pressure(state, source, player)
+    )
+
+
+def frontier_economy_agent(state: dict[str, Any], player: int) -> list[list[float]]:
+    """Expand when efficient, but switch surplus into pressure once the frontier is unsafe."""
+    own = own_planets(state, player)
+    if not own:
+        return []
+
+    neutrals = neutral_planets(state)
+    enemies = enemy_planets(state, player)
+    own_strength = _local_strength(own)
+    enemy_strength = _local_strength(enemies)
+
+    vulnerable = sorted(
+        own,
+        key=lambda planet: (
+            nearby_enemy_pressure(state, planet, player) - 0.06 * planet_ships(planet),
+            -planet_id(planet),
+        ),
+        reverse=True,
+    )
+    if vulnerable and nearby_enemy_pressure(state, vulnerable[0], player) > 2.5:
+        defensive_moves = risk_balanced_defense_agent(state, player)
+        if defensive_moves:
+            return defensive_moves[:MAX_MOVES]
+
+    moves: list[list[float]] = []
+    claimed: set[int] = set()
+    for source in sorted_sources(own, reserve=7):
+        if len(moves) >= MAX_MOVES:
+            break
+
+        neutral_candidates = [planet for planet in neutrals if planet_id(planet) not in claimed]
+        target: Any | None = None
+        target_kind = "neutral"
+        if neutral_candidates:
+            neutral_target = max(
+                neutral_candidates,
+                key=lambda planet: (_neutral_frontier_score(state, source, planet, player), -planet_id(planet)),
+            )
+            neutral_score = _neutral_frontier_score(state, source, neutral_target, player)
+        else:
+            neutral_target = None
+            neutral_score = -1e9
+
+        if enemies:
+            enemy_target = max(
+                enemies,
+                key=lambda planet: (_enemy_frontier_score(state, source, planet, player), -planet_id(planet)),
+            )
+            enemy_score = _enemy_frontier_score(state, source, enemy_target, player)
+        else:
+            enemy_target = None
+            enemy_score = -1e9
+
+        if neutral_target is not None and (
+            neutral_score >= enemy_score + 1.5 or own_strength <= enemy_strength + 18.0
+        ):
+            target = neutral_target
+            target_kind = "neutral"
+        elif enemy_target is not None:
+            target = enemy_target
+            target_kind = "enemy"
+        elif neutral_target is not None:
+            target = neutral_target
+            target_kind = "neutral"
+
+        if target is None:
+            continue
+
+        reserve = 7 + int(min(8.0, nearby_enemy_pressure(state, source, player)))
+        surplus = launchable_ships(source, reserve=reserve, fraction=0.78 if target_kind == "neutral" else 0.62)
+        if target_kind == "neutral":
+            ships = min(surplus, planet_ships(target) + 3)
+        else:
+            pressure_bonus = max(0, int((own_strength - enemy_strength) * 0.08))
+            ships = min(surplus, max(2, int(planet_ships(target) * 0.35) + pressure_bonus))
+        if ships < MIN_LAUNCH:
+            continue
+
+        moves.append(build_move(source, target, ships))
+        claimed.add(planet_id(target))
+
+    return moves
+
+
 def risk_balanced_defense_agent(state: dict[str, Any], player: int) -> list[list[float]]:
     """Reinforce exposed own planets, then use safe leftovers for nearby economy."""
     own = own_planets(state, player)
@@ -235,6 +341,7 @@ def leader_denial_agent(state: dict[str, Any], player: int) -> list[list[float]]
 BEHAVIORAL_POLICIES: dict[str, Policy] = {
     "enemy_pressure": enemy_pressure_agent,
     "neutral_economy_greed": neutral_economy_greed_agent,
+    "frontier_economy": frontier_economy_agent,
     "risk_balanced_defense": risk_balanced_defense_agent,
     "leader_denial": leader_denial_agent,
 }

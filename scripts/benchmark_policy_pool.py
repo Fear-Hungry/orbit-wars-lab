@@ -47,10 +47,8 @@ BASE_POLICIES: dict[str, Policy] = {
 
 def _load_policies() -> dict[str, Policy]:
     policies = dict(BASE_POLICIES)
-    try:
-        from python.agents.behavioral import BEHAVIORAL_POLICIES
-    except ImportError:
-        return policies
+    from python.agents.behavioral import BEHAVIORAL_POLICIES
+
     policies.update(BEHAVIORAL_POLICIES)
     return policies
 
@@ -90,10 +88,16 @@ def _run_match(
         for player, policy in enumerate(players):
             try:
                 moves = policy(state, player)
-            except Exception:
-                moves = []
+            except Exception as exc:
+                raise RuntimeError(
+                    f"policy {getattr(policy, '__name__', repr(policy))} failed "
+                    f"for player={player}, seed={seed}"
+                ) from exc
             if not isinstance(moves, list) or not _moves_are_legal(state, player, moves):
-                moves = []
+                raise ValueError(
+                    f"policy {getattr(policy, '__name__', repr(policy))} produced invalid moves "
+                    f"for player={player}, seed={seed}: {moves!r}"
+                )
             actions.append(moves)
         outcome = backend.step([actions])[0]
         state = backend.states()[0]

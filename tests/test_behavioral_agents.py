@@ -34,6 +34,7 @@ def test_behavioral_policy_mapping_smoke_returns_legal_moves_for_dict_state():
     assert set(BEHAVIORAL_POLICIES) == {
         "enemy_pressure",
         "neutral_economy_greed",
+        "frontier_economy",
         "risk_balanced_defense",
         "leader_denial",
     }
