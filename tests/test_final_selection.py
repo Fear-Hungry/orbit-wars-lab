@@ -35,7 +35,9 @@ def _write_manifest(path: Path, policies: list[str]) -> None:
     )
 
 
-def test_final_selection_uses_retained_seeds_worst_decile_and_exports_two_candidates(tmp_path: Path):
+def test_final_selection_uses_retained_seeds_worst_decile_and_exports_two_candidates(
+    tmp_path: Path,
+):
     manifest_path = tmp_path / "population.yaml"
     config_path = tmp_path / "final_selection.yaml"
     out_dir = tmp_path / "out"
@@ -77,8 +79,12 @@ def test_final_selection_uses_retained_seeds_worst_decile_and_exports_two_candid
         report["ranking"][0]["candidate_id"],
         report["ranking"][1]["candidate_id"],
     ]
-    assert set(report["meta_game"]["candidate_ids"]) == {item["candidate_id"] for item in report["ranking"]}
-    assert all(any(char.isdigit() for char in replay["analysis"]) for replay in report["bad_replays"])
+    assert set(report["meta_game"]["candidate_ids"]) == {
+        item["candidate_id"] for item in report["ranking"]
+    }
+    assert all(
+        any(char.isdigit() for char in replay["analysis"]) for replay in report["bad_replays"]
+    )
     assert (out_dir / "candidate_1_submission.py").exists()
     assert (out_dir / "candidate_2_submission.py").exists()
     saved_report = json.loads((out_dir / "final_selection_report.json").read_text(encoding="utf-8"))
@@ -140,7 +146,7 @@ def test_final_selection_worst_decile_and_trace_analysis_are_concrete():
     assert "zerou" in analysis
 
 
-def test_final_selection_requires_exactly_two_exports(tmp_path: Path):
+def test_final_selection_requires_positive_export_top_k(tmp_path: Path):
     config_path = tmp_path / "final_selection.yaml"
     config_path.write_text(
         yaml.safe_dump(
@@ -153,14 +159,14 @@ def test_final_selection_requires_exactly_two_exports(tmp_path: Path):
                     "episode_steps": 16,
                     "enable_comets": False,
                     "bad_replay_count": 1,
-                    "export_top_k": 1,
+                    "export_top_k": 0,
                 }
             }
         ),
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="export_top_k == 2"):
+    with pytest.raises(ValueError, match="export_top_k >= 1"):
         load_final_selection_config(config_path)
 
 
@@ -172,14 +178,34 @@ def test_final_selection_defaults_to_population_only_when_candidate_ids_are_empt
         yaml.safe_dump(
             {
                 "population": [
-                    {"id": "greedy_candidate", "kind": "heuristic", "policy": "greedy", "role": "league"},
-                    {"id": "defensive_candidate", "kind": "heuristic", "policy": "defensive", "role": "league"},
+                    {
+                        "id": "greedy_candidate",
+                        "kind": "heuristic",
+                        "policy": "greedy",
+                        "role": "league",
+                    },
+                    {
+                        "id": "defensive_candidate",
+                        "kind": "heuristic",
+                        "policy": "defensive",
+                        "role": "league",
+                    },
                 ],
                 "hall_of_fame": [
-                    {"id": "greedy_hof", "kind": "heuristic", "policy": "greedy", "role": "hall_of_fame"},
+                    {
+                        "id": "greedy_hof",
+                        "kind": "heuristic",
+                        "policy": "greedy",
+                        "role": "hall_of_fame",
+                    },
                 ],
                 "heuristics": [
-                    {"id": "weak_random_adversary", "kind": "heuristic", "policy": "weak_random", "role": "heuristic"},
+                    {
+                        "id": "weak_random_adversary",
+                        "kind": "heuristic",
+                        "policy": "weak_random",
+                        "role": "heuristic",
+                    },
                 ],
             }
         ),
@@ -210,7 +236,10 @@ def test_final_selection_defaults_to_population_only_when_candidate_ids_are_empt
     )
 
     assert report["summary"]["candidate_count"] == 2
-    assert {item["candidate_id"] for item in report["ranking"]} == {"greedy_candidate", "defensive_candidate"}
+    assert {item["candidate_id"] for item in report["ranking"]} == {
+        "greedy_candidate",
+        "defensive_candidate",
+    }
 
 
 def test_final_selection_exports_distinct_heuristic_candidates(tmp_path: Path):
@@ -247,11 +276,12 @@ def test_final_selection_exports_distinct_heuristic_candidates(tmp_path: Path):
     assert export_1 != export_2
 
 
-def test_final_selection_uses_dedicated_opening_gate_template(tmp_path: Path):
+def test_final_selection_single_export_removes_stale_second_candidate(tmp_path: Path):
     manifest_path = tmp_path / "population.yaml"
     config_path = tmp_path / "final_selection.yaml"
     out_dir = tmp_path / "out"
-    _write_manifest(manifest_path, ["opening_gate_rush_meta", "opening_gate_anti_meta_meta", "greedy"])
+    _write_manifest(manifest_path, ["greedy", "defensive", "rush"])
+
     config_path.write_text(
         yaml.safe_dump(
             {
@@ -264,7 +294,69 @@ def test_final_selection_uses_dedicated_opening_gate_template(tmp_path: Path):
                     "enable_comets": False,
                     "bad_replay_count": 1,
                     "export_top_k": 2,
-                    "candidate_ids": ["opening_gate_rush_meta_candidate", "opening_gate_anti_meta_meta_candidate"],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    run_final_selection(
+        load_population_manifest(manifest_path),
+        load_final_selection_config(config_path),
+        out_dir=out_dir,
+    )
+    assert (out_dir / "candidate_2_submission.py").exists()
+
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "final_selection": {
+                    "retained_seeds": [3],
+                    "games_per_pair": 1,
+                    "include_2p": True,
+                    "include_4p": False,
+                    "episode_steps": 16,
+                    "enable_comets": False,
+                    "bad_replay_count": 1,
+                    "export_top_k": 1,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    report = run_final_selection(
+        load_population_manifest(manifest_path),
+        load_final_selection_config(config_path),
+        out_dir=out_dir,
+    )
+
+    assert len(report["exports"]) == 1
+    assert (out_dir / "candidate_1_submission.py").exists()
+    assert not (out_dir / "candidate_2_submission.py").exists()
+
+
+def test_final_selection_uses_dedicated_opening_gate_template(tmp_path: Path):
+    manifest_path = tmp_path / "population.yaml"
+    config_path = tmp_path / "final_selection.yaml"
+    out_dir = tmp_path / "out"
+    _write_manifest(
+        manifest_path, ["opening_gate_rush_meta", "opening_gate_anti_meta_meta", "greedy"]
+    )
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "final_selection": {
+                    "retained_seeds": [3],
+                    "games_per_pair": 1,
+                    "include_2p": True,
+                    "include_4p": False,
+                    "episode_steps": 16,
+                    "enable_comets": False,
+                    "bad_replay_count": 1,
+                    "export_top_k": 2,
+                    "candidate_ids": [
+                        "opening_gate_rush_meta_candidate",
+                        "opening_gate_anti_meta_meta_candidate",
+                    ],
                 }
             }
         ),

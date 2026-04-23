@@ -4,7 +4,9 @@ import argparse
 import importlib.util
 import json
 from dataclasses import asdict, dataclass, field
+from functools import cache
 from itertools import combinations
+from math import hypot
 from pathlib import Path
 from statistics import fmean
 from time import perf_counter
@@ -14,6 +16,14 @@ import yaml
 from kaggle_environments import make
 from python.league.evaluation import AgentSpec, load_population_manifest
 from python.orbit_wars_gym.backend import RustBatchBackend, RustConfig
+from python.orbit_wars_gym.entities import (
+    planet_id,
+    planet_owner,
+    planet_production,
+    planet_ships,
+    planet_x,
+    planet_y,
+)
 from python.orbit_wars_gym.observation import to_official_observation
 from python.train.evaluate_population import _moves_are_legal, _normalized_margin, _policy_runtime
 from python.train.final_selection import (
@@ -24,10 +34,19 @@ from python.train.final_selection import (
 
 
 @dataclass(frozen=True)
+class LiveBaselineConfig:
+    name: str
+    submission_path: str
+    public_score: float | None = None
+    submitted_at: str | None = None
+
+
+@dataclass(frozen=True)
 class ObjectiveValidationConfig:
     max_crash_rate: float = 0.0
     max_timeout_rate: float = 0.0
     max_invalid_action_rate: float = 0.0
+    required_export_count: int = 1
     min_selection_win_rate: float = 0.25
     min_mean_score_margin: float = 0.0
     min_worst_decile_score_margin: float = -1.0
@@ -41,9 +60,23 @@ class ObjectiveValidationConfig:
     min_holdout_worst_decile_score_margin: float = -1.0
     min_holdout_per_opponent_win_rate: float = 0.0
     min_holdout_per_opponent_worst_decile_score_margin: float = -1.0
+    min_holdout_seed_stratum_win_rate: float = 0.0
+    min_holdout_seed_stratum_worst_decile_score_margin: float = -1.0
     max_holdout_position_win_rate_gap: float = 1.0
     max_holdout_position_mean_score_margin_gap: float = 2.0
     max_holdout_position_worst_decile_score_margin_gap: float = 2.0
+    shipping_blind_seeds: list[int] = field(default_factory=list)
+    require_shipping_blind_hall_of_fame: bool = False
+    min_shipping_blind_win_rate: float = 0.0
+    min_shipping_blind_mean_score_margin: float = -1.0
+    min_shipping_blind_worst_decile_score_margin: float = -1.0
+    min_shipping_blind_seed_stratum_win_rate: float = 0.0
+    min_shipping_blind_seed_stratum_worst_decile_score_margin: float = -1.0
+    require_live_baseline_challenge: bool = False
+    min_live_baseline_win_rate: float = 0.0
+    min_live_baseline_mean_score_margin: float = -1.0
+    min_live_baseline_worst_decile_score_margin: float = -1.0
+    live_baseline: LiveBaselineConfig | None = None
     require_2p_self_play: bool = True
     require_4p_self_play: bool = True
 
@@ -53,8 +86,51 @@ def _parse_seed_list(raw: Any, *, field_name: str) -> list[int]:
         return []
     seeds = list(range(int(raw))) if isinstance(raw, int) else [int(seed) for seed in raw]
     if not seeds:
-        raise ValueError(f"objective validation config requires non-empty `{field_name}` when provided")
+        raise ValueError(
+            f"objective validation config requires non-empty `{field_name}` when provided"
+        )
     return seeds
+
+
+def _resolve_live_baseline_path(raw_path: str, *, config_path: str | Path) -> str:
+    candidate = Path(raw_path)
+    if candidate.is_absolute():
+        return str(candidate)
+    cwd_path = Path.cwd() / candidate
+    if cwd_path.exists():
+        return str(cwd_path)
+    return str((Path(config_path).resolve().parent.parent / candidate).resolve())
+
+
+def _parse_live_baseline(raw: Any, *, config_path: str | Path) -> LiveBaselineConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("objective validation config `live_baseline` must be a mapping")
+    name = str(raw.get("name", "")).strip()
+    submission_path = str(raw.get("submission_path", "")).strip()
+    if not name:
+        raise ValueError(
+            "objective validation config `live_baseline.name` is required when live_baseline is set"
+        )
+    if not submission_path:
+        raise ValueError(
+            "objective validation config `live_baseline.submission_path` is required when live_baseline is set"
+        )
+    resolved_path = _resolve_live_baseline_path(submission_path, config_path=config_path)
+    return LiveBaselineConfig(
+        name=name,
+        submission_path=resolved_path,
+        public_score=float(raw["public_score"]) if raw.get("public_score") is not None else None,
+        submitted_at=str(raw["submitted_at"]) if raw.get("submitted_at") is not None else None,
+    )
+
+
+def _validate_required_export_count(raw: Any) -> int:
+    count = int(raw)
+    if count < 1:
+        raise ValueError("objective validation config requires required_export_count >= 1")
+    return count
 
 
 def _same_agent_identity(left: AgentSpec, right: AgentSpec) -> bool:
@@ -74,10 +150,13 @@ def load_objective_validation_config(path: str | Path) -> ObjectiveValidationCon
         max_crash_rate=float(cfg.get("max_crash_rate", 0.0)),
         max_timeout_rate=float(cfg.get("max_timeout_rate", 0.0)),
         max_invalid_action_rate=float(cfg.get("max_invalid_action_rate", 0.0)),
+        required_export_count=_validate_required_export_count(cfg.get("required_export_count", 1)),
         min_selection_win_rate=float(cfg.get("min_selection_win_rate", 0.25)),
         min_mean_score_margin=float(cfg.get("min_mean_score_margin", 0.0)),
         min_worst_decile_score_margin=float(cfg.get("min_worst_decile_score_margin", -1.0)),
-        max_selection_holdout_win_rate_gap=float(cfg.get("max_selection_holdout_win_rate_gap", 1.0)),
+        max_selection_holdout_win_rate_gap=float(
+            cfg.get("max_selection_holdout_win_rate_gap", 1.0)
+        ),
         max_selection_holdout_mean_score_margin_gap=float(
             cfg.get("max_selection_holdout_mean_score_margin_gap", 2.0)
         ),
@@ -88,19 +167,202 @@ def load_objective_validation_config(path: str | Path) -> ObjectiveValidationCon
         require_holdout_hall_of_fame=bool(cfg.get("require_holdout_hall_of_fame", True)),
         min_holdout_win_rate=float(cfg.get("min_holdout_win_rate", 0.5)),
         min_holdout_mean_score_margin=float(cfg.get("min_holdout_mean_score_margin", 0.0)),
-        min_holdout_worst_decile_score_margin=float(cfg.get("min_holdout_worst_decile_score_margin", -1.0)),
+        min_holdout_worst_decile_score_margin=float(
+            cfg.get("min_holdout_worst_decile_score_margin", -1.0)
+        ),
         min_holdout_per_opponent_win_rate=float(cfg.get("min_holdout_per_opponent_win_rate", 0.0)),
         min_holdout_per_opponent_worst_decile_score_margin=float(
             cfg.get("min_holdout_per_opponent_worst_decile_score_margin", -1.0)
         ),
+        min_holdout_seed_stratum_win_rate=float(cfg.get("min_holdout_seed_stratum_win_rate", 0.0)),
+        min_holdout_seed_stratum_worst_decile_score_margin=float(
+            cfg.get("min_holdout_seed_stratum_worst_decile_score_margin", -1.0)
+        ),
         max_holdout_position_win_rate_gap=float(cfg.get("max_holdout_position_win_rate_gap", 1.0)),
-        max_holdout_position_mean_score_margin_gap=float(cfg.get("max_holdout_position_mean_score_margin_gap", 2.0)),
+        max_holdout_position_mean_score_margin_gap=float(
+            cfg.get("max_holdout_position_mean_score_margin_gap", 2.0)
+        ),
         max_holdout_position_worst_decile_score_margin_gap=float(
             cfg.get("max_holdout_position_worst_decile_score_margin_gap", 2.0)
         ),
+        shipping_blind_seeds=_parse_seed_list(
+            cfg.get("shipping_blind_seeds"), field_name="shipping_blind_seeds"
+        ),
+        require_shipping_blind_hall_of_fame=bool(
+            cfg.get("require_shipping_blind_hall_of_fame", False)
+        ),
+        min_shipping_blind_win_rate=float(cfg.get("min_shipping_blind_win_rate", 0.0)),
+        min_shipping_blind_mean_score_margin=float(
+            cfg.get("min_shipping_blind_mean_score_margin", -1.0)
+        ),
+        min_shipping_blind_worst_decile_score_margin=float(
+            cfg.get("min_shipping_blind_worst_decile_score_margin", -1.0)
+        ),
+        min_shipping_blind_seed_stratum_win_rate=float(
+            cfg.get("min_shipping_blind_seed_stratum_win_rate", 0.0)
+        ),
+        min_shipping_blind_seed_stratum_worst_decile_score_margin=float(
+            cfg.get("min_shipping_blind_seed_stratum_worst_decile_score_margin", -1.0)
+        ),
+        require_live_baseline_challenge=bool(cfg.get("require_live_baseline_challenge", False)),
+        min_live_baseline_win_rate=float(cfg.get("min_live_baseline_win_rate", 0.0)),
+        min_live_baseline_mean_score_margin=float(
+            cfg.get("min_live_baseline_mean_score_margin", -1.0)
+        ),
+        min_live_baseline_worst_decile_score_margin=float(
+            cfg.get("min_live_baseline_worst_decile_score_margin", -1.0)
+        ),
+        live_baseline=_parse_live_baseline(cfg.get("live_baseline"), config_path=path),
         require_2p_self_play=bool(cfg.get("require_2p_self_play", True)),
         require_4p_self_play=bool(cfg.get("require_4p_self_play", True)),
     )
+
+
+def _ensure_seed_sets_are_disjoint(
+    selection_cfg: FinalSelectionConfig,
+    validation_cfg: ObjectiveValidationConfig,
+    holdout_seeds: list[int],
+) -> None:
+    retained = set(selection_cfg.retained_seeds)
+    if validation_cfg.holdout_seeds and retained.intersection(holdout_seeds):
+        overlap = sorted(retained.intersection(holdout_seeds))
+        raise ValueError(
+            f"objective validation requires holdout_seeds disjoint from retained_seeds: overlap={overlap}"
+        )
+    if validation_cfg.shipping_blind_seeds:
+        blind = set(validation_cfg.shipping_blind_seeds)
+        overlap_retained = sorted(retained.intersection(blind))
+        overlap_holdout = sorted(set(holdout_seeds).intersection(blind))
+        if overlap_retained:
+            raise ValueError(
+                "objective validation requires shipping_blind_seeds disjoint from retained_seeds: "
+                f"overlap={overlap_retained}"
+            )
+        if overlap_holdout:
+            raise ValueError(
+                "objective validation requires shipping_blind_seeds disjoint from holdout_seeds: "
+                f"overlap={overlap_holdout}"
+            )
+
+
+def _resolve_shipping_blind_seeds(
+    validation_cfg: ObjectiveValidationConfig,
+) -> tuple[list[int], str]:
+    if validation_cfg.shipping_blind_seeds:
+        return list(
+            validation_cfg.shipping_blind_seeds
+        ), "objective_validation.shipping_blind_seeds"
+    return [], "objective_validation.shipping_blind_seeds"
+
+
+def _distance(left: tuple[float, float], right: tuple[float, float]) -> float:
+    return hypot(left[0] - right[0], left[1] - right[1])
+
+
+def _nearest_neutral(home: Any, neutrals: list[Any]) -> Any | None:
+    if not neutrals:
+        return None
+    home_xy = (planet_x(home), planet_y(home))
+    return min(
+        neutrals, key=lambda neutral: _distance(home_xy, (planet_x(neutral), planet_y(neutral)))
+    )
+
+
+def _has_backup_low_cost_neutral(
+    home: Any, neutrals: list[Any], *, exclude_id: int | None = None
+) -> bool:
+    home_xy = (planet_x(home), planet_y(home))
+    return any(
+        planet_id(neutral) != exclude_id
+        and _distance(home_xy, (planet_x(neutral), planet_y(neutral))) <= 26.0
+        and planet_ships(neutral) <= 10
+        and planet_production(neutral) <= 2
+        for neutral in neutrals
+    )
+
+
+@cache
+def _seed_archetype(seed: int, episode_steps: int, enable_comets: bool) -> dict[str, Any]:
+    backend = RustBatchBackend(
+        num_envs=1,
+        num_players=2,
+        seed=seed,
+        config=RustConfig(episode_steps=episode_steps, enable_comets=enable_comets),
+    )
+    state = backend.reset(seed)[0]
+    planets = state.get("planets", [])
+    own = [planet for planet in planets if planet_owner(planet) == 0]
+    neutrals = [planet for planet in planets if planet_owner(planet) == -1]
+    angular_velocity = float(state.get("angular_velocity", 0.0))
+    if not own or not neutrals:
+        return {
+            "seed": int(seed),
+            "archetype": "unclassified",
+            "angular_velocity": angular_velocity,
+            "nearest_distance": None,
+            "nearest_ships": None,
+            "nearest_production": None,
+            "has_backup_low_cost_neutral": False,
+        }
+
+    home = own[0]
+    nearest = _nearest_neutral(home, neutrals)
+    if nearest is None:
+        return {
+            "seed": int(seed),
+            "archetype": "unclassified",
+            "angular_velocity": angular_velocity,
+            "nearest_distance": None,
+            "nearest_ships": None,
+            "nearest_production": None,
+            "has_backup_low_cost_neutral": False,
+        }
+
+    nearest_distance = _distance(
+        (planet_x(home), planet_y(home)), (planet_x(nearest), planet_y(nearest))
+    )
+    nearest_ships = planet_ships(nearest)
+    nearest_production = planet_production(nearest)
+    has_backup = _has_backup_low_cost_neutral(home, neutrals, exclude_id=planet_id(nearest))
+
+    if angular_velocity < 0.038:
+        angular_band = "low_spin"
+    elif angular_velocity <= 0.042:
+        angular_band = "mid_spin"
+    else:
+        angular_band = "high_spin"
+
+    if nearest_ships <= 10 and nearest_production <= 2 and nearest_distance >= 16.0:
+        neutral_band = "cheap_far_clustered" if has_backup else "cheap_far_sparse"
+    elif nearest_ships <= 10 and nearest_production <= 2:
+        neutral_band = "cheap_near_clustered" if has_backup else "cheap_near_isolated"
+    elif nearest_ships >= 25 and nearest_production <= 1:
+        neutral_band = "heavy_low_prod_close" if nearest_distance <= 14.5 else "heavy_low_prod_far"
+    elif nearest_ships >= 20 and nearest_production >= 4:
+        neutral_band = "rich_heavy_close" if nearest_distance <= 15.0 else "rich_heavy_far"
+    elif nearest_production >= 4 and nearest_ships <= 12:
+        neutral_band = "rich_cheap_close" if nearest_distance <= 13.5 else "rich_cheap_far"
+    else:
+        neutral_band = "mixed_opening"
+
+    return {
+        "seed": int(seed),
+        "archetype": f"{angular_band}:{neutral_band}",
+        "angular_velocity": angular_velocity,
+        "nearest_distance": nearest_distance,
+        "nearest_ships": nearest_ships,
+        "nearest_production": nearest_production,
+        "has_backup_low_cost_neutral": has_backup,
+    }
+
+
+def _seed_archetype_lookup(
+    seeds: list[int], cfg: FinalSelectionConfig
+) -> dict[str, dict[str, Any]]:
+    return {
+        str(seed): _seed_archetype(seed, cfg.episode_steps, cfg.enable_comets)
+        for seed in sorted({int(seed) for seed in seeds})
+    }
 
 
 def _load_agent_callable(path: Path):
@@ -144,7 +406,9 @@ def _export_runtime_validation(
             num_envs=1,
             num_players=num_players,
             seed=seed,
-            config=RustConfig(episode_steps=episode_steps, enable_comets=enable_comets, act_timeout=act_timeout),
+            config=RustConfig(
+                episode_steps=episode_steps, enable_comets=enable_comets, act_timeout=act_timeout
+            ),
         )
         state = backend.reset(seed)[0]
         games += 1
@@ -226,7 +490,9 @@ def _run_export_match(
             player_specs.append(None)
         else:
             player_specs.append(next(opponents_iter))
-    opponent_runtime = {idx: _policy_runtime(spec) for idx, spec in enumerate(player_specs) if spec is not None}
+    opponent_runtime = {
+        idx: _policy_runtime(spec) for idx, spec in enumerate(player_specs) if spec is not None
+    }
     backend = RustBatchBackend(
         num_envs=1,
         num_players=num_players,
@@ -305,6 +571,21 @@ def _summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _seed_strata_summary(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        if record["mode"] != "2p":
+            continue
+        archetype = str(record.get("seed_archetype", "unclassified"))
+        grouped.setdefault(archetype, []).append(record)
+    summary: dict[str, dict[str, Any]] = {}
+    for archetype, archetype_records in sorted(grouped.items()):
+        metrics = _summarize_records(archetype_records)
+        metrics["seeds"] = sorted({int(record["seed"]) for record in archetype_records})
+        summary[archetype] = metrics
+    return summary
+
+
 def _per_opponent_summary(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for record in records:
@@ -322,7 +603,9 @@ def _mode_summary(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for record in records:
         grouped.setdefault(str(record["mode"]), []).append(record)
-    return {mode: _summarize_records(mode_records) for mode, mode_records in sorted(grouped.items())}
+    return {
+        mode: _summarize_records(mode_records) for mode, mode_records in sorted(grouped.items())
+    }
 
 
 def _two_player_position_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -346,7 +629,8 @@ def _two_player_position_summary(records: list[dict[str, Any]]) -> dict[str, Any
                 float(player_0["mean_score_margin"]) - float(player_1["mean_score_margin"])
             ),
             "worst_decile_score_margin_gap": abs(
-                float(player_0["worst_decile_score_margin"]) - float(player_1["worst_decile_score_margin"])
+                float(player_0["worst_decile_score_margin"])
+                - float(player_1["worst_decile_score_margin"])
             ),
         }
     return {
@@ -376,8 +660,10 @@ def _holdout_hall_of_fame_validation(
         }
 
     records: list[dict[str, Any]] = []
+    seed_archetypes = _seed_archetype_lookup(holdout_seeds, cfg)
 
     for seed in holdout_seeds:
+        seed_archetype = seed_archetypes[str(seed)]["archetype"]
         for opponent in opponents:
             for export_position in (0, 1):
                 scores = _run_export_match(
@@ -396,6 +682,7 @@ def _holdout_hall_of_fame_validation(
                         "opponents": [opponent.id],
                         "scores": scores,
                         "normalized_margin": _normalized_margin(scores, export_position),
+                        "seed_archetype": seed_archetype,
                     }
                 )
 
@@ -417,6 +704,7 @@ def _holdout_hall_of_fame_validation(
                         "opponents": [spec.id for spec in lobby],
                         "scores": scores,
                         "normalized_margin": _normalized_margin(scores, 0),
+                        "seed_archetype": seed_archetype,
                     }
                 )
 
@@ -430,14 +718,122 @@ def _holdout_hall_of_fame_validation(
         **overall_summary,
         "mode_summary": _mode_summary(records),
         "per_opponent_2p": per_opponent_2p,
+        "seed_archetypes": seed_archetypes,
+        "seed_strata_2p": _seed_strata_summary(records),
         "worst_matchup_2p": {
-            "min_win_rate": min((summary["win_rate"] for summary in per_opponent_2p.values()), default=0.0),
+            "min_win_rate": min(
+                (summary["win_rate"] for summary in per_opponent_2p.values()), default=0.0
+            ),
             "min_worst_decile_score_margin": min(
                 (summary["worst_decile_score_margin"] for summary in per_opponent_2p.values()),
                 default=0.0,
             ),
         },
         "two_player_position_summary": two_player_position_summary,
+        "records": records,
+    }
+
+
+def _run_submission_head_to_head_match(
+    challenger_path: Path,
+    baseline_path: Path,
+    *,
+    seed: int,
+    episode_steps: int,
+    enable_comets: bool,
+    challenger_position: int,
+) -> list[float]:
+    challenger_agent = _load_agent_callable(challenger_path)
+    baseline_agent = _load_agent_callable(baseline_path)
+    if challenger_position not in (0, 1):
+        raise ValueError(f"challenger_position must be 0 or 1, got {challenger_position}")
+    players = [baseline_agent, baseline_agent]
+    players[challenger_position] = challenger_agent
+    backend = RustBatchBackend(
+        num_envs=1,
+        num_players=2,
+        seed=seed,
+        config=RustConfig(episode_steps=episode_steps, enable_comets=enable_comets),
+    )
+    state = backend.reset(seed)[0]
+    while True:
+        actions = [[] for _ in range(2)]
+        for idx, agent in enumerate(players):
+            obs = to_official_observation(state, player=idx)
+            role = "challenger" if idx == challenger_position else "baseline"
+            try:
+                moves = agent(obs)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"live baseline challenge crashed: challenger={challenger_path} baseline={baseline_path} "
+                    f"seed={seed} player={idx} role={role}"
+                ) from exc
+            if not isinstance(moves, list) or not _moves_are_legal(state, idx, moves):
+                raise ValueError(
+                    "live baseline challenge returned invalid moves: "
+                    f"challenger={challenger_path} baseline={baseline_path} seed={seed} "
+                    f"player={idx} role={role} moves={moves!r}"
+                )
+            actions[idx] = moves
+        outcome = backend.step([actions])[0]
+        state = backend.states()[0]
+        if outcome["done"]:
+            return [float(score) for score in outcome["scores"]]
+
+
+def _live_baseline_challenge_validation(
+    export_path: Path,
+    *,
+    baseline_cfg: LiveBaselineConfig | None,
+    shipping_blind_seeds: list[int],
+    cfg: FinalSelectionConfig,
+) -> dict[str, Any]:
+    if baseline_cfg is None:
+        return {"enabled": False, "reason": "live_baseline_missing", "games": 0}
+    if not shipping_blind_seeds:
+        return {"enabled": False, "reason": "shipping_blind_seeds_empty", "games": 0}
+    baseline_path = Path(baseline_cfg.submission_path)
+    if not baseline_path.exists():
+        raise FileNotFoundError(f"live baseline submission not found: {baseline_path}")
+
+    records: list[dict[str, Any]] = []
+    seed_archetypes = _seed_archetype_lookup(shipping_blind_seeds, cfg)
+    for seed in shipping_blind_seeds:
+        seed_archetype = seed_archetypes[str(seed)]["archetype"]
+        for challenger_position in (0, 1):
+            scores = _run_submission_head_to_head_match(
+                export_path,
+                baseline_path,
+                seed=seed,
+                episode_steps=cfg.episode_steps,
+                enable_comets=cfg.enable_comets,
+                challenger_position=challenger_position,
+            )
+            records.append(
+                {
+                    "mode": "2p",
+                    "seed": seed,
+                    "export_position": challenger_position,
+                    "opponents": [baseline_cfg.name],
+                    "scores": scores,
+                    "normalized_margin": _normalized_margin(scores, challenger_position),
+                    "seed_archetype": seed_archetype,
+                }
+            )
+
+    overall_summary = _summarize_records(records)
+    return {
+        "enabled": True,
+        "baseline_name": baseline_cfg.name,
+        "baseline_submission_path": str(baseline_path),
+        "baseline_public_score": baseline_cfg.public_score,
+        "baseline_submitted_at": baseline_cfg.submitted_at,
+        "shipping_blind_seeds": list(shipping_blind_seeds),
+        **overall_summary,
+        "mode_summary": _mode_summary(records),
+        "seed_archetypes": seed_archetypes,
+        "seed_strata_2p": _seed_strata_summary(records),
+        "two_player_position_summary": _two_player_position_summary(records),
         "records": records,
     }
 
@@ -452,16 +848,24 @@ def run_objective_validation(
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     holdout_seeds, holdout_seed_source = _resolve_holdout_seeds(selection_cfg, validation_cfg)
+    shipping_blind_seeds, shipping_blind_seed_source = _resolve_shipping_blind_seeds(validation_cfg)
+    _ensure_seed_sets_are_disjoint(selection_cfg, validation_cfg, holdout_seeds)
 
     selection_report = run_final_selection(manifest, selection_cfg, out_dir=out_path)
     export_ids = [item["candidate_id"] for item in selection_report["exports"]]
-    exported_rankings = {item["candidate_id"]: item for item in selection_report["ranking"] if item["candidate_id"] in export_ids}
+    exported_rankings = {
+        item["candidate_id"]: item
+        for item in selection_report["ranking"]
+        if item["candidate_id"] in export_ids
+    }
 
     candidate_checks = []
     for rank, export in enumerate(selection_report["exports"], start=1):
         candidate_id = export["candidate_id"]
         ranking = exported_rankings[candidate_id]
-        candidate_spec = next(spec for group in manifest.values() for spec in group if spec.id == candidate_id)
+        candidate_spec = next(
+            spec for group in manifest.values() for spec in group if spec.id == candidate_id
+        )
         export_path = out_path / f"candidate_{rank}_submission.py"
         runtime_validations = []
         if validation_cfg.require_2p_self_play:
@@ -487,20 +891,26 @@ def run_objective_validation(
         checks = {
             "candidate_id": candidate_id,
             "rank": rank,
-            "selection_win_rate_ok": float(ranking["win_rate"]) >= validation_cfg.min_selection_win_rate,
-            "mean_score_margin_ok": float(ranking["mean_score_margin"]) >= validation_cfg.min_mean_score_margin,
-            "worst_decile_ok": float(ranking["worst_decile_score_margin"]) >= validation_cfg.min_worst_decile_score_margin,
+            "selection_win_rate_ok": float(ranking["win_rate"])
+            >= validation_cfg.min_selection_win_rate,
+            "mean_score_margin_ok": float(ranking["mean_score_margin"])
+            >= validation_cfg.min_mean_score_margin,
+            "worst_decile_ok": float(ranking["worst_decile_score_margin"])
+            >= validation_cfg.min_worst_decile_score_margin,
             "ranking": ranking,
             "runtime_validations": runtime_validations,
         }
         checks["crash_rate_ok"] = all(
-            validation["crash_rate"] <= validation_cfg.max_crash_rate for validation in runtime_validations
+            validation["crash_rate"] <= validation_cfg.max_crash_rate
+            for validation in runtime_validations
         )
         checks["timeout_rate_ok"] = all(
-            validation["timeout_rate"] <= validation_cfg.max_timeout_rate for validation in runtime_validations
+            validation["timeout_rate"] <= validation_cfg.max_timeout_rate
+            for validation in runtime_validations
         )
         checks["invalid_action_rate_ok"] = all(
-            validation["invalid_action_rate"] <= validation_cfg.max_invalid_action_rate for validation in runtime_validations
+            validation["invalid_action_rate"] <= validation_cfg.max_invalid_action_rate
+            for validation in runtime_validations
         )
         checks["self_play"] = []
         if validation_cfg.require_2p_self_play:
@@ -520,7 +930,8 @@ def run_objective_validation(
         if validation_cfg.require_holdout_hall_of_fame:
             checks["holdout_hall_of_fame_ok"] = bool(holdout.get("enabled")) and (
                 float(holdout.get("win_rate", 0.0)) >= validation_cfg.min_holdout_win_rate
-                and float(holdout.get("mean_score_margin", -1.0)) >= validation_cfg.min_holdout_mean_score_margin
+                and float(holdout.get("mean_score_margin", -1.0))
+                >= validation_cfg.min_holdout_mean_score_margin
                 and float(holdout.get("worst_decile_score_margin", -1.0))
                 >= validation_cfg.min_holdout_worst_decile_score_margin
             )
@@ -529,8 +940,11 @@ def run_objective_validation(
         checks["holdout_vs_hall_of_fame_ok"] = checks["holdout_hall_of_fame_ok"]
         holdout_enabled = bool(holdout.get("enabled"))
         checks["selection_vs_holdout_gap"] = {
-            "win_rate_gap": float(ranking["win_rate"]) - float(holdout.get("win_rate", 0.0)) if holdout_enabled else None,
-            "mean_score_margin_gap": float(ranking["mean_score_margin"]) - float(holdout.get("mean_score_margin", 0.0))
+            "win_rate_gap": float(ranking["win_rate"]) - float(holdout.get("win_rate", 0.0))
+            if holdout_enabled
+            else None,
+            "mean_score_margin_gap": float(ranking["mean_score_margin"])
+            - float(holdout.get("mean_score_margin", 0.0))
             if holdout_enabled
             else None,
             "worst_decile_score_margin_gap": float(ranking["worst_decile_score_margin"])
@@ -539,26 +953,102 @@ def run_objective_validation(
             else None,
         }
         checks["generalization_gap_ok"] = holdout_enabled and (
-            float(checks["selection_vs_holdout_gap"]["win_rate_gap"]) <= validation_cfg.max_selection_holdout_win_rate_gap
+            float(checks["selection_vs_holdout_gap"]["win_rate_gap"])
+            <= validation_cfg.max_selection_holdout_win_rate_gap
             and float(checks["selection_vs_holdout_gap"]["mean_score_margin_gap"])
             <= validation_cfg.max_selection_holdout_mean_score_margin_gap
             and float(checks["selection_vs_holdout_gap"]["worst_decile_score_margin_gap"])
             <= validation_cfg.max_selection_holdout_worst_decile_score_margin_gap
         )
         per_opponent_2p = holdout.get("per_opponent_2p", {})
-        checks["per_opponent_holdout_ok"] = holdout_enabled and bool(per_opponent_2p) and all(
-            float(summary["win_rate"]) >= validation_cfg.min_holdout_per_opponent_win_rate
-            and float(summary["worst_decile_score_margin"])
-            >= validation_cfg.min_holdout_per_opponent_worst_decile_score_margin
-            for summary in per_opponent_2p.values()
+        checks["per_opponent_holdout_ok"] = (
+            holdout_enabled
+            and bool(per_opponent_2p)
+            and all(
+                float(summary["win_rate"]) >= validation_cfg.min_holdout_per_opponent_win_rate
+                and float(summary["worst_decile_score_margin"])
+                >= validation_cfg.min_holdout_per_opponent_worst_decile_score_margin
+                for summary in per_opponent_2p.values()
+            )
+        )
+        holdout_seed_strata = holdout.get("seed_strata_2p", {})
+        checks["holdout_seed_strata_ok"] = (
+            holdout_enabled
+            and bool(holdout_seed_strata)
+            and all(
+                float(summary["win_rate"]) >= validation_cfg.min_holdout_seed_stratum_win_rate
+                and float(summary["worst_decile_score_margin"])
+                >= validation_cfg.min_holdout_seed_stratum_worst_decile_score_margin
+                for summary in holdout_seed_strata.values()
+            )
         )
         position_gaps = holdout.get("two_player_position_summary", {}).get("gaps", {})
-        checks["position_balance_ok"] = holdout_enabled and bool(position_gaps) and (
-            float(position_gaps["win_rate_gap"]) <= validation_cfg.max_holdout_position_win_rate_gap
-            and float(position_gaps["mean_score_margin_gap"]) <= validation_cfg.max_holdout_position_mean_score_margin_gap
-            and float(position_gaps["worst_decile_score_margin_gap"])
-            <= validation_cfg.max_holdout_position_worst_decile_score_margin_gap
+        checks["position_balance_ok"] = (
+            holdout_enabled
+            and bool(position_gaps)
+            and (
+                float(position_gaps["win_rate_gap"])
+                <= validation_cfg.max_holdout_position_win_rate_gap
+                and float(position_gaps["mean_score_margin_gap"])
+                <= validation_cfg.max_holdout_position_mean_score_margin_gap
+                and float(position_gaps["worst_decile_score_margin_gap"])
+                <= validation_cfg.max_holdout_position_worst_decile_score_margin_gap
+            )
         )
+        checks["shipping_blind_validation"] = _holdout_hall_of_fame_validation(
+            export_path,
+            candidate_spec=candidate_spec,
+            hall_of_fame=manifest["hall_of_fame"],
+            holdout_seeds=shipping_blind_seeds,
+            cfg=selection_cfg,
+        )
+        shipping_blind = checks["shipping_blind_validation"]
+        shipping_blind_enabled = bool(shipping_blind.get("enabled"))
+        if validation_cfg.require_shipping_blind_hall_of_fame:
+            checks["shipping_blind_hall_of_fame_ok"] = shipping_blind_enabled and (
+                float(shipping_blind.get("win_rate", 0.0))
+                >= validation_cfg.min_shipping_blind_win_rate
+                and float(shipping_blind.get("mean_score_margin", -1.0))
+                >= validation_cfg.min_shipping_blind_mean_score_margin
+                and float(shipping_blind.get("worst_decile_score_margin", -1.0))
+                >= validation_cfg.min_shipping_blind_worst_decile_score_margin
+            )
+        else:
+            checks["shipping_blind_hall_of_fame_ok"] = True
+        shipping_blind_seed_strata = shipping_blind.get("seed_strata_2p", {})
+        checks["shipping_blind_seed_strata_ok"] = (
+            (
+                shipping_blind_enabled
+                and bool(shipping_blind_seed_strata)
+                and all(
+                    float(summary["win_rate"])
+                    >= validation_cfg.min_shipping_blind_seed_stratum_win_rate
+                    and float(summary["worst_decile_score_margin"])
+                    >= validation_cfg.min_shipping_blind_seed_stratum_worst_decile_score_margin
+                    for summary in shipping_blind_seed_strata.values()
+                )
+            )
+            if validation_cfg.require_shipping_blind_hall_of_fame
+            else True
+        )
+        checks["live_baseline_challenge"] = _live_baseline_challenge_validation(
+            export_path,
+            baseline_cfg=validation_cfg.live_baseline,
+            shipping_blind_seeds=shipping_blind_seeds,
+            cfg=selection_cfg,
+        )
+        live_baseline = checks["live_baseline_challenge"]
+        if validation_cfg.require_live_baseline_challenge:
+            checks["live_baseline_challenge_ok"] = bool(live_baseline.get("enabled")) and (
+                float(live_baseline.get("win_rate", 0.0))
+                >= validation_cfg.min_live_baseline_win_rate
+                and float(live_baseline.get("mean_score_margin", -1.0))
+                >= validation_cfg.min_live_baseline_mean_score_margin
+                and float(live_baseline.get("worst_decile_score_margin", -1.0))
+                >= validation_cfg.min_live_baseline_worst_decile_score_margin
+            )
+        else:
+            checks["live_baseline_challenge_ok"] = True
         checks["passed"] = all(
             checks[key]
             for key in (
@@ -572,19 +1062,32 @@ def run_objective_validation(
                 "holdout_hall_of_fame_ok",
                 "generalization_gap_ok",
                 "per_opponent_holdout_ok",
+                "holdout_seed_strata_ok",
                 "position_balance_ok",
+                "shipping_blind_hall_of_fame_ok",
+                "shipping_blind_seed_strata_ok",
+                "live_baseline_challenge_ok",
             )
         )
         candidate_checks.append(checks)
 
     report = {
-        "objective_ready": len(export_ids) == 2 and all(item["passed"] for item in candidate_checks),
+        "objective_ready": len(export_ids) >= validation_cfg.required_export_count
+        and all(item["passed"] for item in candidate_checks),
         "selection_summary": selection_report["summary"],
         "holdout_summary": {
             "seeds": holdout_seeds,
             "seed_source": holdout_seed_source,
             "hall_of_fame_size": len(manifest["hall_of_fame"]),
         },
+        "shipping_blind_summary": {
+            "seeds": shipping_blind_seeds,
+            "seed_source": shipping_blind_seed_source,
+            "hall_of_fame_size": len(manifest["hall_of_fame"]),
+        },
+        "baseline_live_reference": asdict(validation_cfg.live_baseline)
+        if validation_cfg.live_baseline is not None
+        else None,
         "criteria": asdict(validation_cfg),
         "exports": selection_report["exports"],
         "candidate_checks": candidate_checks,

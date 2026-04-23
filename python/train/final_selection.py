@@ -15,9 +15,11 @@ from python.orbit_wars_gym.backend import RustBatchBackend, RustConfig
 from python.train.evaluate_population import _moves_are_legal, _normalized_margin, _policy_runtime
 from scripts.export_submission import render_submission
 
-FINAL_EXPORT_TOP_K = 2
+DEFAULT_EXPORT_TOP_K = 2
 DEDICATED_HEURISTIC_TEMPLATES = {
-    "opening_gate_anti_meta_meta": Path("python/submission/opening_gate_anti_meta_meta_template.py"),
+    "opening_gate_anti_meta_meta": Path(
+        "python/submission/opening_gate_anti_meta_meta_template.py"
+    ),
     "opening_gate_meta": Path("python/submission/opening_gate_meta_template.py"),
     "opening_gate_rush_meta": Path("python/submission/opening_gate_rush_meta_template.py"),
 }
@@ -32,7 +34,7 @@ class FinalSelectionConfig:
     episode_steps: int = 500
     enable_comets: bool = True
     bad_replay_count: int = 8
-    export_top_k: int = FINAL_EXPORT_TOP_K
+    export_top_k: int = DEFAULT_EXPORT_TOP_K
     candidate_ids: tuple[str, ...] = ()
 
 
@@ -42,9 +44,9 @@ def load_final_selection_config(path: str | Path) -> FinalSelectionConfig:
     retained_seeds = [int(seed) for seed in cfg.get("retained_seeds", [])]
     if not retained_seeds:
         raise ValueError("final selection config requires non-empty `retained_seeds`")
-    export_top_k = int(cfg.get("export_top_k", FINAL_EXPORT_TOP_K))
-    if export_top_k != FINAL_EXPORT_TOP_K:
-        raise ValueError(f"final selection requires export_top_k == {FINAL_EXPORT_TOP_K}")
+    export_top_k = int(cfg.get("export_top_k", DEFAULT_EXPORT_TOP_K))
+    if export_top_k < 1:
+        raise ValueError("final selection requires export_top_k >= 1")
     return FinalSelectionConfig(
         retained_seeds=retained_seeds,
         games_per_pair=int(cfg.get("games_per_pair", 2)),
@@ -58,7 +60,9 @@ def load_final_selection_config(path: str | Path) -> FinalSelectionConfig:
     )
 
 
-def _candidate_pool(manifest: dict[str, list[AgentSpec]], candidate_ids: tuple[str, ...]) -> list[AgentSpec]:
+def _candidate_pool(
+    manifest: dict[str, list[AgentSpec]], candidate_ids: tuple[str, ...]
+) -> list[AgentSpec]:
     if candidate_ids:
         pool: dict[str, AgentSpec] = {}
         for group in manifest.values():
@@ -68,7 +72,9 @@ def _candidate_pool(manifest: dict[str, list[AgentSpec]], candidate_ids: tuple[s
     return list(manifest["population"])
 
 
-def _run_match_with_trace(players: list[AgentSpec], seed: int, cfg: FinalSelectionConfig) -> tuple[list[float], list[dict[str, Any]]]:
+def _run_match_with_trace(
+    players: list[AgentSpec], seed: int, cfg: FinalSelectionConfig
+) -> tuple[list[float], list[dict[str, Any]]]:
     runtime = {spec.id: _policy_runtime(spec) for spec in players}
     backend = RustBatchBackend(
         num_envs=1,
@@ -104,7 +110,9 @@ def _run_match_with_trace(players: list[AgentSpec], seed: int, cfg: FinalSelecti
                 "turn": len(trace),
                 "scores": [float(score) for score in outcome["scores"]],
                 "move_counts": [len(player_moves) for player_moves in actions],
-                "launched_ships": [sum(int(move[2]) for move in player_moves) for player_moves in actions],
+                "launched_ships": [
+                    sum(int(move[2]) for move in player_moves) for player_moves in actions
+                ],
             }
         )
         if outcome["done"]:
@@ -131,11 +139,15 @@ def _meta_game_analysis(
 ) -> dict[str, Any]:
     candidate_ids = [spec.id for spec in candidates]
     margins: dict[str, dict[str, list[float]]] = {
-        candidate_id: {opponent_id: [] for opponent_id in candidate_ids if opponent_id != candidate_id}
+        candidate_id: {
+            opponent_id: [] for opponent_id in candidate_ids if opponent_id != candidate_id
+        }
         for candidate_id in candidate_ids
     }
     wins: dict[str, dict[str, list[float]]] = {
-        candidate_id: {opponent_id: [] for opponent_id in candidate_ids if opponent_id != candidate_id}
+        candidate_id: {
+            opponent_id: [] for opponent_id in candidate_ids if opponent_id != candidate_id
+        }
         for candidate_id in candidate_ids
     }
 
@@ -156,7 +168,9 @@ def _meta_game_analysis(
         scores = [float(score) for score in record["scores"]]
         max_score = max(scores)
         winners = [idx for idx, score in enumerate(scores) if score == max_score]
-        wins[candidate_id][opponent_id].append(1.0 / len(winners) if player_index in winners else 0.0)
+        wins[candidate_id][opponent_id].append(
+            1.0 / len(winners) if player_index in winners else 0.0
+        )
 
     pairwise_margin_matrix: dict[str, dict[str, float]] = {}
     pairwise_win_rate_matrix: dict[str, dict[str, float]] = {}
@@ -222,10 +236,14 @@ def _analyze_bad_replay(record: dict[str, Any]) -> str:
     if idle_turns > turns // 2:
         return f"ritmo baixo em {idle_turns}/{turns} turnos; lancou {total_launched} naves"
     own_score = float(record["scores"][record["player_index"]])
-    other_scores = [float(score) for idx, score in enumerate(record["scores"]) if idx != record["player_index"]]
+    other_scores = [
+        float(score) for idx, score in enumerate(record["scores"]) if idx != record["player_index"]
+    ]
     mean_other = fmean(other_scores) if other_scores else 0.0
     if mean_other > 0.0 and own_score < 0.5 * mean_other:
-        return f"deficit severo contra o lobby; score_final={own_score:.1f} vs media={mean_other:.1f}"
+        return (
+            f"deficit severo contra o lobby; score_final={own_score:.1f} vs media={mean_other:.1f}"
+        )
     return f"pressao constante no pior decil; margem={record['normalized_margin']:.3f}, lancou={total_launched} naves"
 
 
@@ -237,15 +255,14 @@ def run_final_selection(
 ) -> dict[str, Any]:
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
-    if cfg.export_top_k != FINAL_EXPORT_TOP_K:
-        raise ValueError(f"final selection requires export_top_k == {FINAL_EXPORT_TOP_K}")
+    if cfg.export_top_k < 1:
+        raise ValueError("final selection requires export_top_k >= 1")
     candidates = _candidate_pool(manifest, cfg.candidate_ids)
     if len(candidates) < 2:
         raise ValueError("final selection requires at least two candidates")
 
     metrics: dict[str, dict[str, Any]] = {
-        spec.id: {"wins": 0.0, "games": 0, "margins": [], "records": []}
-        for spec in candidates
+        spec.id: {"wins": 0.0, "games": 0, "margins": [], "records": []} for spec in candidates
     }
     global_records: list[dict[str, Any]] = []
     match_counts = {"2p_matches": 0, "4p_matches": 0}
@@ -335,7 +352,9 @@ def run_final_selection(
         reverse=True,
     )
 
-    worst_records = sorted(global_records, key=lambda record: record["normalized_margin"])[: cfg.bad_replay_count]
+    worst_records = sorted(global_records, key=lambda record: record["normalized_margin"])[
+        : cfg.bad_replay_count
+    ]
     bad_replays = [
         {
             "candidate_id": record["candidate_id"],
@@ -357,6 +376,7 @@ def run_final_selection(
             "candidate_count": len(candidates),
             "retained_seeds": cfg.retained_seeds,
             "match_counts": match_counts,
+            "requested_export_top_k": cfg.export_top_k,
         },
         "meta_game": meta_game,
         "ranking": [],
@@ -392,16 +412,22 @@ def run_final_selection(
         reverse=True,
     )
     template = Path("python/submission/submission_template.py").read_text(encoding="utf-8")
+    for stale_export in out_path.glob("candidate_*_submission.py"):
+        stale_export.unlink()
     exported = []
-    for rank, candidate in enumerate(report["ranking"][:FINAL_EXPORT_TOP_K], start=1):
+    for rank, candidate in enumerate(report["ranking"][: cfg.export_top_k], start=1):
         if candidate["kind"] == "heuristic":
             dedicated_template = DEDICATED_HEURISTIC_TEMPLATES.get(candidate.get("policy"))
             if dedicated_template is not None:
                 heuristic_template = dedicated_template.read_text(encoding="utf-8")
                 rendered = render_submission(heuristic_template)
             else:
-                heuristic_template = Path("python/submission/heuristic_submission_template.py").read_text(encoding="utf-8")
-                rendered = render_submission(heuristic_template, heuristic_policy=candidate.get("policy"))
+                heuristic_template = Path(
+                    "python/submission/heuristic_submission_template.py"
+                ).read_text(encoding="utf-8")
+                rendered = render_submission(
+                    heuristic_template, heuristic_policy=candidate.get("policy")
+                )
         else:
             rendered = render_submission(template, candidate["checkpoint"])
         rendered = (
@@ -415,8 +441,13 @@ def run_final_selection(
         export_path.write_text(rendered, encoding="utf-8")
         exported.append({"candidate_id": candidate["candidate_id"], "path": str(export_path)})
     report["exports"] = exported
-    (out_path / "final_selection_report.json").write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
-    (out_path / "bad_replays.json").write_text(json.dumps(bad_replays, indent=2, sort_keys=True), encoding="utf-8")
+    report["summary"]["exported_candidate_count"] = len(exported)
+    (out_path / "final_selection_report.json").write_text(
+        json.dumps(report, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    (out_path / "bad_replays.json").write_text(
+        json.dumps(bad_replays, indent=2, sort_keys=True), encoding="utf-8"
+    )
     return report
 
 

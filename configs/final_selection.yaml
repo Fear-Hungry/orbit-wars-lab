@@ -6,4 +6,4 @@ final_selection:
   episode_steps: 500
   enable_comets: true
   bad_replay_count: 8
-  export_top_k: 2
+  export_top_k: 1

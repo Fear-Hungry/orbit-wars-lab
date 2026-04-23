@@ -2,9 +2,10 @@ objective_validation:
   max_crash_rate: 0.0
   max_timeout_rate: 0.0
   max_invalid_action_rate: 0.0
+  required_export_count: 1
   min_selection_win_rate: 0.45
   min_mean_score_margin: 0.0
-  min_worst_decile_score_margin: -0.5
+  min_worst_decile_score_margin: -0.25
   max_selection_holdout_win_rate_gap: 0.35
   max_selection_holdout_mean_score_margin_gap: 0.75
   max_selection_holdout_worst_decile_score_margin_gap: 0.75
@@ -12,11 +13,29 @@ objective_validation:
   require_holdout_hall_of_fame: true
   min_holdout_win_rate: 0.4
   min_holdout_mean_score_margin: 0.0
-  min_holdout_worst_decile_score_margin: -0.5
+  min_holdout_worst_decile_score_margin: -0.25
   min_holdout_per_opponent_win_rate: 0.25
   min_holdout_per_opponent_worst_decile_score_margin: -0.75
+  min_holdout_seed_stratum_win_rate: 0.4
+  min_holdout_seed_stratum_worst_decile_score_margin: -0.5
   max_holdout_position_win_rate_gap: 0.35
   max_holdout_position_mean_score_margin_gap: 0.75
   max_holdout_position_worst_decile_score_margin_gap: 0.75
+  shipping_blind_seeds: [1103, 1201, 1301, 1409, 1511, 1601, 1709, 1801]
+  require_shipping_blind_hall_of_fame: true
+  min_shipping_blind_win_rate: 0.4
+  min_shipping_blind_mean_score_margin: 0.0
+  min_shipping_blind_worst_decile_score_margin: -0.25
+  min_shipping_blind_seed_stratum_win_rate: 0.4
+  min_shipping_blind_seed_stratum_worst_decile_score_margin: -0.5
+  require_live_baseline_challenge: true
+  min_live_baseline_win_rate: 0.5
+  min_live_baseline_mean_score_margin: 0.0
+  min_live_baseline_worst_decile_score_margin: -0.25
+  live_baseline:
+    name: literature_validated_submission
+    submission_path: artifacts/literature_validated_submission.py
+    public_score: 479.4
+    submitted_at: "2026-04-22 11:59:39.027000"
   require_2p_self_play: true
   require_4p_self_play: true
