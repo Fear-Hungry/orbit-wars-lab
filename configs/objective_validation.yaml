@@ -4,6 +4,19 @@ objective_validation:
   max_invalid_action_rate: 0.0
   min_selection_win_rate: 0.45
   min_mean_score_margin: 0.0
-  min_worst_decile_score_margin: -1.0
+  min_worst_decile_score_margin: -0.5
+  max_selection_holdout_win_rate_gap: 0.35
+  max_selection_holdout_mean_score_margin_gap: 0.75
+  max_selection_holdout_worst_decile_score_margin_gap: 0.75
+  holdout_seeds: [509, 601, 701, 809, 907, 1009]
+  require_holdout_hall_of_fame: true
+  min_holdout_win_rate: 0.4
+  min_holdout_mean_score_margin: 0.0
+  min_holdout_worst_decile_score_margin: -0.5
+  min_holdout_per_opponent_win_rate: 0.25
+  min_holdout_per_opponent_worst_decile_score_margin: -0.75
+  max_holdout_position_win_rate_gap: 0.35
+  max_holdout_position_mean_score_margin_gap: 0.75
+  max_holdout_position_worst_decile_score_margin_gap: 0.75
   require_2p_self_play: true
   require_4p_self_play: true

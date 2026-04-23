@@ -14,8 +14,13 @@ import torch
 import yaml
 from python.agents import (
     anti_meta_agent,
+    coalition_field_control_agent,
     defensive_agent,
+    field_control_agent,
     greedy_agent,
+    opening_gate_anti_meta_meta_agent,
+    opening_gate_meta_agent,
+    opening_gate_rush_meta_agent,
     rush_agent,
     weak_random_agent,
 )
@@ -35,6 +40,11 @@ HEURISTIC_POLICIES = {
     "rush": rush_agent,
     "anti_meta": anti_meta_agent,
     "weak_random": weak_random_agent,
+    "field_control": field_control_agent,
+    "coalition_field_control": coalition_field_control_agent,
+    "opening_gate_anti_meta_meta": opening_gate_anti_meta_meta_agent,
+    "opening_gate_meta": opening_gate_meta_agent,
+    "opening_gate_rush_meta": opening_gate_rush_meta_agent,
 }
 
 

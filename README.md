@@ -84,6 +84,107 @@ maturin develop --release -m crates/orbit_wars_py/Cargo.toml
 python scripts/smoke_test.py
 ```
 
+## Docker para treino limitado
+
+O repositório agora inclui um ambiente de container com:
+
+- Python 3.11 em imagem `slim`;
+- toolchain Rust para recompilar o binding PyO3 quando necessário;
+- binding `orbit_wars_rs` já compilado no build da imagem;
+- `torch` CPU ou CUDA instalado durante o build, sem fallback em runtime;
+- libs de sistema usadas por PyTorch/SciPy/renderizacao simples (`libgomp1`, `libgl1`, `libglib2.0-0`, `libjpeg`, `libpng`);
+- `git`, `ripgrep` e `tini`;
+- `node` no container para executar o `codex` já instalado no host.
+
+Há duas variantes:
+
+- `lab`: imagem menor, com `torch` CPU;
+- `lab-gpu`: imagem com `torch` CUDA para treino em GPU NVIDIA, exigindo CUDA visivel no container.
+
+O `compose.yaml` aplica limites por padrao para evitar oversubscription de CPU/RAM durante treino local:
+
+- `TRAIN_CPUS=4.0`
+- `TRAIN_MEMORY=16g`
+- `TRAIN_MEMORY` tambem define `memswap_limit`, entao o container nao ganha memoria extra via swap
+- `TRAIN_PIDS=512`
+- `TRAIN_SHM_SIZE=2g`
+- `/tmp` em `tmpfs` limitado a 1GB
+- `NVIDIA_VISIBLE_DEVICES=0` no servico GPU, expondo somente a primeira GPU por padrao
+- `OMP_NUM_THREADS=1`
+- `OPENBLAS_NUM_THREADS=1`
+- `MKL_NUM_THREADS=1`
+- `NUMEXPR_NUM_THREADS=1`
+- `RAYON_NUM_THREADS=4`
+
+O entrypoint recusa iniciar se o cgroup de memoria estiver sem limite, acima de 16GB, ou com swap extra liberado. No servico `lab-gpu`, ele tambem falha imediatamente se PyTorch nao enxergar CUDA e pelo menos uma GPU.
+
+Build e shell:
+
+```bash
+make docker-build
+make docker-check
+make docker-shell
+```
+
+Build e shell com GPU:
+
+```bash
+make docker-gpu-build
+make docker-gpu-check
+make docker-gpu-shell
+```
+
+Atalhos via `Makefile`:
+
+```bash
+make docker-build
+make docker-build-all
+make docker-check
+make docker-shell
+make docker-shell-16g
+make docker-smoke
+make docker-test
+make docker-train
+make docker-train-16g
+make docker-codex
+make docker-gpu-build
+make docker-gpu-shell
+make docker-gpu-check
+make docker-gpu-train
+make docker-gpu-train-16g
+make docker-gpu-codex
+```
+
+Para usar o Codex CLI dentro do container, basta manter sua configuração local em `${HOME}/.codex`.
+O `compose.yaml` também monta `${HOME}/.local/bin` e `${HOME}/.local/lib/node_modules`, então o container reutiliza exatamente o `codex` já instalado no host. Na prática, ele compartilha o mesmo `auth.json`, histórico e configuração do notebook/ambiente local, sem exigir novo login nem nova exposição de `OPENAI_API_KEY` a cada container.
+
+Para usar GPU no Docker, o host precisa ter GPU NVIDIA disponível e suporte a GPU no Docker/Compose.
+
+Exemplos:
+
+```bash
+make docker-codex
+make docker-train
+make docker-gpu-check
+make docker-gpu-train
+DOCKER_CPUS=6 DOCKER_MEMORY=12g make docker-train
+```
+
+Se o processo ultrapassar o limite de memoria configurado, o kernel deve encerrar o processo dentro do container com OOM, normalmente aparecendo como `Killed`, `OOMKilled` ou exit code `137`. Isso evita que o treino use mais RAM que o teto definido pelo Docker. O entrypoint tambem impede rodar com limite acima de 16GB, mesmo que `TRAIN_MEMORY` seja sobrescrito por engano.
+
+Por padrao, a variante GPU usa `TORCH_COMPUTE_PLATFORM=cu128`, alinhada com os wheels CUDA atuais do PyTorch e com GPUs NVIDIA recentes. Se precisar trocar a variante suportada pelo PyTorch, sobrescreva no build:
+
+```bash
+TORCH_COMPUTE_PLATFORM=cu126 make docker-gpu-build
+```
+
+O Docker nao instala o driver NVIDIA no host. Antes de usar `lab-gpu`, o host precisa ter driver NVIDIA funcionando e NVIDIA Container Toolkit habilitado para Docker. O comando `make docker-gpu-check` valida isso dentro do container e falha se CUDA nao estiver operacional.
+
+Referencias externas usadas para esta configuracao:
+
+- PyTorch install selector: <https://pytorch.org/get-started/locally/>
+- NVIDIA Container Toolkit: <https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/>
+
 ## Caminho de treino recomendado
 
 ```bash

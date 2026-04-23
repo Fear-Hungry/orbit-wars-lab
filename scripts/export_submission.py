@@ -34,8 +34,17 @@ def validate_submission_template(template: str) -> None:
         raise ValueError("submission template must define fallback_greedy and return it from agent() exception handling")
 
 
-def render_submission(template: str, checkpoint: str | None = None) -> str:
+def render_submission(
+    template: str,
+    checkpoint: str | None = None,
+    *,
+    heuristic_policy: str | None = None,
+) -> str:
     validate_submission_template(template)
+    if heuristic_policy is not None:
+        if "__HEURISTIC_POLICY__" not in template:
+            raise ValueError("heuristic submission template requires __HEURISTIC_POLICY__ placeholder")
+        template = template.replace("__HEURISTIC_POLICY__", heuristic_policy)
     if checkpoint is None:
         return template
     return f"# export_source: {checkpoint}\n{template}"

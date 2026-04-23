@@ -1,0 +1,84 @@
+x-lab-common: &lab-common
+  working_dir: /workspace
+  tty: true
+  stdin_open: true
+  cpus: ${TRAIN_CPUS:-4.0}
+  mem_limit: ${TRAIN_MEMORY:-16g}
+  memswap_limit: ${TRAIN_MEMORY:-16g}
+  mem_swappiness: 0
+  oom_kill_disable: false
+  pids_limit: ${TRAIN_PIDS:-512}
+  shm_size: ${TRAIN_SHM_SIZE:-2g}
+  ulimits:
+    nofile:
+      soft: 65536
+      hard: 65536
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  tmpfs:
+    - /tmp:size=${TRAIN_TMPFS:-1073741824},mode=1777
+  environment: &lab-env
+    CODEX_HOME: /home/orbit/.codex
+    MAX_CONTAINER_MEMORY_BYTES: "17179869184"
+    ORBIT_ENFORCE_NO_SWAP: "1"
+    PYTHONPATH: /workspace:/workspace/python
+    OMP_NUM_THREADS: ${OMP_NUM_THREADS:-1}
+    OPENBLAS_NUM_THREADS: ${OPENBLAS_NUM_THREADS:-1}
+    MKL_NUM_THREADS: ${MKL_NUM_THREADS:-1}
+    NUMEXPR_NUM_THREADS: ${NUMEXPR_NUM_THREADS:-1}
+    RAYON_NUM_THREADS: ${RAYON_NUM_THREADS:-4}
+    CARGO_BUILD_JOBS: ${CARGO_BUILD_JOBS:-2}
+    CUDA_MODULE_LOADING: LAZY
+    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    TOKENIZERS_PARALLELISM: "false"
+
+services:
+  lab:
+    <<: *lab-common
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+        TORCH_COMPUTE_PLATFORM: cpu
+    image: orbit-wars-lab:cpu
+    environment:
+      <<: *lab-env
+      ORBIT_REQUIRE_CUDA: "0"
+    volumes:
+      - .:/workspace:z
+      - ${HOME}/.codex:/home/orbit/.codex
+      - ${HOME}/.local/bin:/home/orbit/.local/bin:ro
+      - ${HOME}/.local/lib/node_modules:/home/orbit/.local/lib/node_modules:ro
+
+  lab-gpu:
+    <<: *lab-common
+    profiles: ["gpu"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+        TORCH_COMPUTE_PLATFORM: ${TORCH_COMPUTE_PLATFORM:-cu128}
+    image: orbit-wars-lab:gpu
+    environment:
+      <<: *lab-env
+      ORBIT_REQUIRE_CUDA: "1"
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-0}
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
+    volumes:
+      - .:/workspace:z
+      - ${HOME}/.codex:/home/orbit/.codex
+      - ${HOME}/.local/bin:/home/orbit/.local/bin:ro
+      - ${HOME}/.local/lib/node_modules:/home/orbit/.local/lib/node_modules:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${GPU_COUNT:-1}
+              capabilities: [gpu]

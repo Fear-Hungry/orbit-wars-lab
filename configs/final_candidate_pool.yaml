@@ -1,4 +1,12 @@
 population:
+  - id: opening_gate_rush_meta_candidate
+    kind: heuristic
+    policy: opening_gate_rush_meta
+    role: league
+  - id: opening_gate_anti_meta_meta_candidate
+    kind: heuristic
+    policy: opening_gate_anti_meta_meta
+    role: league
   - id: greedy_candidate
     kind: heuristic
     policy: greedy
@@ -15,5 +23,25 @@ population:
     kind: heuristic
     policy: anti_meta
     role: league
-hall_of_fame: []
-heuristics: []
+hall_of_fame:
+  - id: greedy_hof
+    kind: heuristic
+    policy: greedy
+    role: hall_of_fame
+  - id: rush_hof
+    kind: heuristic
+    policy: rush
+    role: hall_of_fame
+  - id: anti_meta_hof
+    kind: heuristic
+    policy: anti_meta
+    role: hall_of_fame
+heuristics:
+  - id: anti_meta_adversary
+    kind: heuristic
+    policy: anti_meta
+    role: heuristic
+  - id: weak_random_adversary
+    kind: heuristic
+    policy: weak_random
+    role: heuristic
