@@ -157,15 +157,26 @@ def _export_runtime_validation(
                     start = perf_counter()
                     moves = agent(obs)
                     elapsed = perf_counter() - start
-                    if elapsed > act_timeout:
-                        timeouts += 1
-                        moves = []
-                    if not isinstance(moves, list) or not _moves_are_legal(state, player, moves):
-                        invalid_actions += 1
-                        moves = []
-                except Exception:
+                except Exception as exc:
                     crashes += 1
-                    moves = []
+                    raise RuntimeError(
+                        f"export runtime validation crashed: path={path} seed={seed} "
+                        f"players={num_players} player={player} decision_turn={decision_turns}"
+                    ) from exc
+                if elapsed > act_timeout:
+                    timeouts += 1
+                    raise TimeoutError(
+                        f"export runtime validation timed out: path={path} seed={seed} "
+                        f"players={num_players} player={player} elapsed={elapsed:.6f}s "
+                        f"limit={act_timeout:.6f}s decision_turn={decision_turns}"
+                    )
+                if not isinstance(moves, list) or not _moves_are_legal(state, player, moves):
+                    invalid_actions += 1
+                    raise ValueError(
+                        f"export runtime validation returned invalid moves: path={path} seed={seed} "
+                        f"players={num_players} player={player} decision_turn={decision_turns} "
+                        f"moves={moves!r}"
+                    )
                 actions[player] = moves
 
             outcome = backend.step([actions])[0]
@@ -230,19 +241,36 @@ def _run_export_match(
                 obs = to_official_observation(state, player=idx)
                 try:
                     moves = export_agent(obs)
-                    if not isinstance(moves, list) or not _moves_are_legal(state, idx, moves):
-                        moves = []
-                except Exception:
-                    moves = []
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"export holdout match crashed: path={export_path} seed={seed} "
+                        f"export_position={export_position} player={idx}"
+                    ) from exc
+                if not isinstance(moves, list) or not _moves_are_legal(state, idx, moves):
+                    raise ValueError(
+                        f"export holdout match returned invalid moves: path={export_path} "
+                        f"seed={seed} export_position={export_position} player={idx} moves={moves!r}"
+                    )
                 actions[idx] = moves
                 continue
             runtime = opponent_runtime[idx]
             try:
                 reply = runtime(state, idx)
-                if not isinstance(reply, list) or not _moves_are_legal(state, idx, reply):
-                    reply = []
-            except Exception:
-                reply = []
+            except Exception as exc:
+                opponent = player_specs[idx]
+                raise RuntimeError(
+                    f"holdout opponent policy crashed: opponent={getattr(opponent, 'id', None)!r} "
+                    f"policy={getattr(opponent, 'policy', None)!r} seed={seed} player={idx} "
+                    f"export_position={export_position}"
+                ) from exc
+            if not isinstance(reply, list) or not _moves_are_legal(state, idx, reply):
+                opponent = player_specs[idx]
+                raise ValueError(
+                    f"holdout opponent policy returned invalid moves: "
+                    f"opponent={getattr(opponent, 'id', None)!r} "
+                    f"policy={getattr(opponent, 'policy', None)!r} seed={seed} player={idx} "
+                    f"export_position={export_position} moves={reply!r}"
+                )
             actions[idx] = reply
         outcome = backend.step([actions])[0]
         state = backend.states()[0]

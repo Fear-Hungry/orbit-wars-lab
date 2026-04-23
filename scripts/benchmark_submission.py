@@ -107,15 +107,27 @@ def _run_match(
                 moves = policy(state, idx)
                 elapsed = perf_counter() - start
                 stats["elapsed_seconds"] += elapsed
-                if elapsed > act_timeout:
-                    stats["timeouts"] += 1.0
-                    moves = []
-                if not isinstance(moves, list) or not _moves_are_legal(state, idx, moves):
-                    stats["invalid_actions"] += 1.0
-                    moves = []
-            except Exception:
+            except Exception as exc:
                 stats["crashes"] += 1.0
-                moves = []
+                raise RuntimeError(
+                    f"submission benchmark policy failed: policy={getattr(policy, '__name__', repr(policy))} "
+                    f"seed={seed} player={idx} decision_turn={int(stats['decision_turns'])}"
+                ) from exc
+            if elapsed > act_timeout:
+                stats["timeouts"] += 1.0
+                raise TimeoutError(
+                    f"submission benchmark policy timed out: "
+                    f"policy={getattr(policy, '__name__', repr(policy))} seed={seed} player={idx} "
+                    f"elapsed={elapsed:.6f}s limit={act_timeout:.6f}s "
+                    f"decision_turn={int(stats['decision_turns'])}"
+                )
+            if not isinstance(moves, list) or not _moves_are_legal(state, idx, moves):
+                stats["invalid_actions"] += 1.0
+                raise ValueError(
+                    f"submission benchmark policy returned invalid moves: "
+                    f"policy={getattr(policy, '__name__', repr(policy))} seed={seed} player={idx} "
+                    f"decision_turn={int(stats['decision_turns'])} moves={moves!r}"
+                )
             actions[idx] = moves
 
         outcome = backend.step([actions])[0]

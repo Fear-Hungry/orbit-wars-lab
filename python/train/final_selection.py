@@ -84,10 +84,17 @@ def _run_match_with_trace(players: list[AgentSpec], seed: int, cfg: FinalSelecti
         for idx, spec in enumerate(players):
             try:
                 moves = runtime[spec.id](state, idx)
-                if not isinstance(moves, list) or not _moves_are_legal(state, idx, moves):
-                    moves = []
-            except Exception:
-                moves = []
+            except Exception as exc:
+                raise RuntimeError(
+                    f"final selection policy failed: agent={spec.id!r} policy={spec.policy!r} "
+                    f"kind={spec.kind!r} seed={seed} player={idx} turn={len(trace)}"
+                ) from exc
+            if not isinstance(moves, list) or not _moves_are_legal(state, idx, moves):
+                raise ValueError(
+                    f"final selection policy returned invalid moves: agent={spec.id!r} "
+                    f"policy={spec.policy!r} kind={spec.kind!r} seed={seed} "
+                    f"player={idx} turn={len(trace)} moves={moves!r}"
+                )
             actions[idx] = moves
 
         outcome = backend.step([actions])[0]

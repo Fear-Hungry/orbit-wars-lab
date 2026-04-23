@@ -264,15 +264,28 @@ def _run_match(players: list[AgentSpec], seed: int, cfg: EvaluationConfig) -> tu
                 start = perf_counter()
                 moves = runtime[spec.id](state, idx)
                 elapsed = perf_counter() - start
-                if elapsed > cfg.act_timeout:
-                    stats["timeouts"] += 1.0
-                    moves = []
-                if not isinstance(moves, list) or not _moves_are_legal(state, idx, moves):
-                    stats["invalid_actions"] += 1.0
-                    moves = []
-            except Exception:
+            except Exception as exc:
                 stats["crashes"] += 1.0
-                moves = []
+                raise RuntimeError(
+                    f"population evaluation policy failed: agent={spec.id!r} policy={spec.policy!r} "
+                    f"kind={spec.kind!r} seed={seed} player={idx} "
+                    f"decision_turn={int(stats['decision_turns'])}"
+                ) from exc
+            if elapsed > cfg.act_timeout:
+                stats["timeouts"] += 1.0
+                raise TimeoutError(
+                    f"population evaluation policy timed out: agent={spec.id!r} "
+                    f"policy={spec.policy!r} kind={spec.kind!r} seed={seed} player={idx} "
+                    f"elapsed={elapsed:.6f}s limit={cfg.act_timeout:.6f}s "
+                    f"decision_turn={int(stats['decision_turns'])}"
+                )
+            if not isinstance(moves, list) or not _moves_are_legal(state, idx, moves):
+                stats["invalid_actions"] += 1.0
+                raise ValueError(
+                    f"population evaluation policy returned invalid moves: agent={spec.id!r} "
+                    f"policy={spec.policy!r} kind={spec.kind!r} seed={seed} player={idx} "
+                    f"decision_turn={int(stats['decision_turns'])} moves={moves!r}"
+                )
             stats["launched_moves"] += float(len(moves))
             stats["launched_ships"] += float(sum(int(move[2]) for move in moves))
             actions[idx] = moves
