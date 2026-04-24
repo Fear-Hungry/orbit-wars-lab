@@ -276,6 +276,12 @@ def test_opening_gate_rush_meta_uses_tail_expansion_on_low_spin_cheap_cluster():
     assert opening_gate_rush_meta_agent(state, 1) == tail_expansion_agent(state, 1)
 
 
+def test_opening_gate_rush_meta_uses_player1_tail_expansion_on_high_spin_cheap_far():
+    state = _state_for_seed(1511)
+    assert opening_gate_rush_meta_agent(state, 0) == field_control_agent(state, 0)
+    assert opening_gate_rush_meta_agent(state, 1) == tail_expansion_agent(state, 1)
+
+
 def test_opening_gate_rush_meta_uses_player0_greedy_signature():
     state = _state_for_seed(1490090)
     assert opening_gate_rush_meta_agent(state, 0) == greedy_agent(state, 0)

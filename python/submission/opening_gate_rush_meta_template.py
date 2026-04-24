@@ -377,6 +377,14 @@ def _rush_meta_opening_style_signature_2p(own, neutrals, angular_velocity, playe
         and production >= 4
     ):
         return "field_control"
+    if (
+        player == 1
+        and angular_velocity >= 0.045
+        and nearest_distance >= 16.0
+        and ships <= 8
+        and production >= 4
+    ):
+        return "tail_expansion"
     if angular_velocity < 0.033 and nearest_distance >= 16.0 and ships <= 15 and production >= 5:
         return "tail_expansion"
     if (
