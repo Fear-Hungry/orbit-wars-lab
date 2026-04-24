@@ -8,6 +8,7 @@ from python.agents.heuristics import (
     opening_gate_meta_agent,
     opening_gate_rush_meta_agent,
     rush_agent,
+    tail_expansion_agent,
     weak_random_agent,
 )
 from python.orbit_wars_gym.backend import RustBatchBackend, RustConfig
@@ -261,6 +262,18 @@ def test_opening_gate_rush_meta_locks_high_spin_rich_cheap_close_field_control()
     follow_up = dict(state)
     follow_up["step"] = 1
     assert opening_gate_rush_meta_agent(follow_up, 0) == field_control_agent(follow_up, 0)
+
+
+def test_opening_gate_rush_meta_uses_tail_expansion_on_low_spin_rich_cheap_far():
+    state = _state_for_seed(1103)
+    assert opening_gate_rush_meta_agent(state, 0) == tail_expansion_agent(state, 0)
+    assert opening_gate_rush_meta_agent(state, 1) == tail_expansion_agent(state, 1)
+
+
+def test_opening_gate_rush_meta_uses_tail_expansion_on_low_spin_cheap_cluster():
+    state = _state_for_seed(1801)
+    assert opening_gate_rush_meta_agent(state, 0) == tail_expansion_agent(state, 0)
+    assert opening_gate_rush_meta_agent(state, 1) == tail_expansion_agent(state, 1)
 
 
 def test_opening_gate_rush_meta_uses_player0_greedy_signature():

@@ -377,6 +377,17 @@ def _rush_meta_opening_style_signature_2p(own, neutrals, angular_velocity, playe
         and production >= 4
     ):
         return "field_control"
+    if angular_velocity < 0.033 and nearest_distance >= 16.0 and ships <= 15 and production >= 5:
+        return "tail_expansion"
+    if (
+        angular_velocity < 0.036
+        and nearest_distance >= 16.0
+        and 25 <= ships <= 40
+        and production >= 4
+    ):
+        return "tail_expansion"
+    if angular_velocity < 0.033 and nearest_distance <= 13.5 and ships <= 10 and production <= 2:
+        return "tail_expansion"
     if (
         player == 0
         and 0.039 <= angular_velocity <= 0.041
@@ -571,6 +582,53 @@ def fallback_anti_meta(state):
         return moves
     except Exception:
         return fallback_greedy(state)
+
+
+def _tail_expansion_policy(state, player):
+    planets = state.get("planets", [])
+    own = [planet for planet in planets if _planet_owner(planet) == player]
+    targets = [planet for planet in planets if _planet_owner(planet) != player]
+    if not own or not targets:
+        return []
+
+    moves = []
+    used_targets = set()
+    for source in sorted(
+        own, key=lambda planet: (_planet_ships(planet), _planet_production(planet)), reverse=True
+    ):
+        if len(moves) >= 4:
+            break
+        spare = _planet_ships(source) - 12
+        if spare < MIN_SHIPS_TO_LAUNCH:
+            continue
+
+        best_target = None
+        best_score = -1e9
+        for target in targets:
+            target_id = _planet_id(target)
+            if target_id in used_targets and len(targets) > 1:
+                continue
+            distance = _distance(
+                (_planet_x(source), _planet_y(source)),
+                (_planet_x(target), _planet_y(target)),
+            )
+            score = 6.0 * _planet_production(target) - 0.5 * _planet_ships(target) - 0.25 * distance
+            if score > best_score:
+                best_score = score
+                best_target = target
+        if best_target is None:
+            continue
+
+        ships = min(spare, max(MIN_SHIPS_TO_LAUNCH, int(spare * 0.35)))
+        if ships < MIN_SHIPS_TO_LAUNCH:
+            continue
+        angle = atan2(
+            _planet_y(best_target) - _planet_y(source),
+            _planet_x(best_target) - _planet_x(source),
+        )
+        moves.append([_planet_id(source), float(angle), int(ships)])
+        used_targets.add(_planet_id(best_target))
+    return moves
 
 
 def _defensive_policy(state, player, own, neutrals):
@@ -818,6 +876,8 @@ def _opening_gate_rush_meta_agent(state, player):
         return fallback_anti_meta(state)
     if opening_style == "greedy":
         return fallback_greedy(state)
+    if opening_style == "tail_expansion":
+        return _tail_expansion_policy(state, player)
     if opening_style == "rush_then_greedy":
         return (
             _rush_policy(state, player, own, enemies)

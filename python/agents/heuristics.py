@@ -453,6 +453,17 @@ def _rush_meta_opening_style_signature_2p(
         and production >= 4
     ):
         return "field_control"
+    if angular_velocity < 0.033 and nearest_distance >= 16.0 and ships <= 15 and production >= 5:
+        return "tail_expansion"
+    if (
+        angular_velocity < 0.036
+        and nearest_distance >= 16.0
+        and 25 <= ships <= 40
+        and production >= 4
+    ):
+        return "tail_expansion"
+    if angular_velocity < 0.033 and nearest_distance <= 13.5 and ships <= 10 and production <= 2:
+        return "tail_expansion"
     if (
         player == 0
         and 0.039 <= angular_velocity <= 0.041
@@ -655,6 +666,50 @@ def anti_meta_agent(state: dict[str, Any], player: int) -> list[list[float]]:
             continue
         angle = math.atan2(planet_y(focus) - planet_y(src), planet_x(focus) - planet_x(src))
         moves.append([planet_id(src), float(angle), int(max(1, ships * 0.6))])
+    return moves
+
+
+def tail_expansion_agent(state: dict[str, Any], player: int) -> list[list[float]]:
+    planets = state.get("planets", [])
+    own = [planet for planet in planets if planet_owner(planet) == player]
+    targets = [planet for planet in planets if planet_owner(planet) != player]
+    if not own or not targets:
+        return []
+
+    moves: list[list[float]] = []
+    used_targets: set[int] = set()
+    for source in sorted(
+        own, key=lambda planet: (planet_ships(planet), planet_production(planet)), reverse=True
+    ):
+        if len(moves) >= MAX_FIELD_CONTROL_MOVES:
+            break
+        spare = planet_ships(source) - 12
+        if spare < 2:
+            continue
+
+        best_target = None
+        best_score = -1e9
+        for target in targets:
+            if planet_id(target) in used_targets and len(targets) > 1:
+                continue
+            distance = _distance(
+                (planet_x(source), planet_y(source)), (planet_x(target), planet_y(target))
+            )
+            score = 6.0 * planet_production(target) - 0.5 * planet_ships(target) - 0.25 * distance
+            if score > best_score:
+                best_score = score
+                best_target = target
+        if best_target is None:
+            continue
+
+        ships = min(spare, max(2, int(spare * 0.35)))
+        if ships < 2:
+            continue
+        angle = math.atan2(
+            planet_y(best_target) - planet_y(source), planet_x(best_target) - planet_x(source)
+        )
+        moves.append([planet_id(source), float(angle), int(ships)])
+        used_targets.add(planet_id(best_target))
     return moves
 
 
@@ -1001,6 +1056,8 @@ def opening_gate_rush_meta_agent(state: dict[str, Any], player: int) -> list[lis
         return anti_meta_agent(state, player)
     if opening_style == "greedy":
         return greedy_agent(state, player)
+    if opening_style == "tail_expansion":
+        return tail_expansion_agent(state, player)
     if opening_style == "rush_then_greedy":
         return (
             rush_agent(state, player)
