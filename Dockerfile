@@ -1,10 +1,12 @@
 # syntax=docker/dockerfile:1.7
 
+ARG ML_CPU_BASE_IMAGE=local/ml-python311-cpu:bookworm
+
 FROM rust:1.86-slim-bookworm AS rust-toolchain
 
 FROM node:22-bookworm-slim AS node-runtime
 
-FROM python:3.11-slim-bookworm
+FROM ${ML_CPU_BASE_IMAGE}
 
 SHELL ["/bin/bash", "-euxo", "pipefail", "-c"]
 

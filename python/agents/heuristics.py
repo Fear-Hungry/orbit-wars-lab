@@ -461,6 +461,14 @@ def _rush_meta_opening_style_signature_2p(
         and production >= 4
     ):
         return "tail_expansion"
+    if (
+        player == 1
+        and angular_velocity < 0.033
+        and nearest_distance >= 20.0
+        and ships >= 45
+        and production >= 5
+    ):
+        return "greedy"
     if angular_velocity < 0.033 and nearest_distance >= 16.0 and ships <= 15 and production >= 5:
         return "tail_expansion"
     if (

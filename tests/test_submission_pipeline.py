@@ -294,6 +294,7 @@ def test_opening_gate_rush_meta_template_matches_local_policy_on_reference_state
         (601, 0, [opening_gate_rush_meta_agent, greedy_agent]),
         (1103, 0, [opening_gate_rush_meta_agent, greedy_agent]),
         (1103, 1, [greedy_agent, opening_gate_rush_meta_agent]),
+        (1201, 1, [greedy_agent, opening_gate_rush_meta_agent]),
         (1301, 1, [opening_gate_anti_meta_meta_agent, opening_gate_rush_meta_agent]),
         (1409, 0, [opening_gate_rush_meta_agent, opening_gate_anti_meta_meta_agent]),
         (1511, 1, [greedy_agent, opening_gate_rush_meta_agent]),
