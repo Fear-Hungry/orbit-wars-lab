@@ -18,6 +18,7 @@ artifacts/
 .todo
 autoresearch-*.json
 autoresearch-*.md
+*.prev.md
 *.pt
 *.pth
 *.onnx
