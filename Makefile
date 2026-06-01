@@ -4,8 +4,12 @@ PPO_SEED ?= 11
 PPO_TIMESTEPS ?= 32768
 PPO_LEARNING_RATE ?= 1e-4
 PPO_CHECKPOINT_IN ?= artifacts/ppo/phase0_seed1_65536_resume_seed4_65536.pt
-PPO_CHECKPOINT_OUT ?= artifacts/ppo/phase0_targeted_seed$(PPO_SEED)_lr1e4_$(PPO_TIMESTEPS).pt
+PPO_RUN_NAME ?= targeted_seed$(PPO_SEED)
+PPO_CHECKPOINT_OUT ?= artifacts/ppo/phase0_$(PPO_RUN_NAME)_$(PPO_TIMESTEPS).pt
 PPO_TARGETED_OPPONENTS ?= weak_random,rush,anti_meta
+PPO_DECODER_MAX_MOVES ?= 4
+PPO_DECODER_MIN_SHIPS ?= 2
+PPO_DECODER_RESERVE ?= 8
 
 install:
 	pip install -U pip
@@ -49,13 +53,13 @@ gate-check-final:
 	uv run --extra dev python -m scripts.gate_check --include-final
 
 ppo-train-targeted:
-	uv run --extra dev python -m python.train.train_ppo --seed $(PPO_SEED) --training-track phase0_2p --num-players 2 --opponents $(PPO_TARGETED_OPPONENTS) --total-timesteps $(PPO_TIMESTEPS) --rollout-steps 256 --update-epochs 4 --minibatch-size 256 --learning-rate $(PPO_LEARNING_RATE) --checkpoint-in $(PPO_CHECKPOINT_IN) --checkpoint-out $(PPO_CHECKPOINT_OUT) --decoder-max-moves-per-turn 4 --decoder-min-ships-to-launch 2 --decoder-reserve-home-ships 8
+	uv run --extra dev python -m python.train.train_ppo --seed $(PPO_SEED) --training-track phase0_2p --num-players 2 --opponents $(PPO_TARGETED_OPPONENTS) --total-timesteps $(PPO_TIMESTEPS) --rollout-steps 256 --update-epochs 4 --minibatch-size 256 --learning-rate $(PPO_LEARNING_RATE) --checkpoint-in $(PPO_CHECKPOINT_IN) --checkpoint-out $(PPO_CHECKPOINT_OUT) --decoder-max-moves-per-turn $(PPO_DECODER_MAX_MOVES) --decoder-min-ships-to-launch $(PPO_DECODER_MIN_SHIPS) --decoder-reserve-home-ships $(PPO_DECODER_RESERVE)
 
 ppo-select:
 	python -m scripts.select_ppo_checkpoint 'artifacts/ppo/*.pt'
 
 ppo-select-targeted:
-	uv run --extra dev python -m scripts.select_ppo_checkpoint $(PPO_CHECKPOINT_IN) $(PPO_CHECKPOINT_OUT) --config configs/eval_quick.yaml --output artifacts/ppo/targeted_seed$(PPO_SEED)_selection.json
+	uv run --extra dev python -m scripts.select_ppo_checkpoint $(PPO_CHECKPOINT_IN) $(PPO_CHECKPOINT_OUT) --config configs/eval_quick.yaml --output artifacts/ppo/$(PPO_RUN_NAME)_selection.json
 
 fmt:
 	cargo fmt --all || true
