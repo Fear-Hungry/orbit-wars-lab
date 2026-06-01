@@ -1,0 +1,22 @@
+submission_gate:
+  episode_steps: 500
+  enable_comets: true
+  act_timeout: 1.0
+  benchmark_seeds: 8
+  technical_seeds: [0, 1, 2, 3]
+  holdout_seeds: [17, 53, 101, 149, 233, 317, 401, 463]
+  final_seeds: 20
+  opponents: [greedy, defensive, rush, anti_meta, weak_random]
+  floors:
+    greedy: 0.90
+    defensive: 0.90
+    rush: 0.65
+    anti_meta: 0.90
+    weak_random: 0.85
+    four_player: 0.50
+  regression:
+    max_2p_win_rate_drop: 0.05
+    max_mean_score_margin_drop: 0.10
+    max_worst_decile_score_margin_drop: 0.10
+  holdout:
+    min_worst_decile_score_margin: -0.30

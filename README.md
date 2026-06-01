@@ -207,16 +207,19 @@ python -m scripts.benchmark_sim --num-envs 1024 --steps 500
 # 2. Rodar testes de lógica local
 pytest -q
 
-# 3. Gerar probes de paridade contra Kaggle
+# 3. Rodar gates pré-submissão no template atual
+python -m scripts.gate_check
+
+# 4. Gerar probes de paridade contra Kaggle
 python -m scripts.parity_probe --episodes 32 --steps 500
 
-# 4. Treinar currículo simples
+# 5. Treinar currículo simples
 python -m python.train.train_league --config configs/league.yaml
 
-# 5. Avaliar candidatos finais
+# 6. Avaliar candidatos finais
 python -m python.train.evaluate_population --config configs/eval_final.yaml
 
-# 6. Exportar submissão
+# 7. Exportar submissão
 python -m scripts.export_submission --checkpoint runs/best.pt --out submission.py
 ```
 

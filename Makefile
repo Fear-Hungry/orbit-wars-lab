@@ -1,4 +1,4 @@
-.PHONY: install build test smoke bench fmt lint clean lab-doctor lab-heuristics lab-quick lab-eval lab-league lab-submission docker-build docker-shell docker-codex docker-smoke docker-test docker-train docker-gpu-build docker-gpu-shell docker-gpu-codex docker-gpu-check docker-gpu-train
+.PHONY: install build test smoke bench fmt lint clean lab-doctor lab-heuristics lab-quick lab-eval lab-league lab-submission gate-check gate-check-final docker-build docker-shell docker-codex docker-smoke docker-test docker-train docker-gpu-build docker-gpu-shell docker-gpu-codex docker-gpu-check docker-gpu-train
 
 install:
 	pip install -U pip
@@ -34,6 +34,12 @@ lab-league:
 lab-submission:
 	python -m python.lab.cli export
 	python -m python.lab.cli bench-submission
+
+gate-check:
+	python -m scripts.gate_check
+
+gate-check-final:
+	python -m scripts.gate_check --include-final
 
 fmt:
 	cargo fmt --all || true
