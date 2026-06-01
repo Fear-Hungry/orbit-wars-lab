@@ -32,6 +32,11 @@ submission_gate:
       submission_player: 1
       min_win_points: 1.0
       min_normalized_margin: 0.0
+    - opponent: weak_random
+      seed: 2
+      submission_player: 1
+      min_win_points: 1.0
+      min_normalized_margin: 0.0
     - opponent: rush
       seed: 1
       submission_player: 0

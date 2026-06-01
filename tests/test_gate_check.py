@@ -1,12 +1,14 @@
 from pathlib import Path
 
 from scripts.gate_check import (
+    DEFAULT_CONFIG,
     GateConfig,
     _final_seed_list,
     _gate_critical_matchups,
     _gate_floors,
     _gate_holdout,
     _gate_regression,
+    _load_config,
 )
 
 
@@ -94,3 +96,15 @@ def test_gate_critical_matchups_passes_when_no_cases_are_configured():
     gate = _gate_critical_matchups(Path("unused.py"), _cfg())
 
     assert gate == {"name": "gate_2b_critical_matchups", "passed": True, "checks": []}
+
+
+def test_default_gate_tracks_known_weak_random_seed_two_failure():
+    cfg = _load_config(DEFAULT_CONFIG)
+
+    assert {
+        "opponent": "weak_random",
+        "seed": 2,
+        "submission_player": 1,
+        "min_win_points": 1.0,
+        "min_normalized_margin": 0.0,
+    } in cfg.critical_matchups
