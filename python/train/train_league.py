@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from python.agents.registry import HEURISTIC_NAMES
 from python.league.evaluation import load_evaluation_report, member_from_evaluation_entry
 from python.league.hall_of_fame import (
     HallOfFame,
@@ -66,7 +67,7 @@ def build_opponent_pool(
 ) -> dict[str, list[str]]:
     sample_size = int(cfg["hall_of_fame"]["sample_size"])
     map_elites_sample_size = int(cfg["map_elites"].get("sample_size", sample_size))
-    heuristics = list(cfg.get("heuristics", ["greedy", "defensive", "rush"]))
+    heuristics = list(cfg.get("heuristics", list(HEURISTIC_NAMES)))
     return {
         "current_population": [member.id for member in population[: max(1, min(4, len(population)))]],
         "hall_of_fame": [entry.member_id for entry in hall_of_fame.sample(sample_size)],
@@ -83,7 +84,7 @@ def build_competitive_population(
     return {
         "ppo_policies": [member.id for member in population],
         "mutants": mutated_ids,
-        "heuristics": list(cfg.get("heuristics", ["greedy", "defensive", "rush"])),
+        "heuristics": list(cfg.get("heuristics", list(HEURISTIC_NAMES))),
     }
 
 

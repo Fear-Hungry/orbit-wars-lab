@@ -4,31 +4,18 @@ import argparse
 import importlib.util
 import json
 import random
+from collections.abc import Callable
 from pathlib import Path
 from statistics import fmean
 from time import perf_counter
-from typing import Any, Callable
+from typing import Any
 
-from python.agents import (
-    anti_meta_agent,
-    defensive_agent,
-    greedy_agent,
-    rush_agent,
-    weak_random_agent,
-)
+from python.agents.registry import Policy, get_heuristic_policies
 from python.orbit_wars_gym.backend import RustBatchBackend, RustConfig
 from python.orbit_wars_gym.observation import to_official_observation
-from python.train.evaluate_population import _moves_are_legal, _normalized_margin
+from python.orbit_wars_gym.rules import moves_are_legal, normalized_margin
 
-Policy = Callable[[dict[str, Any], int], list[list[float]]]
-
-HEURISTIC_POLICIES: dict[str, Policy] = {
-    "greedy": greedy_agent,
-    "defensive": defensive_agent,
-    "rush": rush_agent,
-    "anti_meta": anti_meta_agent,
-    "weak_random": weak_random_agent,
-}
+HEURISTIC_POLICIES = get_heuristic_policies()
 
 
 def _load_submission_agent(path: Path) -> Callable[[dict[str, Any]], list[list[float]]]:
@@ -99,7 +86,7 @@ def _run_match(
                 if elapsed > act_timeout:
                     stats["timeouts"] += 1.0
                     moves = []
-                if not isinstance(moves, list) or not _moves_are_legal(state, idx, moves):
+                if not isinstance(moves, list) or not moves_are_legal(state, idx, moves):
                     stats["invalid_actions"] += 1.0
                     moves = []
             except Exception:
@@ -167,7 +154,7 @@ def benchmark_two_player(
                     "seed": float(seed),
                     "submission_player": float(submission_idx),
                     "win_points": _win_points(scores, submission_idx),
-                    "normalized_margin": _normalized_margin(scores, submission_idx),
+                    "normalized_margin": normalized_margin(scores, submission_idx),
                     **stats,
                 }
             )
@@ -212,7 +199,7 @@ def benchmark_four_player(
             {
                 "seed": float(seed),
                 "win_points": _win_points(scores, 0),
-                "normalized_margin": _normalized_margin(scores, 0),
+                "normalized_margin": normalized_margin(scores, 0),
                 "crashes": runtime_stats[0]["crashes"],
                 "timeouts": runtime_stats[0]["timeouts"],
                 "invalid_actions": runtime_stats[0]["invalid_actions"],

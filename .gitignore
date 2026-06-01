@@ -10,6 +10,10 @@ target/
 .maturin/
 .pytest_cache/
 .ruff_cache/
+.autoresearch/
+.claude/
+CLAUDE.md
+graphify-out/
 runs/
 wandb/
 logs/
@@ -18,6 +22,7 @@ artifacts/
 .todo
 autoresearch-*.json
 autoresearch-*.md
+uv.lock
 *.pt
 *.pth
 *.onnx

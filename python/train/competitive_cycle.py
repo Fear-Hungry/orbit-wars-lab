@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from python.agents.registry import HEURISTIC_NAMES
 from python.league.evaluation import AgentSpec, member_from_evaluation_entry
 from python.league.hall_of_fame import HallOfFame
 from python.league.map_elites import MapElitesArchive
@@ -149,7 +150,7 @@ def run_competitive_cycle(
         current_manifest = manifest_from_members(
             next_population,
             hall_of_fame,
-            list(league_cfg.get("heuristics", ["greedy", "defensive", "rush"])),
+            list(league_cfg.get("heuristics", list(HEURISTIC_NAMES))),
         )
         manifests.append(current_manifest)
 

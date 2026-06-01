@@ -81,7 +81,21 @@ pip install -r requirements.txt
 maturin develop --release -m crates/orbit_wars_py/Cargo.toml
 
 # smoke test
-python scripts/smoke_test.py
+python -m scripts.smoke_test
+```
+
+Alternativa com `uv` para o fluxo leve de laboratório:
+
+```bash
+uv run python -m python.lab.cli doctor
+uv run python -m scripts.smoke_test
+uv run python -m python.lab.cli quick
+```
+
+Para treino ou validação Kaggle completa via `uv`, instale os extras:
+
+```bash
+uv sync --extra train --extra kaggle --extra dev
 ```
 
 ## Docker para treino limitado
@@ -165,16 +179,36 @@ TORCH_COMPUTE_PLATFORM=cu126 docker compose --profile gpu build lab-gpu
 
 ## Caminho de treino recomendado
 
+Para testar ideias sem lembrar todos os scripts, use a entrada consolidada:
+
+```bash
+python -m python.lab.cli doctor
+python -m python.lab.cli quick
+python -m python.lab.cli eval
+python -m python.lab.cli league
+```
+
+Os atalhos equivalentes no `Makefile` são:
+
+```bash
+make lab-doctor
+make lab-quick
+make lab-eval
+make lab-league
+```
+
+O playbook prático fica em `docs/PLAYBOOK.md`.
+
 ```bash
 # 1. Rodar smoke test e benchmark
-python scripts/smoke_test.py
-python scripts/benchmark_sim.py --num-envs 1024 --steps 500
+python -m scripts.smoke_test
+python -m scripts.benchmark_sim --num-envs 1024 --steps 500
 
 # 2. Rodar testes de lógica local
 pytest -q
 
 # 3. Gerar probes de paridade contra Kaggle
-python scripts/parity_probe.py --episodes 32 --steps 500
+python -m scripts.parity_probe --episodes 32 --steps 500
 
 # 4. Treinar currículo simples
 python -m python.train.train_league --config configs/league.yaml
@@ -183,7 +217,7 @@ python -m python.train.train_league --config configs/league.yaml
 python -m python.train.evaluate_population --config configs/eval_final.yaml
 
 # 6. Exportar submissão
-python scripts/export_submission.py --checkpoint runs/best.pt --out submission.py
+python -m scripts.export_submission --checkpoint runs/best.pt --out submission.py
 ```
 
 ## Princípio competitivo

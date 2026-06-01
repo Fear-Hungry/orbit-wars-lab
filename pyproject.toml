@@ -8,6 +8,32 @@ version = "0.1.0"
 description = "Local Rust + Python lab for Kaggle Orbit Wars agents"
 requires-python = ">=3.10"
 readme = "README.md"
+dependencies = [
+    "numpy>=1.26",
+    "pyyaml>=6.0",
+    "rich>=13.7",
+    "scipy>=1.11",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+dev = [
+    "maturin>=1.7",
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
+kaggle = [
+    "kaggle-environments>=1.16",
+]
+train = [
+    "gymnasium>=0.29",
+    "pettingzoo>=1.24",
+    "tensorboard>=2.16",
+    "torch>=2.2",
+]
+
+[tool.maturin]
+manifest-path = "crates/orbit_wars_py/Cargo.toml"
 
 [tool.ruff]
 line-length = 100

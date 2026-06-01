@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,14 +11,8 @@ from typing import Any
 
 import torch
 import yaml
-from python.agents import (
-    anti_meta_agent,
-    defensive_agent,
-    greedy_agent,
-    rush_agent,
-    weak_random_agent,
-)
 from python.agents.policy import FlatActorCritic
+from python.agents.registry import get_heuristic_policies
 from python.league.elo import EloRating, update_elo
 from python.league.evaluation import AgentSpec, default_hparams, load_population_manifest
 from python.league.hall_of_fame import load_hall_of_fame
@@ -27,15 +20,10 @@ from python.orbit_wars_gym.action_decoder import DecoderConfig, decode_discrete_
 from python.orbit_wars_gym.backend import RustBatchBackend, RustConfig
 from python.orbit_wars_gym.encoding import encode_state, observation_dim
 from python.orbit_wars_gym.entities import planet_id, planet_owner
+from python.orbit_wars_gym.rules import moves_are_legal, normalized_margin
 from rich import print
 
-HEURISTIC_POLICIES = {
-    "greedy": greedy_agent,
-    "defensive": defensive_agent,
-    "rush": rush_agent,
-    "anti_meta": anti_meta_agent,
-    "weak_random": weak_random_agent,
-}
+HEURISTIC_POLICIES = get_heuristic_policies()
 
 
 @dataclass(frozen=True)
@@ -128,18 +116,7 @@ def _decoder_config(spec: AgentSpec) -> DecoderConfig:
 
 
 def _moves_are_legal(state: dict[str, Any], player: int, moves: list[list[float]]) -> bool:
-    own_ids = {planet_id(planet) for planet in state.get("planets", []) if planet_owner(planet) == player}
-    for move in moves:
-        if not isinstance(move, list) or len(move) != 3:
-            return False
-        from_id, angle, ships = move
-        if int(from_id) not in own_ids:
-            return False
-        if not math.isfinite(float(angle)):
-            return False
-        if int(ships) <= 0:
-            return False
-    return True
+    return moves_are_legal(state, player, moves)
 
 
 def _policy_runtime(spec: AgentSpec) -> Any:
@@ -192,12 +169,7 @@ def _final_planet_share(state: dict[str, Any], player: int) -> float:
 
 
 def _normalized_margin(scores: list[float], player: int) -> float:
-    own = float(scores[player])
-    others = [float(score) for idx, score in enumerate(scores) if idx != player]
-    if not others:
-        return 0.0
-    reference = fmean(others)
-    return (own - reference) / max(abs(own) + abs(reference), 1.0)
+    return normalized_margin(scores, player)
 
 
 def _sample_opponents(anchor: AgentSpec, opponents: list[AgentSpec], seed: int, count: int) -> list[AgentSpec]:

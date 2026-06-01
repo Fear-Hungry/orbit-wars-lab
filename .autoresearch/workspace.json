@@ -1,9 +1,0 @@
-{
-  "direction": "lower",
-  "generated_at": "2026-04-22T02:53:17.521512+00:00",
-  "metric_name": "TODO_metric",
-  "mode": "knowledge-harvest",
-  "mutable_surface": "crates/orbit_wars_core/src/batch.rs",
-  "repo_path": "/home/marcusvinicius/Repositorios/orbit-wars-lab",
-  "verify_command": "make bench"
-}

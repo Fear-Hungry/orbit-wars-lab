@@ -12,19 +12,16 @@ import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn.functional as F
-from python.agents import defensive_agent, greedy_agent, rush_agent
 from python.agents.policy import FlatActorCritic
+from python.agents.registry import get_heuristic_policies
 
 from orbit_wars_gym import OrbitWarsGymEnv
 from orbit_wars_gym.backend import RustConfig
 from orbit_wars_gym.encoding import observation_dim
 from orbit_wars_gym.entities import fleet_owner, planet_id, planet_owner
 
-PHASE0_OPPONENTS = {
-    "greedy": greedy_agent,
-    "defensive": defensive_agent,
-    "rush": rush_agent,
-}
+_HEURISTIC_POLICIES = get_heuristic_policies()
+PHASE0_OPPONENTS = {name: _HEURISTIC_POLICIES[name] for name in ("greedy", "defensive", "rush")}
 
 
 @dataclass(frozen=True)

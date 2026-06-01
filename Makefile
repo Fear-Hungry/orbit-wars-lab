@@ -1,4 +1,4 @@
-.PHONY: install build test smoke bench fmt lint clean docker-build docker-shell docker-codex docker-smoke docker-test docker-train docker-gpu-build docker-gpu-shell docker-gpu-codex docker-gpu-check docker-gpu-train
+.PHONY: install build test smoke bench fmt lint clean lab-doctor lab-heuristics lab-quick lab-eval lab-league lab-submission docker-build docker-shell docker-codex docker-smoke docker-test docker-train docker-gpu-build docker-gpu-shell docker-gpu-codex docker-gpu-check docker-gpu-train
 
 install:
 	pip install -U pip
@@ -8,13 +8,32 @@ build:
 	maturin develop --release -m crates/orbit_wars_py/Cargo.toml
 
 smoke:
-	python scripts/smoke_test.py
+	python -m scripts.smoke_test
 
 test:
 	pytest -q
 
 bench:
-	python scripts/benchmark_sim.py --num-envs 1024 --steps 500
+	python -m scripts.benchmark_sim --num-envs 1024 --steps 500
+
+lab-doctor:
+	python -m python.lab.cli doctor
+
+lab-heuristics:
+	python -m python.lab.cli heuristics
+
+lab-quick:
+	python -m python.lab.cli quick
+
+lab-eval:
+	python -m python.lab.cli eval
+
+lab-league:
+	python -m python.lab.cli league
+
+lab-submission:
+	python -m python.lab.cli export
+	python -m python.lab.cli bench-submission
 
 fmt:
 	cargo fmt --all || true
@@ -37,7 +56,7 @@ docker-codex:
 	docker compose run --rm lab codex
 
 docker-smoke:
-	docker compose run --rm lab python scripts/smoke_test.py
+	docker compose run --rm lab python -m scripts.smoke_test
 
 docker-test:
 	docker compose run --rm lab pytest -q
