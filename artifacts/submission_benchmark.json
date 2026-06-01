@@ -11,8 +11,8 @@
           "records": [
             {
               "crashes": 0.0,
-              "decision_turns": 234.0,
-              "elapsed_seconds": 1.0935148311036755,
+              "decision_turns": 194.0,
+              "elapsed_seconds": 0.19181191199459136,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 0.0,
@@ -22,8 +22,8 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 204.0,
-              "elapsed_seconds": 0.9405390750107472,
+              "decision_turns": 205.0,
+              "elapsed_seconds": 0.19765431084670126,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 0.0,
@@ -33,8 +33,8 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 346.0,
-              "elapsed_seconds": 0.6877021639884333,
+              "decision_turns": 179.0,
+              "elapsed_seconds": 0.07178982306504622,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 1.0,
@@ -44,8 +44,8 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 417.0,
-              "elapsed_seconds": 0.8818231680124882,
+              "decision_turns": 174.0,
+              "elapsed_seconds": 0.06542029694537632,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 1.0,
@@ -55,8 +55,8 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 191.0,
-              "elapsed_seconds": 0.6918081699841423,
+              "decision_turns": 211.0,
+              "elapsed_seconds": 0.1687584660248831,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 2.0,
@@ -66,11 +66,121 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 233.0,
-              "elapsed_seconds": 0.7654179790260969,
+              "decision_turns": 223.0,
+              "elapsed_seconds": 0.1868199132150039,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 2.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 240.0,
+              "elapsed_seconds": 0.07247720679151826,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 3.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 232.0,
+              "elapsed_seconds": 0.062028049986111,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 3.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 315.0,
+              "elapsed_seconds": 0.08292513297055848,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 4.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 321.0,
+              "elapsed_seconds": 0.07988045131787658,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 4.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 194.0,
+              "elapsed_seconds": 0.1637291871884372,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 5.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 181.0,
+              "elapsed_seconds": 0.16373105297680013,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 5.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 159.0,
+              "elapsed_seconds": 0.16945007277536206,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 6.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 175.0,
+              "elapsed_seconds": 0.19528328886372037,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 6.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 215.0,
+              "elapsed_seconds": 0.1399772978038527,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 7.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 219.0,
+              "elapsed_seconds": 0.1449202830553986,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 7.0,
               "submission_player": 1.0,
               "timeouts": 0.0,
               "win_points": 1.0
@@ -78,9 +188,9 @@
           ],
           "summary": {
             "crash_rate": 0.0,
-            "games": 6,
+            "games": 16,
             "invalid_action_rate": 0.0,
-            "mean_decision_ms": 3.1143417766926667,
+            "mean_decision_ms": 0.627482323485958,
             "mean_score_margin": 1.0,
             "timeout_rate": 0.0,
             "win_rate": 1.0
@@ -92,8 +202,8 @@
           "records": [
             {
               "crashes": 0.0,
-              "decision_turns": 256.0,
-              "elapsed_seconds": 1.0192151910305256,
+              "decision_turns": 240.0,
+              "elapsed_seconds": 0.22115685979952104,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 0.0,
@@ -103,8 +213,8 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 255.0,
-              "elapsed_seconds": 0.9537517909921007,
+              "decision_turns": 231.0,
+              "elapsed_seconds": 0.22577484097564593,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 0.0,
@@ -114,8 +224,8 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 245.0,
-              "elapsed_seconds": 0.3744880129597732,
+              "decision_turns": 221.0,
+              "elapsed_seconds": 0.07782435114495456,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 1.0,
@@ -125,8 +235,8 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 264.0,
-              "elapsed_seconds": 0.40242213295277907,
+              "decision_turns": 247.0,
+              "elapsed_seconds": 0.10757163978996687,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 1.0,
@@ -136,8 +246,8 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 317.0,
-              "elapsed_seconds": 0.952110372018069,
+              "decision_turns": 156.0,
+              "elapsed_seconds": 0.12033090900513344,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 2.0,
@@ -147,11 +257,121 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 290.0,
-              "elapsed_seconds": 0.9657181639777264,
+              "decision_turns": 156.0,
+              "elapsed_seconds": 0.12137092699413188,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 2.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 327.0,
+              "elapsed_seconds": 0.1255216799909249,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 3.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 263.0,
+              "elapsed_seconds": 0.09987416295916773,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 3.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 381.0,
+              "elapsed_seconds": 0.11335005797445774,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 4.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 400.0,
+              "elapsed_seconds": 0.13563191873254254,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 4.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 152.0,
+              "elapsed_seconds": 0.09792654795455746,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 5.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 153.0,
+              "elapsed_seconds": 0.08998793899081647,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 5.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 211.0,
+              "elapsed_seconds": 0.22229075388167985,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 6.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 213.0,
+              "elapsed_seconds": 0.20538958220276982,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 6.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 214.0,
+              "elapsed_seconds": 0.10717568817199208,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 7.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 188.0,
+              "elapsed_seconds": 0.10599784398800693,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 7.0,
               "submission_player": 1.0,
               "timeouts": 0.0,
               "win_points": 1.0
@@ -159,9 +379,9 @@
           ],
           "summary": {
             "crash_rate": 0.0,
-            "games": 6,
+            "games": 16,
             "invalid_action_rate": 0.0,
-            "mean_decision_ms": 2.868903296822971,
+            "mean_decision_ms": 0.5801160944727602,
             "mean_score_margin": 1.0,
             "timeout_rate": 0.0,
             "win_rate": 1.0
@@ -173,8 +393,8 @@
           "records": [
             {
               "crashes": 0.0,
-              "decision_turns": 248.0,
-              "elapsed_seconds": 0.7312198418876505,
+              "decision_turns": 166.0,
+              "elapsed_seconds": 0.16373306800960563,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 0.0,
@@ -184,8 +404,8 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 228.0,
-              "elapsed_seconds": 0.7425436910270946,
+              "decision_turns": 152.0,
+              "elapsed_seconds": 0.1549587287590839,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 0.0,
@@ -195,30 +415,30 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 379.0,
-              "elapsed_seconds": 0.6372572950422182,
+              "decision_turns": 178.0,
+              "elapsed_seconds": 0.07113357898197137,
               "invalid_actions": 0.0,
-              "normalized_margin": -1.0,
+              "normalized_margin": 1.0,
               "seed": 1.0,
               "submission_player": 0.0,
               "timeouts": 0.0,
-              "win_points": 0.0
+              "win_points": 1.0
             },
             {
               "crashes": 0.0,
-              "decision_turns": 297.0,
-              "elapsed_seconds": 0.4123868029055302,
+              "decision_turns": 173.0,
+              "elapsed_seconds": 0.06532072395202704,
               "invalid_actions": 0.0,
-              "normalized_margin": -1.0,
+              "normalized_margin": 1.0,
               "seed": 1.0,
               "submission_player": 1.0,
               "timeouts": 0.0,
-              "win_points": 0.0
+              "win_points": 1.0
             },
             {
               "crashes": 0.0,
-              "decision_turns": 111.0,
-              "elapsed_seconds": 0.2560332030043355,
+              "decision_turns": 236.0,
+              "elapsed_seconds": 0.16315704901353456,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 2.0,
@@ -228,11 +448,121 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 111.0,
-              "elapsed_seconds": 0.23880176897364436,
+              "decision_turns": 246.0,
+              "elapsed_seconds": 0.1731730380852241,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 2.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 243.0,
+              "elapsed_seconds": 0.06245054965256713,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 3.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 227.0,
+              "elapsed_seconds": 0.05591891086078249,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 3.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 456.0,
+              "elapsed_seconds": 0.11573305990896188,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 4.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 475.0,
+              "elapsed_seconds": 0.12020464794477448,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 4.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 155.0,
+              "elapsed_seconds": 0.0811200650932733,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 5.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 152.0,
+              "elapsed_seconds": 0.08386671807966195,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 5.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 164.0,
+              "elapsed_seconds": 0.16281826092745177,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 6.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 161.0,
+              "elapsed_seconds": 0.16381906179594807,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 6.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 187.0,
+              "elapsed_seconds": 0.10694695022539236,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 7.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 155.0,
+              "elapsed_seconds": 0.08378025170532055,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 7.0,
               "submission_player": 1.0,
               "timeouts": 0.0,
               "win_points": 1.0
@@ -240,12 +570,12 @@
           ],
           "summary": {
             "crash_rate": 0.0,
-            "games": 6,
+            "games": 16,
             "invalid_action_rate": 0.0,
-            "mean_decision_ms": 2.1966831170600245,
-            "mean_score_margin": 0.3333333333333333,
+            "mean_decision_ms": 0.5184726781042486,
+            "mean_score_margin": 1.0,
             "timeout_rate": 0.0,
-            "win_rate": 0.6666666666666666
+            "win_rate": 1.0
           }
         },
         {
@@ -254,8 +584,8 @@
           "records": [
             {
               "crashes": 0.0,
-              "decision_turns": 225.0,
-              "elapsed_seconds": 0.6805978280099225,
+              "decision_turns": 229.0,
+              "elapsed_seconds": 0.20002684084465727,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 0.0,
@@ -265,8 +595,8 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 202.0,
-              "elapsed_seconds": 0.6950034109904664,
+              "decision_turns": 247.0,
+              "elapsed_seconds": 0.21408679397427477,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 0.0,
@@ -276,8 +606,8 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 446.0,
-              "elapsed_seconds": 0.8085598520337953,
+              "decision_turns": 343.0,
+              "elapsed_seconds": 0.18190839781891555,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 1.0,
@@ -287,8 +617,8 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 410.0,
-              "elapsed_seconds": 0.7749025620432803,
+              "decision_turns": 276.0,
+              "elapsed_seconds": 0.1487176112132147,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 1.0,
@@ -298,8 +628,8 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 214.0,
-              "elapsed_seconds": 0.5652370279713068,
+              "decision_turns": 403.0,
+              "elapsed_seconds": 0.4956541131832637,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 2.0,
@@ -309,11 +639,121 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 219.0,
-              "elapsed_seconds": 0.6018252790163388,
+              "decision_turns": 353.0,
+              "elapsed_seconds": 0.34921647695591673,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 2.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 267.0,
+              "elapsed_seconds": 0.09751041707932018,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 3.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 218.0,
+              "elapsed_seconds": 0.07600920295226388,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 3.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 441.0,
+              "elapsed_seconds": 0.11270779417827725,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 4.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 413.0,
+              "elapsed_seconds": 0.1018669209734071,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 4.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 182.0,
+              "elapsed_seconds": 0.14393681220826693,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 5.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 148.0,
+              "elapsed_seconds": 0.09742369104060344,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 5.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 193.0,
+              "elapsed_seconds": 0.22088303469354287,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 6.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 196.0,
+              "elapsed_seconds": 0.22499952898942865,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 6.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 233.0,
+              "elapsed_seconds": 0.11909730502520688,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 7.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 189.0,
+              "elapsed_seconds": 0.11503000717493705,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 7.0,
               "submission_player": 1.0,
               "timeouts": 0.0,
               "win_points": 1.0
@@ -321,9 +761,9 @@
           ],
           "summary": {
             "crash_rate": 0.0,
-            "games": 6,
+            "games": 16,
             "invalid_action_rate": 0.0,
-            "mean_decision_ms": 2.4045023077302505,
+            "mean_decision_ms": 0.6693777299250744,
             "mean_score_margin": 1.0,
             "timeout_rate": 0.0,
             "win_rate": 1.0
@@ -335,8 +775,8 @@
           "records": [
             {
               "crashes": 0.0,
-              "decision_turns": 243.0,
-              "elapsed_seconds": 0.9136652489905828,
+              "decision_turns": 207.0,
+              "elapsed_seconds": 0.17305954106268473,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 0.0,
@@ -346,8 +786,8 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 295.0,
-              "elapsed_seconds": 1.4230849360174034,
+              "decision_turns": 207.0,
+              "elapsed_seconds": 0.17530209384858608,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 0.0,
@@ -357,19 +797,19 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 338.0,
-              "elapsed_seconds": 0.5681676370295463,
+              "decision_turns": 174.0,
+              "elapsed_seconds": 0.07242501893779263,
               "invalid_actions": 0.0,
-              "normalized_margin": -1.0,
+              "normalized_margin": 1.0,
               "seed": 1.0,
               "submission_player": 0.0,
               "timeouts": 0.0,
-              "win_points": 0.0
+              "win_points": 1.0
             },
             {
               "crashes": 0.0,
-              "decision_turns": 281.0,
-              "elapsed_seconds": 0.5330661379994126,
+              "decision_turns": 203.0,
+              "elapsed_seconds": 0.06701576116029173,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 1.0,
@@ -380,7 +820,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 251.0,
-              "elapsed_seconds": 0.8340640929454821,
+              "elapsed_seconds": 0.2151224909175653,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 2.0,
@@ -390,24 +830,134 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 325.0,
-              "elapsed_seconds": 0.8517903509637108,
+              "decision_turns": 191.0,
+              "elapsed_seconds": 0.08803257506224327,
               "invalid_actions": 0.0,
               "normalized_margin": -1.0,
               "seed": 2.0,
               "submission_player": 1.0,
               "timeouts": 0.0,
               "win_points": 0.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 259.0,
+              "elapsed_seconds": 0.07332178408978507,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 3.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 256.0,
+              "elapsed_seconds": 0.08246141520794481,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 3.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 358.0,
+              "elapsed_seconds": 0.09568097078590654,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 4.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 481.0,
+              "elapsed_seconds": 0.1258105038141366,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 4.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 220.0,
+              "elapsed_seconds": 0.15538343318621628,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 5.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 196.0,
+              "elapsed_seconds": 0.15846257586963475,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 5.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 173.0,
+              "elapsed_seconds": 0.203598697000416,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 6.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 200.0,
+              "elapsed_seconds": 0.209381327877054,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 6.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 221.0,
+              "elapsed_seconds": 0.12109750302624889,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 7.0,
+              "submission_player": 0.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
+            },
+            {
+              "crashes": 0.0,
+              "decision_turns": 238.0,
+              "elapsed_seconds": 0.09871381634729914,
+              "invalid_actions": 0.0,
+              "normalized_margin": 1.0,
+              "seed": 7.0,
+              "submission_player": 1.0,
+              "timeouts": 0.0,
+              "win_points": 1.0
             }
           ],
           "summary": {
             "crash_rate": 0.0,
-            "games": 6,
+            "games": 16,
             "invalid_action_rate": 0.0,
-            "mean_decision_ms": 2.956629200199733,
-            "mean_score_margin": 0.3333333333333333,
+            "mean_decision_ms": 0.5514653215629219,
+            "mean_score_margin": 0.875,
             "timeout_rate": 0.0,
-            "win_rate": 0.6666666666666666
+            "win_rate": 0.9375
           }
         }
       ]
@@ -424,8 +974,8 @@
       "records": [
         {
           "crashes": 0.0,
-          "decision_turns": 265.0,
-          "elapsed_seconds": 0.4015016110643046,
+          "decision_turns": 212.0,
+          "elapsed_seconds": 0.21563757202238776,
           "invalid_actions": 0.0,
           "lineup": [
             "anti_meta",
@@ -439,8 +989,8 @@
         },
         {
           "crashes": 0.0,
-          "decision_turns": 388.0,
-          "elapsed_seconds": 0.31619743996998295,
+          "decision_turns": 243.0,
+          "elapsed_seconds": 0.09884626281564124,
           "invalid_actions": 0.0,
           "lineup": [
             "defensive",
@@ -454,35 +1004,115 @@
         },
         {
           "crashes": 0.0,
-          "decision_turns": 500.0,
-          "elapsed_seconds": 0.44725620402459754,
+          "decision_turns": 217.0,
+          "elapsed_seconds": 0.16953336502774619,
           "invalid_actions": 0.0,
           "lineup": [
             "anti_meta",
             "defensive",
             "weak_random"
           ],
-          "normalized_margin": -1.0,
+          "normalized_margin": 1.0,
           "seed": 2.0,
           "timeouts": 0.0,
+          "win_points": 1.0
+        },
+        {
+          "crashes": 0.0,
+          "decision_turns": 257.0,
+          "elapsed_seconds": 0.07193497821572237,
+          "invalid_actions": 0.0,
+          "lineup": [
+            "anti_meta",
+            "anti_meta",
+            "rush"
+          ],
+          "normalized_margin": 1.0,
+          "seed": 3.0,
+          "timeouts": 0.0,
+          "win_points": 1.0
+        },
+        {
+          "crashes": 0.0,
+          "decision_turns": 280.0,
+          "elapsed_seconds": 0.03729313606163487,
+          "invalid_actions": 0.0,
+          "lineup": [
+            "weak_random",
+            "rush",
+            "defensive"
+          ],
+          "normalized_margin": -1.0,
+          "seed": 4.0,
+          "timeouts": 0.0,
           "win_points": 0.0
+        },
+        {
+          "crashes": 0.0,
+          "decision_turns": 201.0,
+          "elapsed_seconds": 0.16172724007628858,
+          "invalid_actions": 0.0,
+          "lineup": [
+            "defensive",
+            "defensive",
+            "weak_random"
+          ],
+          "normalized_margin": 1.0,
+          "seed": 5.0,
+          "timeouts": 0.0,
+          "win_points": 1.0
+        },
+        {
+          "crashes": 0.0,
+          "decision_turns": 214.0,
+          "elapsed_seconds": 0.13796267300494947,
+          "invalid_actions": 0.0,
+          "lineup": [
+            "greedy",
+            "rush",
+            "rush"
+          ],
+          "normalized_margin": 1.0,
+          "seed": 6.0,
+          "timeouts": 0.0,
+          "win_points": 1.0
+        },
+        {
+          "crashes": 0.0,
+          "decision_turns": 209.0,
+          "elapsed_seconds": 0.10814823510008864,
+          "invalid_actions": 0.0,
+          "lineup": [
+            "anti_meta",
+            "weak_random",
+            "weak_random"
+          ],
+          "normalized_margin": 1.0,
+          "seed": 7.0,
+          "timeouts": 0.0,
+          "win_points": 1.0
         }
       ],
       "summary": {
         "crash_rate": 0.0,
-        "games": 3,
+        "games": 8,
         "invalid_action_rate": 0.0,
-        "mean_decision_ms": 1.0103688248559282,
-        "mean_score_margin": 0.3333333333333333,
+        "mean_decision_ms": 0.5461448239631528,
+        "mean_score_margin": 0.75,
         "timeout_rate": 0.0,
-        "win_rate": 0.6666666666666666
+        "win_rate": 0.875
       }
     }
   ],
   "seeds": [
     0,
     1,
-    2
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
   ],
   "submission": "artifacts/submission.py"
 }
