@@ -132,6 +132,114 @@ def _action_targets(state: dict[str, Any], actions: list[list[float]]) -> list[d
     return [_action_target(state, action) for action in actions]
 
 
+def _planet_snapshots(state: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    snapshots: dict[int, dict[str, Any]] = {}
+    for planet in state.get("planets", []):
+        planet_id = int(_planet_field(planet, "id", 0))
+        snapshots[planet_id] = {
+            "planet_id": planet_id,
+            "owner": int(_planet_field(planet, "owner", 1)),
+            "x": float(_planet_field(planet, "x", 2)),
+            "y": float(_planet_field(planet, "y", 3)),
+            "radius": float(_planet_field(planet, "radius", 4)),
+            "ships": int(_planet_field(planet, "ships", 5)),
+            "production": int(_planet_field(planet, "production", 6)),
+            "rotating": _is_rotating_planet(planet),
+        }
+    return snapshots
+
+
+def _capture_events(before: dict[str, Any], after: dict[str, Any], turn: int) -> list[dict[str, Any]]:
+    previous = _planet_snapshots(before)
+    current = _planet_snapshots(after)
+    events = []
+    for planet_id, now in current.items():
+        old = previous.get(planet_id)
+        if old is None or int(old["owner"]) == int(now["owner"]):
+            continue
+        events.append(
+            {
+                "turn": turn,
+                "planet_id": planet_id,
+                "old_owner": int(old["owner"]),
+                "new_owner": int(now["owner"]),
+                "ships": int(now["ships"]),
+                "production": int(now["production"]),
+                "rotating": bool(now["rotating"]),
+                "x": float(now["x"]),
+                "y": float(now["y"]),
+            }
+        )
+    return events
+
+
+def _launch_events(
+    state: dict[str, Any],
+    actions: list[list[list[float]]],
+    *,
+    turn: int,
+    submission_player: int,
+) -> list[dict[str, Any]]:
+    events = []
+    for player, moves in enumerate(actions):
+        actor = "submission" if player == submission_player else "opponent"
+        for target in _action_targets(state, moves):
+            action = target.get("action")
+            if not isinstance(action, list) or len(action) != 3:
+                continue
+            events.append(
+                {
+                    "turn": turn,
+                    "actor": actor,
+                    "player": player,
+                    "source_id": int(action[0]),
+                    "ships": int(action[2]),
+                    "target_id": target.get("target_id"),
+                    "target_owner": target.get("target_owner"),
+                    "target_ships": target.get("target_ships"),
+                    "target_production": target.get("target_production"),
+                    "target_score": target.get("score"),
+                }
+            )
+    return events
+
+
+def _economy_summary(captures: list[dict[str, Any]], players: int = 2) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        str(player): {
+            "first_capture_turn": None,
+            "neutral_captures": 0,
+            "neutral_production": 0,
+            "enemy_captures": 0,
+            "enemy_production": 0,
+        }
+        for player in range(players)
+    }
+    for event in captures:
+        owner = int(event["new_owner"])
+        if owner < 0:
+            continue
+        item = summary.setdefault(
+            str(owner),
+            {
+                "first_capture_turn": None,
+                "neutral_captures": 0,
+                "neutral_production": 0,
+                "enemy_captures": 0,
+                "enemy_production": 0,
+            },
+        )
+        if item["first_capture_turn"] is None:
+            item["first_capture_turn"] = int(event["turn"])
+        if int(event["old_owner"]) == -1:
+            item["neutral_captures"] += 1
+            item["neutral_production"] += int(event["production"])
+        else:
+            item["enemy_captures"] += 1
+            item["enemy_production"] += int(event["production"])
+    return summary
+
+
 def _act(policy, state: dict[str, Any], player: int, *, act_timeout: float, stats: dict[str, float]) -> list[list[float]]:
     stats["decision_turns"] += 1.0
     try:
@@ -162,6 +270,7 @@ def diagnose_match(
     act_timeout: float = 1.0,
     early_turns: int = 20,
     sample_every: int = 25,
+    event_turns: int = 120,
 ) -> dict[str, Any]:
     if opponent_name not in HEURISTIC_POLICIES:
         raise ValueError(f"unknown opponent: {opponent_name}")
@@ -181,13 +290,18 @@ def diagnose_match(
     )
     state = backend.reset(seed)[0]
     timeline: list[dict[str, Any]] = []
+    launches: list[dict[str, Any]] = []
+    captures: list[dict[str, Any]] = []
     outcome = {"scores": [0.0, 0.0], "done": False}
 
     for turn in range(episode_steps):
+        state_before = state
         actions = [
             _act(players[0], state, 0, act_timeout=act_timeout, stats=runtime_stats[0]),
             _act(players[1], state, 1, act_timeout=act_timeout, stats=runtime_stats[1]),
         ]
+        if turn < event_turns:
+            launches.extend(_launch_events(state, actions, turn=turn, submission_player=submission_player))
         should_sample = turn < early_turns or (sample_every > 0 and turn % sample_every == 0)
         if should_sample:
             timeline.append(
@@ -203,6 +317,7 @@ def diagnose_match(
 
         outcome = backend.step([actions])[0]
         state = backend.states()[0]
+        captures.extend(_capture_events(state_before, state, turn + 1))
         if outcome["done"]:
             if not should_sample:
                 timeline.append(
@@ -231,6 +346,9 @@ def diagnose_match(
         "normalized_margin": normalized_margin(scores, submission_player),
         "runtime_stats": runtime_stats[submission_player],
         "final_totals": _owner_totals(state),
+        "economy_summary": _economy_summary(captures, players=2),
+        "launch_events": launches,
+        "capture_events": captures,
         "timeline": timeline,
     }
 
@@ -246,6 +364,7 @@ def main() -> None:
     parser.add_argument("--disable-comets", action="store_true")
     parser.add_argument("--early-turns", type=int, default=20)
     parser.add_argument("--sample-every", type=int, default=25)
+    parser.add_argument("--event-turns", type=int, default=120)
     parser.add_argument("--out", default=None)
     args = parser.parse_args()
 
@@ -259,6 +378,7 @@ def main() -> None:
         act_timeout=args.act_timeout,
         early_turns=args.early_turns,
         sample_every=args.sample_every,
+        event_turns=args.event_turns,
     )
     if args.out:
         out_path = Path(args.out)

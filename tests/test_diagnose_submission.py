@@ -32,6 +32,32 @@ def test_diagnose_match_records_timeline_and_outcome():
         target = report["timeline"][0]["opponent_action_targets"][0]
         assert {"action", "target_id", "score"}.issubset(target)
     assert "final_totals" in report
+    assert "economy_summary" in report
+    assert set(report["economy_summary"]) == {"0", "1"}
+    assert "launch_events" in report
+    assert "capture_events" in report
+    if report["launch_events"]:
+        assert {
+            "turn",
+            "actor",
+            "player",
+            "source_id",
+            "ships",
+            "target_id",
+            "target_owner",
+            "target_ships",
+            "target_production",
+        }.issubset(report["launch_events"][0])
+    if report["capture_events"]:
+        assert {
+            "turn",
+            "planet_id",
+            "old_owner",
+            "new_owner",
+            "ships",
+            "production",
+            "rotating",
+        }.issubset(report["capture_events"][0])
 
 
 def test_action_target_uses_predicted_rotating_planet_position():
