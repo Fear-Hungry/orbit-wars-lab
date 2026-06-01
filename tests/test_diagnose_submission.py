@@ -26,4 +26,9 @@ def test_diagnose_match_records_timeline_and_outcome():
     assert report["timeline"][0]["turn"] == 0
     assert "totals_before" in report["timeline"][0]
     assert "submission_actions" in report["timeline"][0]
+    assert "submission_action_targets" in report["timeline"][0]
+    assert "opponent_action_targets" in report["timeline"][0]
+    if report["timeline"][0]["opponent_actions"]:
+        target = report["timeline"][0]["opponent_action_targets"][0]
+        assert {"action", "target_id", "score"}.issubset(target)
     assert "final_totals" in report

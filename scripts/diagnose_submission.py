@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from math import atan2, cos, hypot, sin
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -12,6 +13,7 @@ from python.orbit_wars_gym.rules import moves_are_legal, normalized_margin
 from scripts.benchmark_submission import _load_submission_agent, _submission_runtime, _win_points
 
 HEURISTIC_POLICIES = get_heuristic_policies()
+PROFILE_RAY_MAX_ANGLE = 0.36
 
 
 def _empty_runtime_stats() -> dict[str, float]:
@@ -40,6 +42,60 @@ def _owner_totals(state: dict[str, Any]) -> dict[str, dict[str, int]]:
         totals[owner]["fleets"] += 1
         totals[owner]["fleet_ships"] += int(fleet["ships"] if isinstance(fleet, dict) else fleet[6])
     return totals
+
+
+def _angle_delta(left: float, right: float) -> float:
+    return abs(atan2(sin(left - right), cos(left - right)))
+
+
+def _planet_field(planet: Any, key: str, index: int) -> Any:
+    return planet[key] if isinstance(planet, dict) else planet[index]
+
+
+def _action_target(state: dict[str, Any], action: list[float]) -> dict[str, Any]:
+    if not isinstance(action, list) or len(action) != 3:
+        return {"action": action, "target_id": None, "score": None}
+
+    source_id = int(action[0])
+    angle = float(action[1])
+    source = next(
+        (planet for planet in state.get("planets", []) if int(_planet_field(planet, "id", 0)) == source_id),
+        None,
+    )
+    if source is None:
+        return {"action": action, "target_id": None, "score": None}
+
+    source_xy = (float(_planet_field(source, "x", 2)), float(_planet_field(source, "y", 3)))
+    best: tuple[float, Any] | None = None
+    for planet in state.get("planets", []):
+        target_xy = (float(_planet_field(planet, "x", 2)), float(_planet_field(planet, "y", 3)))
+        distance = hypot(target_xy[0] - source_xy[0], target_xy[1] - source_xy[1])
+        if distance <= 0.0:
+            continue
+        target_angle = atan2(target_xy[1] - source_xy[1], target_xy[0] - source_xy[0])
+        delta = _angle_delta(angle, target_angle)
+        if delta > PROFILE_RAY_MAX_ANGLE:
+            continue
+        score = delta + 0.004 * distance
+        if best is None or score < best[0]:
+            best = (score, planet)
+
+    if best is None:
+        return {"action": action, "target_id": None, "score": None}
+
+    target = best[1]
+    return {
+        "action": action,
+        "target_id": int(_planet_field(target, "id", 0)),
+        "target_owner": int(_planet_field(target, "owner", 1)),
+        "target_ships": int(_planet_field(target, "ships", 5)),
+        "target_production": int(_planet_field(target, "production", 6)),
+        "score": float(best[0]),
+    }
+
+
+def _action_targets(state: dict[str, Any], actions: list[list[float]]) -> list[dict[str, Any]]:
+    return [_action_target(state, action) for action in actions]
 
 
 def _act(policy, state: dict[str, Any], player: int, *, act_timeout: float, stats: dict[str, float]) -> list[list[float]]:
@@ -106,6 +162,8 @@ def diagnose_match(
                     "totals_before": _owner_totals(state),
                     "submission_actions": actions[submission_player],
                     "opponent_actions": actions[1 - submission_player],
+                    "submission_action_targets": _action_targets(state, actions[submission_player]),
+                    "opponent_action_targets": _action_targets(state, actions[1 - submission_player]),
                 }
             )
 
@@ -119,6 +177,8 @@ def diagnose_match(
                         "totals_before": _owner_totals(state),
                         "submission_actions": [],
                         "opponent_actions": [],
+                        "submission_action_targets": [],
+                        "opponent_action_targets": [],
                     }
                 )
             break
