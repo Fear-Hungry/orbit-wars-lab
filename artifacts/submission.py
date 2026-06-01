@@ -11,6 +11,12 @@ RESERVE_HOME_SHIPS = 8
 MIN_SHIPS_TO_LAUNCH = 2
 MAX_MOVES_PER_TURN = 6
 MIN_CAPTURE_MARGIN = 2
+PROFILE_DECAY = 0.82
+PROFILE_RAY_MAX_ANGLE = 0.36
+PROFILE_CAPTURE_TTL = 18
+FSM_OPENING_TURNS = 55
+
+_PROFILE_STATE = {}
 
 
 def _field(entity, index, key):
@@ -47,8 +53,36 @@ def _planet_production(planet):
     return int(_field(planet, 6, "production"))
 
 
+def _fleet_id(fleet):
+    return int(_field(fleet, 0, "id"))
+
+
+def _fleet_owner(fleet):
+    return int(_field(fleet, 1, "owner"))
+
+
+def _fleet_x(fleet):
+    return float(_field(fleet, 2, "x"))
+
+
+def _fleet_y(fleet):
+    return float(_field(fleet, 3, "y"))
+
+
+def _fleet_angle(fleet):
+    return float(_field(fleet, 4, "angle"))
+
+
+def _fleet_ships(fleet):
+    return int(_field(fleet, 6, "ships"))
+
+
 def _angle(a, b):
     return atan2(b[1] - a[1], b[0] - a[0])
+
+
+def _angle_delta(left, right):
+    return abs(atan2(sin(left - right), cos(left - right)))
 
 
 def _fleet_speed(ships):
@@ -102,6 +136,145 @@ def _distance(a, b):
     return hypot(a[0] - b[0], a[1] - b[1])
 
 
+def _ray_score_to_planet(origin, angle, planet):
+    target_xy = (_planet_x(planet), _planet_y(planet))
+    distance = _distance(origin, target_xy)
+    if distance <= 0.0:
+        return 999.0
+    delta = _angle_delta(angle, _angle(origin, target_xy))
+    if delta > PROFILE_RAY_MAX_ANGLE:
+        return 999.0
+    return delta + 0.004 * distance
+
+
+def _estimate_fleet_target(obs, fleet):
+    origin = (_fleet_x(fleet), _fleet_y(fleet))
+    angle = _fleet_angle(fleet)
+    best = None
+    for planet in obs.get("planets", []):
+        score = _ray_score_to_planet(origin, angle, planet)
+        if score >= 999.0:
+            continue
+        if best is None or score < best[0]:
+            best = (score, planet)
+    return None if best is None else best[1]
+
+
+def _empty_profile_state(step):
+    return {
+        "step": int(step),
+        "seen_fleets": set(),
+        "to_neutral": 0.0,
+        "to_me": 0.0,
+        "to_leader": 0.0,
+        "to_other": 0.0,
+        "owners": {},
+        "recent_captures": {},
+    }
+
+
+def _decay_profile(state):
+    for key in ("to_neutral", "to_me", "to_leader", "to_other"):
+        state[key] = float(state.get(key, 0.0)) * PROFILE_DECAY
+
+
+def _profile_ratios(state):
+    total = (
+        float(state.get("to_neutral", 0.0))
+        + float(state.get("to_me", 0.0))
+        + float(state.get("to_leader", 0.0))
+        + float(state.get("to_other", 0.0))
+    )
+    if total <= 0.0:
+        return {
+            "profile_total": 0.0,
+            "to_neutral_ratio": 0.0,
+            "to_me_ratio": 0.0,
+            "to_leader_ratio": 0.0,
+            "to_other_ratio": 0.0,
+        }
+    return {
+        "profile_total": total,
+        "to_neutral_ratio": float(state.get("to_neutral", 0.0)) / total,
+        "to_me_ratio": float(state.get("to_me", 0.0)) / total,
+        "to_leader_ratio": float(state.get("to_leader", 0.0)) / total,
+        "to_other_ratio": float(state.get("to_other", 0.0)) / total,
+    }
+
+
+def _update_recent_captures(state, player, planets):
+    previous_owners = state.get("owners", {})
+    recent = {
+        int(planet_id): int(ttl) - 1
+        for planet_id, ttl in state.get("recent_captures", {}).items()
+        if int(ttl) > 1
+    }
+    owners = {}
+    for planet in planets:
+        planet_id = _planet_id(planet)
+        owner = _planet_owner(planet)
+        old_owner = previous_owners.get(planet_id, owner)
+        if old_owner in (-1, player) and owner not in (-1, player) and _planet_ships(planet) <= 14:
+            recent[planet_id] = PROFILE_CAPTURE_TTL
+        owners[planet_id] = owner
+    state["owners"] = owners
+    state["recent_captures"] = recent
+    return set(recent)
+
+
+def _update_opponent_profile(obs, player, planets, leader_owner):
+    global _PROFILE_STATE
+    step = int(obs.get("step", obs.get("turn", 0)))
+    state = _PROFILE_STATE.get(player)
+    if state is None or step <= int(state.get("step", -1)):
+        state = _empty_profile_state(step)
+    else:
+        state["step"] = step
+        _decay_profile(state)
+
+    recent_captures = _update_recent_captures(state, player, planets)
+    seen = state.setdefault("seen_fleets", set())
+    for fleet in obs.get("fleets", []):
+        owner = _fleet_owner(fleet)
+        if owner in (-1, player):
+            continue
+        fleet_key = (owner, _fleet_id(fleet))
+        if fleet_key in seen:
+            continue
+        seen.add(fleet_key)
+        target = _estimate_fleet_target(obs, fleet)
+        if target is None:
+            continue
+        ships = max(0, _fleet_ships(fleet))
+        target_owner = _planet_owner(target)
+        if target_owner == -1:
+            state["to_neutral"] = float(state.get("to_neutral", 0.0)) + ships
+        elif target_owner == player:
+            state["to_me"] = float(state.get("to_me", 0.0)) + ships
+        elif target_owner == leader_owner:
+            state["to_leader"] = float(state.get("to_leader", 0.0)) + ships
+        else:
+            state["to_other"] = float(state.get("to_other", 0.0)) + ships
+
+    _PROFILE_STATE[player] = state
+    ratios = _profile_ratios(state)
+    ratios["recent_enemy_captures"] = recent_captures
+    return ratios
+
+
+def _fsm_state(features):
+    step = int(features.get("step", 0))
+    if features.get("enemy_players", 0) >= 2 and features.get("to_me_ratio", 0.0) >= 0.58:
+        return "DEFEND_UNDER_PRESSURE"
+    if features.get("recent_enemy_captures"):
+        return "PUNISH_WEAK_CAPTURE"
+    if step <= FSM_OPENING_TURNS and features.get("neutral_count", 0) > 0 and features.get("own_count", 0) <= 4:
+        return "OPENING_EXPAND"
+    if features.get("enemy_prod", 0) > features.get("own_prod", 0) and features.get("neutral_count", 0) > 0:
+        return "ECON_CONSOLIDATE"
+    return "BASELINE"
+
+
 def _reserve_for_source(source, own_count, enemies, action):
     reserve = RESERVE_HOME_SHIPS
     if own_count <= 2:
@@ -109,6 +282,8 @@ def _reserve_for_source(source, own_count, enemies, action):
     if action.get("ffa"):
         reserve += 4
     if action.get("pressure"):
+        reserve += 2
+    if action.get("ffa") and action.get("fsm_state") == "DEFEND_UNDER_PRESSURE":
         reserve += 2
     if _planet_production(source) >= 4:
         reserve += 2
@@ -153,9 +328,11 @@ def encode(obs):
             sorted({_planet_owner(planet) for planet in enemies}),
             key=lambda owner: (owner_prod.get(owner, 0), owner_totals.get(owner, 0)),
         )
+    profile = _update_opponent_profile(obs, player, planets, leader_owner)
 
     return {
         "player": player,
+        "step": int(obs.get("step", obs.get("turn", 0))),
         "own_count": len(own),
         "enemy_count": len(enemies),
         "enemy_players": len(enemy_owners),
@@ -166,6 +343,7 @@ def encode(obs):
         "enemy_prod": sum(_planet_production(planet) for planet in enemies),
         "leader_owner": leader_owner,
         "angular_velocity": float(obs.get("angular_velocity", 0.0)),
+        **profile,
     }
 
 
@@ -179,6 +357,10 @@ def policy_forward(features):
         or ffa
         or not (pressure or behind_on_econ)
     )
+    state = _fsm_state(features)
+    if ffa and state == "DEFEND_UNDER_PRESSURE" and features.get("profile_total", 0.0) >= 16.0:
+        pressure = True
+        expand = False
     return {
         "expand": bool(expand),
         "ffa": bool(ffa),
@@ -186,6 +368,12 @@ def policy_forward(features):
         "behind_on_econ": bool(behind_on_econ),
         "leader_owner": features["leader_owner"],
         "neutral_count": int(features["neutral_count"]),
+        "fsm_state": state,
+        "recent_enemy_captures": set(features.get("recent_enemy_captures", set())),
+        "profile_total": float(features.get("profile_total", 0.0)),
+        "to_neutral_ratio": float(features.get("to_neutral_ratio", 0.0)),
+        "to_me_ratio": float(features.get("to_me_ratio", 0.0)),
+        "to_leader_ratio": float(features.get("to_leader_ratio", 0.0)),
     }
 
 
@@ -235,6 +423,10 @@ def _target_value(obs, source, target, committed, action, own, enemies):
         value += 8.0
     if action.get("pressure") and owner not in (-1, int(obs.get("player", 0))):
         value += 3.0
+    if ffa and action.get("fsm_state") == "DEFEND_UNDER_PRESSURE" and owner == -1:
+        value -= 1.5
+    if ffa and _planet_id(target) in action.get("recent_enemy_captures", set()):
+        value += 2.0
     if action.get("expand") and action.get("neutral_count", 0) > 0 and owner != -1:
         value -= 10.0
     if ffa and owner not in (-1, action.get("leader_owner")):

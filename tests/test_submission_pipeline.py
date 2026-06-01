@@ -35,6 +35,22 @@ def _assert_moves_are_legal(obs: dict, moves: list[list[float]]) -> None:
         assert int(move[2]) > 0
 
 
+def _load_rendered_submission(tmp_path: Path, module_name: str):
+    rendered = render_submission(
+        Path("python/submission/submission_template.py").read_text(encoding="utf-8"),
+        checkpoint=None,
+    )
+    out = tmp_path / f"{module_name}.py"
+    out.write_text(rendered, encoding="utf-8")
+
+    spec = importlib.util.spec_from_file_location(module_name, out)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_safe_submission_agent_returns_legal_moves():
     moves = safe_submission_agent(SAMPLE_OBS)
     _assert_moves_are_legal(SAMPLE_OBS, moves)
@@ -102,6 +118,87 @@ def test_submission_template_accepts_dict_entities(tmp_path: Path):
 
     moves = module.agent(obs)
     _assert_moves_are_legal(obs, moves)
+
+
+def test_exported_submission_profiles_enemy_expansion_to_neutrals(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_profile_expand")
+    module._PROFILE_STATE.clear()
+    obs = {
+        "player": 0,
+        "step": 10,
+        "angular_velocity": 0.0,
+        "planets": [
+            [0, 0, 20.0, 40.0, 2.0, 35, 3],
+            [1, 1, 30.0, 40.0, 2.0, 25, 3],
+            [2, -1, 70.0, 40.0, 2.0, 6, 4],
+        ],
+        "fleets": [[8, 1, 42.0, 40.0, 0.0, 1, 18]],
+    }
+
+    features = module.encode(obs)
+    action = module.policy_forward(features)
+
+    assert features["to_neutral_ratio"] > 0.95
+    assert action["fsm_state"] == "OPENING_EXPAND"
+
+
+def test_exported_submission_fsm_defends_under_ffa_pressure(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_profile_pressure")
+    module._PROFILE_STATE.clear()
+    obs = {
+        "player": 0,
+        "step": 70,
+        "angular_velocity": 0.0,
+        "planets": [
+            [0, 0, 20.0, 20.0, 2.0, 40, 4],
+            [1, -1, 40.0, 40.0, 2.0, 5, 4],
+            [2, 1, 82.0, 20.0, 2.0, 40, 3],
+            [3, 2, 82.0, 82.0, 2.0, 30, 3],
+            [4, 3, 20.0, 82.0, 2.0, 30, 3],
+        ],
+        "fleets": [[10, 1, 70.0, 20.0, math.pi, 2, 24]],
+    }
+
+    features = module.encode(obs)
+    action = module.policy_forward(features)
+    moves = module.decode(action, obs)
+
+    assert features["to_me_ratio"] > 0.95
+    assert action["fsm_state"] == "DEFEND_UNDER_PRESSURE"
+    assert not action["expand"]
+    _assert_moves_are_legal(obs, moves)
+
+
+def test_exported_submission_tracks_recent_weak_enemy_captures(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_profile_capture")
+    module._PROFILE_STATE.clear()
+    before = {
+        "player": 0,
+        "step": 20,
+        "angular_velocity": 0.0,
+        "planets": [
+            [0, 0, 20.0, 20.0, 2.0, 45, 3],
+            [1, 1, 82.0, 20.0, 2.0, 30, 3],
+            [2, -1, 50.0, 20.0, 2.0, 6, 4],
+        ],
+        "fleets": [],
+    }
+    after = {
+        **before,
+        "step": 21,
+        "planets": [
+            [0, 0, 20.0, 20.0, 2.0, 45, 3],
+            [1, 1, 82.0, 20.0, 2.0, 30, 3],
+            [2, 1, 50.0, 20.0, 2.0, 5, 4],
+        ],
+    }
+
+    module.encode(before)
+    features = module.encode(after)
+    action = module.policy_forward(features)
+
+    assert 2 in features["recent_enemy_captures"]
+    assert action["fsm_state"] == "PUNISH_WEAK_CAPTURE"
 
 
 def test_exported_submission_falls_back_on_illegal_output(tmp_path: Path):
