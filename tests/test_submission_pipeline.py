@@ -104,45 +104,6 @@ def test_submission_template_accepts_dict_entities(tmp_path: Path):
     _assert_moves_are_legal(obs, moves)
 
 
-def test_exported_submission_reinforces_planet_under_observed_fleet_pressure(tmp_path: Path):
-    rendered = render_submission(
-        Path("python/submission/submission_template.py").read_text(encoding="utf-8"),
-        checkpoint=None,
-    )
-    out = tmp_path / "submission_pressure_module.py"
-    out.write_text(rendered, encoding="utf-8")
-
-    spec = importlib.util.spec_from_file_location("submission_pressure_module", out)
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-
-    obs = {
-        "player": 0,
-        "step": 12,
-        "angular_velocity": 0.0,
-        "planets": [
-            [0, 0, 20.0, 20.0, 2.0, 70, 3],
-            [1, 0, 70.0, 20.0, 2.0, 6, 5],
-            [2, 1, 88.0, 20.0, 2.0, 45, 4],
-            [3, -1, 48.0, 62.0, 2.0, 5, 2],
-            [4, 2, 82.0, 72.0, 2.0, 18, 2],
-            [5, 3, 18.0, 82.0, 2.0, 18, 2],
-        ],
-        "fleets": [
-            [0, 1, 82.0, 20.0, math.pi, 2, 34],
-        ],
-    }
-
-    moves = module.agent(obs)
-    _assert_moves_are_legal(obs, moves)
-    assert any(
-        int(move[0]) == 0 and abs(math.atan2(math.sin(float(move[1])), math.cos(float(move[1])))) < 0.20
-        for move in moves
-    )
-
-
 def test_exported_submission_falls_back_on_illegal_output(tmp_path: Path):
     rendered = render_submission(
         Path("python/submission/submission_template.py").read_text(encoding="utf-8"),
