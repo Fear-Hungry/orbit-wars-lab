@@ -296,6 +296,46 @@ def test_exported_submission_prefers_nearby_neutral_in_opening(tmp_path: Path):
     assert module._angle_delta(moves[0][1], near_angle) < module._angle_delta(moves[0][1], far_angle)
 
 
+def test_exported_submission_latches_bad_seed_counter_mode(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_bad_seed_counter")
+    module._PROFILE_STATE.clear()
+    module._BAD_MAP_COUNTER.clear()
+    initial = {
+        "player": 1,
+        "step": 0,
+        "angular_velocity": 0.047033518233764414,
+        "planets": [
+            [16, 0, 81.03175551793026, 66.2536822215605, 2.386294361119891, 10, 4],
+            [19, 1, 18.968244482069736, 33.746317778439504, 2.386294361119891, 30, 4],
+            [17, -1, 18.968244482069736, 66.2536822215605, 2.386294361119891, 7, 4],
+        ],
+        "fleets": [],
+    }
+
+    features = module.encode(initial)
+    action = module.policy_forward(features)
+    moves = module.decode(action, initial)
+
+    assert moves
+    assert module._BAD_MAP_COUNTER
+    assert moves[0][0] == 19
+    assert moves[0][2] >= 15
+
+    later = {
+        **initial,
+        "step": 30,
+        "planets": [
+            [16, 0, 81.03175551793026, 66.2536822215605, 2.386294361119891, 12, 4],
+            [17, 1, 20.0, 55.0, 2.386294361119891, 20, 4],
+            [19, 1, 18.968244482069736, 33.746317778439504, 2.386294361119891, 40, 4],
+        ],
+    }
+    moves = module.decode(action, later)
+
+    assert moves
+    assert moves[0][0] == 19
+
+
 def test_exported_submission_falls_back_on_illegal_output(tmp_path: Path):
     rendered = render_submission(
         Path("python/submission/submission_template.py").read_text(encoding="utf-8"),
