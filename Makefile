@@ -1,4 +1,11 @@
-.PHONY: install build test smoke bench fmt lint clean lab-doctor lab-heuristics lab-quick lab-eval lab-league lab-submission gate-check gate-check-final ppo-select docker-build docker-shell docker-codex docker-smoke docker-test docker-train docker-gpu-build docker-gpu-shell docker-gpu-codex docker-gpu-check docker-gpu-train
+.PHONY: install build test smoke bench fmt lint clean lab-doctor lab-heuristics lab-quick lab-eval lab-league lab-submission gate-check gate-check-final ppo-train-targeted ppo-select ppo-select-targeted docker-build docker-shell docker-codex docker-smoke docker-test docker-train docker-gpu-build docker-gpu-shell docker-gpu-codex docker-gpu-check docker-gpu-train
+
+PPO_SEED ?= 11
+PPO_TIMESTEPS ?= 32768
+PPO_LEARNING_RATE ?= 1e-4
+PPO_CHECKPOINT_IN ?= artifacts/ppo/phase0_seed1_65536_resume_seed4_65536.pt
+PPO_CHECKPOINT_OUT ?= artifacts/ppo/phase0_targeted_seed$(PPO_SEED)_lr1e4_$(PPO_TIMESTEPS).pt
+PPO_TARGETED_OPPONENTS ?= weak_random,rush,anti_meta
 
 install:
 	pip install -U pip
@@ -41,8 +48,14 @@ gate-check:
 gate-check-final:
 	uv run --extra dev python -m scripts.gate_check --include-final
 
+ppo-train-targeted:
+	uv run --extra dev python -m python.train.train_ppo --seed $(PPO_SEED) --training-track phase0_2p --num-players 2 --opponents $(PPO_TARGETED_OPPONENTS) --total-timesteps $(PPO_TIMESTEPS) --rollout-steps 256 --update-epochs 4 --minibatch-size 256 --learning-rate $(PPO_LEARNING_RATE) --checkpoint-in $(PPO_CHECKPOINT_IN) --checkpoint-out $(PPO_CHECKPOINT_OUT) --decoder-max-moves-per-turn 4 --decoder-min-ships-to-launch 2 --decoder-reserve-home-ships 8
+
 ppo-select:
 	python -m scripts.select_ppo_checkpoint 'artifacts/ppo/*.pt'
+
+ppo-select-targeted:
+	uv run --extra dev python -m scripts.select_ppo_checkpoint $(PPO_CHECKPOINT_IN) $(PPO_CHECKPOINT_OUT) --config configs/eval_quick.yaml --output artifacts/ppo/targeted_seed$(PPO_SEED)_selection.json
 
 fmt:
 	cargo fmt --all || true
