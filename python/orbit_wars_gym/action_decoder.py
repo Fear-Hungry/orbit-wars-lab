@@ -124,44 +124,60 @@ def decode_discrete_action(
     # Sort own planets by ships descending, then production. This gives stable
     # ranks and tends to expose high-leverage sources first.
     own.sort(key=lambda p: (planet_ships(p), planet_production(p)), reverse=True)
-    src = own[source_rank % len(own)]
+    ranked_sources = own[source_rank % len(own) :] + own[: source_rank % len(own)]
 
-    candidates = [p for p in planets if planet_id(p) != planet_id(src)]
-    if not candidates:
-        return []
+    moves: list[list[float]] = []
+    used_targets: set[int] = set()
+    for src in ranked_sources:
+        if len(moves) >= cfg.max_moves_per_turn:
+            break
+        candidates = [p for p in planets if planet_id(p) != planet_id(src)]
+        if not candidates:
+            continue
 
-    sx, sy = planet_x(src), planet_y(src)
+        sx, sy = planet_x(src), planet_y(src)
+        max_launch_ships = max(1, int(planet_ships(src) * cfg.fractions[-1]))
 
-    max_launch_ships = max(1, int(planet_ships(src) * cfg.fractions[-1]))
+        source_xy = (sx, sy)
 
-    def target_score(p: Any) -> float:
-        tx, ty = _predict_target_xy(state, (sx, sy), p, max_launch_ships)
-        dist = math.hypot(tx - sx, ty - sy)
-        owner = planet_owner(p)
-        enemy_bonus = 8.0 if owner not in (-1, player) else 0.0
-        neutral_bonus = 4.0 if owner == -1 else 0.0
-        return float(planet_production(p)) * 10.0 + enemy_bonus + neutral_bonus - 0.15 * dist - 0.12 * float(planet_ships(p))
+        def target_score(p: Any, source_xy: tuple[float, float] = source_xy, max_ships: int = max_launch_ships) -> float:
+            tx, ty = _predict_target_xy(state, source_xy, p, max_ships)
+            dist = math.hypot(tx - source_xy[0], ty - source_xy[1])
+            owner = planet_owner(p)
+            enemy_bonus = 8.0 if owner not in (-1, player) else 0.0
+            neutral_bonus = 4.0 if owner == -1 else 0.0
+            repeat_penalty = 3.0 if planet_id(p) in used_targets else 0.0
+            return (
+                float(planet_production(p)) * 10.0
+                + enemy_bonus
+                + neutral_bonus
+                - repeat_penalty
+                - 0.15 * dist
+                - 0.12 * float(planet_ships(p))
+            )
 
-    candidates.sort(key=target_score, reverse=True)
-    target = candidates[target_rank % len(candidates)]
+        candidates.sort(key=target_score, reverse=True)
+        target = candidates[target_rank % len(candidates)]
 
-    frac = cfg.fractions[fraction_idx % len(cfg.fractions)]
-    ships = int(max(0, math.floor(float(planet_ships(src)) * frac)))
-    if ships <= 0:
-        return []
-    if planet_ships(src) - ships < cfg.reserve_home_ships and len(own) <= 2:
-        ships = max(0, planet_ships(src) - cfg.reserve_home_ships)
-    if ships <= 0:
-        return []
+        frac = cfg.fractions[fraction_idx % len(cfg.fractions)]
+        ships = int(max(0, math.floor(float(planet_ships(src)) * frac)))
+        if ships <= 0:
+            continue
+        if planet_ships(src) - ships < cfg.reserve_home_ships and len(own) <= 2:
+            ships = max(0, planet_ships(src) - cfg.reserve_home_ships)
+        if ships <= 0:
+            continue
 
-    source_xy = (sx, sy)
-    target_xy = _predict_target_xy(state, source_xy, target, ships)
-    base = _angle(source_xy, target_xy)
-    base = _sun_safe_angle(source_xy, target_xy, base)
-    offset = cfg.angle_offsets[offset_idx % len(cfg.angle_offsets)]
-    angle = base + offset
+        target_xy = _predict_target_xy(state, source_xy, target, ships)
+        base = _angle(source_xy, target_xy)
+        base = _sun_safe_angle(source_xy, target_xy, base)
+        offset = cfg.angle_offsets[offset_idx % len(cfg.angle_offsets)]
+        angle = base + offset
 
-    return [[planet_id(src), float(angle), int(ships)]]
+        moves.append([planet_id(src), float(angle), int(ships)])
+        used_targets.add(planet_id(target))
+
+    return moves
 
 
 def greedy_moves(
