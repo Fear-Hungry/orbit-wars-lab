@@ -90,6 +90,14 @@ def test_submission_template_exports_self_contained_agent(tmp_path: Path):
     _assert_moves_are_legal(SAMPLE_OBS, moves)
 
 
+def test_export_refuses_checkpoint_until_neural_export_exists():
+    with pytest.raises(NotImplementedError, match="PPO checkpoint export is not implemented"):
+        render_submission(
+            Path("python/submission/submission_template.py").read_text(encoding="utf-8"),
+            checkpoint="artifacts/ppo/current.pt",
+        )
+
+
 def test_submission_template_accepts_dict_entities(tmp_path: Path):
     rendered = render_submission(
         Path("python/submission/submission_template.py").read_text(encoding="utf-8"),

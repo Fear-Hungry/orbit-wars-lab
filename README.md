@@ -222,9 +222,14 @@ python -m scripts.select_ppo_checkpoint "artifacts/ppo/*.pt"
 # 7. Avaliar candidatos finais
 python -m python.train.evaluate_population --config configs/eval_final.yaml
 
-# 8. Exportar submissão
-python -m scripts.export_submission --checkpoint runs/best.pt --out submission.py
+# 8. Exportar submissão heurística atual
+python -m scripts.export_submission --out submission.py
 ```
+
+Observação: exportar checkpoints PPO diretamente para a submissão Kaggle ainda não
+está implementado. `scripts.export_submission --checkpoint ...` falha
+explicitamente para evitar submeter a heurística com apenas um comentário de
+origem do checkpoint.
 
 ## Princípio competitivo
 

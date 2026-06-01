@@ -12,7 +12,12 @@ from typing import Any
 import yaml
 from python.league.evaluation import AgentSpec, load_population_manifest
 from python.orbit_wars_gym.backend import RustBatchBackend, RustConfig
-from python.train.evaluate_population import _moves_are_legal, _normalized_margin, _policy_runtime
+from python.train.evaluate_population import (
+    EvaluationConfig,
+    _moves_are_legal,
+    _normalized_margin,
+    _policy_runtime,
+)
 from scripts.export_submission import render_submission
 
 FINAL_EXPORT_TOP_K = 2
@@ -64,7 +69,18 @@ def _candidate_pool(manifest: dict[str, list[AgentSpec]], candidate_ids: tuple[s
 
 
 def _run_match_with_trace(players: list[AgentSpec], seed: int, cfg: FinalSelectionConfig) -> tuple[list[float], list[dict[str, Any]]]:
-    runtime = {spec.id: _policy_runtime(spec) for spec in players}
+    eval_cfg = EvaluationConfig(
+        seeds=[seed],
+        games_per_pair=1,
+        include_2p=len(players) == 2,
+        include_4p=len(players) == 4,
+        episode_steps=cfg.episode_steps,
+        enable_comets=cfg.enable_comets,
+    )
+    runtime = {
+        spec.id: _policy_runtime(spec, eval_cfg, seed=seed, player_index=idx)
+        for idx, spec in enumerate(players)
+    }
     backend = RustBatchBackend(
         num_envs=1,
         num_players=len(players),

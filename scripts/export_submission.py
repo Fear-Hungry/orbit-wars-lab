@@ -38,7 +38,9 @@ def render_submission(template: str, checkpoint: str | None = None) -> str:
     validate_submission_template(template)
     if checkpoint is None:
         return template
-    return f"# export_source: {checkpoint}\n{template}"
+    raise NotImplementedError(
+        "PPO checkpoint export is not implemented yet; exporting with --checkpoint would still submit the heuristic template"
+    )
 
 
 def main():
