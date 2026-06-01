@@ -7,7 +7,12 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from .action_decoder import decode_discrete_action, greedy_moves
+from .action_decoder import (
+    DEFAULT_DECODER_CONFIG,
+    DecoderConfig,
+    decode_discrete_action,
+    greedy_moves,
+)
 from .backend import RustBatchBackend, RustConfig
 from .encoding import EncoderConfig, encode_state, observation_dim
 from .entities import (
@@ -48,6 +53,7 @@ class OrbitWarsGymEnv(gym.Env):
         encoder_cfg: EncoderConfig | None = None,
         rust_cfg: RustConfig | None = None,
         opponent_policy=None,
+        decoder_cfg: DecoderConfig | None = None,
         sun_loss_penalty: float = 0.02,
         border_loss_penalty: float = 0.02,
         base_shaping_scale: float = 1.0,
@@ -61,6 +67,7 @@ class OrbitWarsGymEnv(gym.Env):
         self.encoder_cfg = encoder_cfg or EncoderConfig()
         self.backend = RustBatchBackend(num_envs=1, num_players=num_players, seed=seed, config=rust_cfg)
         self.opponent_policy = opponent_policy or greedy_moves
+        self.decoder_cfg = decoder_cfg or DEFAULT_DECODER_CONFIG
         self.sun_loss_penalty = float(sun_loss_penalty)
         self.border_loss_penalty = float(border_loss_penalty)
         self.base_shaping_scale = float(base_shaping_scale)
@@ -82,7 +89,7 @@ class OrbitWarsGymEnv(gym.Env):
         assert self.state is not None
         previous_state = self.state
         actions = [[[] for _ in range(self.num_players)]]
-        actions[0][0] = decode_discrete_action(self.state, 0, action)
+        actions[0][0] = decode_discrete_action(self.state, 0, action, self.decoder_cfg)
         for pid in range(1, self.num_players):
             actions[0][pid] = self.opponent_policy(self.state, pid)
         outcomes = self.backend.step(actions)

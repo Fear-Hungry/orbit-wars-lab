@@ -5,10 +5,11 @@ from pathlib import Path
 import torch
 import yaml
 from python.agents.policy import FlatActorCritic
-from python.league.evaluation import load_population_manifest
+from python.league.evaluation import AgentSpec, load_population_manifest
 from python.league.hall_of_fame import HallOfFame, HallOfFameEntry, save_hall_of_fame
 from python.orbit_wars_gym.encoding import observation_dim
 from python.train.evaluate_population import (
+    _decoder_config,
     attach_hall_of_fame_snapshots,
     evaluate_population,
     load_evaluation_config,
@@ -180,3 +181,26 @@ def test_evaluate_population_can_attach_previous_policy_snapshots(tmp_path: Path
     assert {member["id"] for member in report["members"]} == {"current_policy"}
     assert report["members"][0]["metrics"]["win_rate_vs_hall_of_fame"] >= 0.0
     assert "seed_stats" in report["members"][0]["metrics"]
+
+
+def test_decoder_config_falls_back_to_checkpoint_payload():
+    spec = AgentSpec(id="candidate", kind="ppo", role="league", checkpoint="candidate.pt")
+    payload = {
+        "summary": {
+            "decoder": {
+                "reserve_home_ships": 6,
+                "min_ships_to_launch": 3,
+                "max_moves_per_turn": 4,
+                "fractions": [0.2, 0.4],
+                "angle_offsets": [-0.1, 0.0, 0.1],
+            }
+        }
+    }
+
+    cfg = _decoder_config(spec, payload)
+
+    assert cfg.reserve_home_ships == 6
+    assert cfg.min_ships_to_launch == 3
+    assert cfg.max_moves_per_turn == 4
+    assert cfg.fractions == (0.2, 0.4)
+    assert cfg.angle_offsets == (-0.1, 0.0, 0.1)

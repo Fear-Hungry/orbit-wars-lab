@@ -16,6 +16,7 @@ from python.agents.policy import FlatActorCritic
 from python.agents.registry import get_heuristic_policies
 
 from orbit_wars_gym import OrbitWarsGymEnv
+from orbit_wars_gym.action_decoder import DecoderConfig
 from orbit_wars_gym.backend import RustConfig
 from orbit_wars_gym.encoding import observation_dim
 from orbit_wars_gym.entities import fleet_owner, planet_id, planet_owner
@@ -61,6 +62,11 @@ class Phase0TrainingConfig:
     four_player_leader_scale_end: float = 0.02
     four_player_third_player_scale_start: float = 0.04
     four_player_third_player_scale_end: float = 0.015
+    decoder_max_moves_per_turn: int = 8
+    decoder_min_ships_to_launch: int = 2
+    decoder_reserve_home_ships: int = 8
+    decoder_fractions: tuple[float, ...] = (0.10, 0.25, 0.50, 0.75)
+    decoder_angle_offsets: tuple[float, ...] = (-0.261799, -0.130899, 0.0, 0.130899, 0.261799)
 
 
 @dataclass
@@ -204,6 +210,27 @@ def four_player_shaping_scales(training_cfg: Phase0TrainingConfig, progress: flo
     )
 
 
+def decoder_config(training_cfg: Phase0TrainingConfig) -> DecoderConfig:
+    return DecoderConfig(
+        fractions=tuple(float(value) for value in training_cfg.decoder_fractions),
+        angle_offsets=tuple(float(value) for value in training_cfg.decoder_angle_offsets),
+        max_moves_per_turn=int(training_cfg.decoder_max_moves_per_turn),
+        min_ships_to_launch=int(training_cfg.decoder_min_ships_to_launch),
+        reserve_home_ships=int(training_cfg.decoder_reserve_home_ships),
+    )
+
+
+def decoder_payload(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
+    cfg = decoder_config(training_cfg)
+    return {
+        "fractions": list(cfg.fractions),
+        "angle_offsets": list(cfg.angle_offsets),
+        "max_moves_per_turn": cfg.max_moves_per_turn,
+        "min_ships_to_launch": cfg.min_ships_to_launch,
+        "reserve_home_ships": cfg.reserve_home_ships,
+    }
+
+
 def build_phase5_4p_config(**overrides: Any) -> Phase0TrainingConfig:
     cfg = Phase0TrainingConfig(
         policy_track="phase5_4p",
@@ -249,6 +276,7 @@ def _collect_rollout_segment(
         num_players=training_cfg.num_players,
         opponent_name=opponent_name,
         enable_comets=training_cfg.enable_comets,
+        decoder_cfg=decoder_config(training_cfg),
         sun_loss_penalty=training_cfg.sun_loss_penalty,
         border_loss_penalty=training_cfg.border_loss_penalty,
         base_shaping_scale=base_shaping_scale,
@@ -508,6 +536,7 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
         "four_player_leader_scale_end": training_cfg.four_player_leader_scale_end,
         "four_player_third_player_scale_start": training_cfg.four_player_third_player_scale_start,
         "four_player_third_player_scale_end": training_cfg.four_player_third_player_scale_end,
+        "decoder": decoder_payload(training_cfg),
         "checkpoint_in": training_cfg.checkpoint_in,
         "checkpoint_out": training_cfg.checkpoint_out,
     }
@@ -543,6 +572,7 @@ def build_phase0_env(
     four_player_vulnerability_scale: float = 0.0,
     four_player_leader_scale: float = 0.0,
     four_player_third_player_scale: float = 0.0,
+    decoder_cfg: DecoderConfig | None = None,
 ) -> OrbitWarsGymEnv:
     try:
         opponent_policy = PHASE0_OPPONENTS[opponent_name]
@@ -554,6 +584,7 @@ def build_phase0_env(
         seed=seed,
         rust_cfg=rust_cfg,
         opponent_policy=opponent_policy,
+        decoder_cfg=decoder_cfg,
         sun_loss_penalty=sun_loss_penalty,
         border_loss_penalty=border_loss_penalty,
         base_shaping_scale=base_shaping_scale,
@@ -598,6 +629,9 @@ def main():
     parser.add_argument("--four-player-leader-scale-end", type=float, default=0.02)
     parser.add_argument("--four-player-third-player-scale-start", type=float, default=0.04)
     parser.add_argument("--four-player-third-player-scale-end", type=float, default=0.015)
+    parser.add_argument("--decoder-max-moves-per-turn", type=int, default=8)
+    parser.add_argument("--decoder-min-ships-to-launch", type=int, default=2)
+    parser.add_argument("--decoder-reserve-home-ships", type=int, default=8)
     args = parser.parse_args()
 
     env: gym.Env = build_phase0_env(
@@ -612,6 +646,11 @@ def main():
         four_player_vulnerability_scale=args.four_player_vulnerability_scale_start,
         four_player_leader_scale=args.four_player_leader_scale_start,
         four_player_third_player_scale=args.four_player_third_player_scale_start,
+        decoder_cfg=DecoderConfig(
+            max_moves_per_turn=args.decoder_max_moves_per_turn,
+            min_ships_to_launch=args.decoder_min_ships_to_launch,
+            reserve_home_ships=args.decoder_reserve_home_ships,
+        ),
     )
     obs, _ = env.reset(seed=args.seed)
     base_cfg = Phase0TrainingConfig(
@@ -647,6 +686,9 @@ def main():
         four_player_leader_scale_end=args.four_player_leader_scale_end,
         four_player_third_player_scale_start=args.four_player_third_player_scale_start,
         four_player_third_player_scale_end=args.four_player_third_player_scale_end,
+        decoder_max_moves_per_turn=args.decoder_max_moves_per_turn,
+        decoder_min_ships_to_launch=args.decoder_min_ships_to_launch,
+        decoder_reserve_home_ships=args.decoder_reserve_home_ships,
     )
     summary = (
         train_phase5_4p(base_cfg)

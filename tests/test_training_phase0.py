@@ -205,6 +205,9 @@ def test_phase0_training_runs_real_ppo_loop_and_emits_metrics(tmp_path: Path):
     assert all(summary["opponent_segments"][name] >= 1 for name in summary["opponents"])
     assert summary["enable_comets"] is True
     assert summary["reward_shaping"] == "annealed_base_plus_temporal_comet_auxiliary"
+    assert summary["decoder"]["max_moves_per_turn"] == 8
+    assert summary["decoder"]["min_ships_to_launch"] == 2
+    assert summary["decoder"]["reserve_home_ships"] == 8
     assert summary["base_shaping_scale_end"] < summary["base_shaping_scale_start"]
     assert summary["comet_shaping_scale_end"] < summary["comet_shaping_scale_start"]
     assert summary["episodes_observed"] > 0
@@ -246,6 +249,7 @@ def test_phase0_training_can_resume_from_checkpoint(tmp_path: Path):
     resumed_payload = torch.load(resumed_checkpoint, map_location="cpu", weights_only=False)
     assert resumed_payload["config"]["checkpoint_in"] == str(initial_checkpoint)
     assert resumed_payload["summary"]["checkpoint_in"] == str(initial_checkpoint)
+    assert resumed_payload["summary"]["decoder"]["max_moves_per_turn"] == 8
 
 
 def test_phase0_training_runs_real_ppo_loop_for_four_players(tmp_path: Path):

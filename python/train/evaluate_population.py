@@ -104,8 +104,31 @@ def attach_hall_of_fame_snapshots(
     return merged
 
 
-def _decoder_config(spec: AgentSpec) -> DecoderConfig:
-    decoder = spec.decoder
+def _checkpoint_decoder_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    if isinstance(summary.get("decoder"), dict):
+        return dict(summary["decoder"])
+    config = payload.get("config") if isinstance(payload.get("config"), dict) else {}
+    if not config:
+        return {}
+    out: dict[str, Any] = {}
+    mapping = {
+        "decoder_fractions": "fractions",
+        "decoder_angle_offsets": "angle_offsets",
+        "decoder_max_moves_per_turn": "max_moves_per_turn",
+        "decoder_min_ships_to_launch": "min_ships_to_launch",
+        "decoder_reserve_home_ships": "reserve_home_ships",
+    }
+    for source, target in mapping.items():
+        if source in config:
+            out[target] = config[source]
+    return out
+
+
+def _decoder_config(spec: AgentSpec, payload: dict[str, Any] | None = None) -> DecoderConfig:
+    decoder = dict(spec.decoder)
+    if payload is not None and not decoder:
+        decoder = _checkpoint_decoder_payload(payload)
     return DecoderConfig(
         fractions=tuple(float(value) for value in decoder.get("fractions", (0.10, 0.25, 0.50, 0.75))),
         angle_offsets=tuple(float(value) for value in decoder.get("angle_offsets", (-0.261799, -0.130899, 0.0, 0.130899, 0.261799))),
@@ -131,7 +154,7 @@ def _policy_runtime(spec: AgentSpec) -> Any:
     model = FlatActorCritic(observation_dim())
     model.load_state_dict(payload["model_state_dict"])
     model.eval()
-    decoder_cfg = _decoder_config(spec)
+    decoder_cfg = _decoder_config(spec, payload)
 
     def act(state: dict[str, Any], player: int) -> list[list[float]]:
         obs = torch.as_tensor(encode_state(state, player), dtype=torch.float32).unsqueeze(0)
