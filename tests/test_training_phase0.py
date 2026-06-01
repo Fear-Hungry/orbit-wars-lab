@@ -141,6 +141,16 @@ def test_phase0_training_rejects_single_bot_regime():
         _parse_opponents(["greedy"])
 
 
+def test_phase0_training_accepts_gate_opponent_pool():
+    assert _parse_opponents(["greedy", "defensive", "rush", "anti_meta", "weak_random"]) == (
+        "greedy",
+        "defensive",
+        "rush",
+        "anti_meta",
+        "weak_random",
+    )
+
+
 def test_phase0_env_four_player_strategic_reward_improves_when_exposure_and_pressure_gaps_drop():
     env = build_phase0_env(seed=0, num_players=4, opponent_name="greedy", enable_comets=True)
     previous_state = {

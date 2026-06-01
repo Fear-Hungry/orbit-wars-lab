@@ -21,7 +21,10 @@ from orbit_wars_gym.encoding import observation_dim
 from orbit_wars_gym.entities import fleet_owner, planet_id, planet_owner
 
 _HEURISTIC_POLICIES = get_heuristic_policies()
-PHASE0_OPPONENTS = {name: _HEURISTIC_POLICIES[name] for name in ("greedy", "defensive", "rush")}
+PHASE0_OPPONENTS = {
+    name: _HEURISTIC_POLICIES[name]
+    for name in ("greedy", "defensive", "rush", "anti_meta", "weak_random")
+}
 
 
 @dataclass(frozen=True)
