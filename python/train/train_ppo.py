@@ -52,6 +52,7 @@ class Phase0TrainingConfig:
     enable_comets: bool = True
     sun_loss_penalty: float = 0.02
     border_loss_penalty: float = 0.02
+    ship_margin_scale: float = 0.0
     base_shaping_scale_start: float = 1.0
     base_shaping_scale_end: float = 0.15
     comet_shaping_scale_start: float = 0.08
@@ -279,6 +280,7 @@ def _collect_rollout_segment(
         decoder_cfg=decoder_config(training_cfg),
         sun_loss_penalty=training_cfg.sun_loss_penalty,
         border_loss_penalty=training_cfg.border_loss_penalty,
+        ship_margin_scale=training_cfg.ship_margin_scale,
         base_shaping_scale=base_shaping_scale,
         comet_shaping_scale=comet_shaping_scale,
         four_player_vulnerability_scale=four_player_vulnerability_scale,
@@ -526,6 +528,7 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
         "opponent_segments": opponent_segments,
         "enable_comets": training_cfg.enable_comets,
         "reward_shaping": "annealed_base_plus_temporal_comet_auxiliary",
+        "ship_margin_scale": training_cfg.ship_margin_scale,
         "base_shaping_scale_start": training_cfg.base_shaping_scale_start,
         "base_shaping_scale_end": training_cfg.base_shaping_scale_end,
         "comet_shaping_scale_start": training_cfg.comet_shaping_scale_start,
@@ -567,6 +570,7 @@ def build_phase0_env(
     enable_comets: bool = True,
     sun_loss_penalty: float = 0.02,
     border_loss_penalty: float = 0.02,
+    ship_margin_scale: float = 0.0,
     base_shaping_scale: float = 1.0,
     comet_shaping_scale: float = 0.0,
     four_player_vulnerability_scale: float = 0.0,
@@ -587,6 +591,7 @@ def build_phase0_env(
         decoder_cfg=decoder_cfg,
         sun_loss_penalty=sun_loss_penalty,
         border_loss_penalty=border_loss_penalty,
+        ship_margin_scale=ship_margin_scale,
         base_shaping_scale=base_shaping_scale,
         comet_shaping_scale=comet_shaping_scale,
         four_player_vulnerability_scale=four_player_vulnerability_scale,
@@ -619,6 +624,7 @@ def main():
     parser.add_argument("--enable-comets", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--sun-loss-penalty", type=float, default=0.02)
     parser.add_argument("--border-loss-penalty", type=float, default=0.02)
+    parser.add_argument("--ship-margin-scale", type=float, default=0.0)
     parser.add_argument("--base-shaping-scale-start", type=float, default=1.0)
     parser.add_argument("--base-shaping-scale-end", type=float, default=0.15)
     parser.add_argument("--comet-shaping-scale-start", type=float, default=0.08)
@@ -641,6 +647,7 @@ def main():
         enable_comets=args.enable_comets,
         sun_loss_penalty=args.sun_loss_penalty,
         border_loss_penalty=args.border_loss_penalty,
+        ship_margin_scale=args.ship_margin_scale,
         base_shaping_scale=args.base_shaping_scale_start,
         comet_shaping_scale=args.comet_shaping_scale_start,
         four_player_vulnerability_scale=args.four_player_vulnerability_scale_start,
@@ -676,6 +683,7 @@ def main():
         enable_comets=args.enable_comets,
         sun_loss_penalty=args.sun_loss_penalty,
         border_loss_penalty=args.border_loss_penalty,
+        ship_margin_scale=args.ship_margin_scale,
         base_shaping_scale_start=args.base_shaping_scale_start,
         base_shaping_scale_end=args.base_shaping_scale_end,
         comet_shaping_scale_start=args.comet_shaping_scale_start,

@@ -56,6 +56,7 @@ class OrbitWarsGymEnv(gym.Env):
         decoder_cfg: DecoderConfig | None = None,
         sun_loss_penalty: float = 0.02,
         border_loss_penalty: float = 0.02,
+        ship_margin_scale: float = 0.0,
         base_shaping_scale: float = 1.0,
         comet_shaping_scale: float = 0.0,
         four_player_vulnerability_scale: float = 0.0,
@@ -70,6 +71,7 @@ class OrbitWarsGymEnv(gym.Env):
         self.decoder_cfg = decoder_cfg or DEFAULT_DECODER_CONFIG
         self.sun_loss_penalty = float(sun_loss_penalty)
         self.border_loss_penalty = float(border_loss_penalty)
+        self.ship_margin_scale = float(ship_margin_scale)
         self.base_shaping_scale = float(base_shaping_scale)
         self.comet_shaping_scale = float(comet_shaping_scale)
         self.four_player_vulnerability_scale = float(four_player_vulnerability_scale)
@@ -97,6 +99,7 @@ class OrbitWarsGymEnv(gym.Env):
         self.state = next_state
         obs = encode_state(self.state, player=0, cfg=self.encoder_cfg)
         base_shaping_reward = self._base_shaping_reward(previous_state, next_state, player=0, player_moves=actions[0][0])
+        ship_margin_reward = self._ship_margin_reward(previous_state, next_state, player=0)
         comet_shaping_reward = self._comet_auxiliary_reward(previous_state, next_state, player=0)
         vulnerability_reward, leader_reward, third_player_reward = self._four_player_strategic_reward(
             previous_state,
@@ -105,6 +108,7 @@ class OrbitWarsGymEnv(gym.Env):
         )
         reward = (
             self.base_shaping_scale * base_shaping_reward
+            + ship_margin_reward
             + self.comet_shaping_scale * comet_shaping_reward
             + self.four_player_vulnerability_scale * vulnerability_reward
             + self.four_player_leader_scale * leader_reward
@@ -120,6 +124,7 @@ class OrbitWarsGymEnv(gym.Env):
             "sun_losses": sun_losses,
             "border_losses": border_losses,
             "base_shaping_reward": base_shaping_reward,
+            "ship_margin_reward": ship_margin_reward,
             "comet_shaping_reward": comet_shaping_reward,
             "four_player_vulnerability_reward": vulnerability_reward,
             "four_player_leader_reward": leader_reward,
@@ -147,6 +152,21 @@ class OrbitWarsGymEnv(gym.Env):
             - self.sun_loss_penalty * sun_losses
             - self.border_loss_penalty * border_losses
         )
+
+    def _ship_margin_reward(self, previous_state: dict[str, Any], state: dict[str, Any], *, player: int) -> float:
+        if self.ship_margin_scale == 0.0:
+            return 0.0
+        previous_margin = self._ship_margin(previous_state, player)
+        current_margin = self._ship_margin(state, player)
+        return self.ship_margin_scale * (current_margin - previous_margin)
+
+    def _ship_margin(self, state: dict[str, Any], player: int) -> float:
+        own = self._player_total_ships(state, player)
+        enemy = 0.0
+        for pid in range(self.num_players):
+            if pid != player:
+                enemy += self._player_total_ships(state, pid)
+        return own - enemy
 
     def _comet_auxiliary_reward(
         self,

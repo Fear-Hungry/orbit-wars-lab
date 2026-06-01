@@ -101,6 +101,34 @@ def test_phase0_env_comet_auxiliary_reward_tracks_capture_swing():
     assert env._comet_auxiliary_reward(captured_state, lost_state, player=0) < 0.0
 
 
+def test_phase0_env_ship_margin_reward_tracks_score_delta():
+    env = build_phase0_env(seed=0, opponent_name="greedy", enable_comets=False, ship_margin_scale=0.01)
+    previous_state = {
+        "planets": [
+            {"id": 0, "owner": 0, "x": 20.0, "y": 20.0, "radius": 2.0, "ships": 20, "production": 2},
+            {"id": 1, "owner": 1, "x": 80.0, "y": 80.0, "radius": 2.0, "ships": 20, "production": 2},
+        ],
+        "fleets": [],
+    }
+    improved_state = {
+        "planets": [
+            {"id": 0, "owner": 0, "x": 20.0, "y": 20.0, "radius": 2.0, "ships": 30, "production": 2},
+            {"id": 1, "owner": 1, "x": 80.0, "y": 80.0, "radius": 2.0, "ships": 15, "production": 2},
+        ],
+        "fleets": [],
+    }
+    worse_state = {
+        "planets": [
+            {"id": 0, "owner": 0, "x": 20.0, "y": 20.0, "radius": 2.0, "ships": 12, "production": 2},
+            {"id": 1, "owner": 1, "x": 80.0, "y": 80.0, "radius": 2.0, "ships": 24, "production": 2},
+        ],
+        "fleets": [],
+    }
+
+    assert env._ship_margin_reward(previous_state, improved_state, player=0) > 0.0
+    assert env._ship_margin_reward(previous_state, worse_state, player=0) < 0.0
+
+
 def test_phase0_training_anneals_base_and_comet_shaping():
     cfg = Phase0TrainingConfig(
         enable_comets=True,
@@ -205,6 +233,7 @@ def test_phase0_training_runs_real_ppo_loop_and_emits_metrics(tmp_path: Path):
     assert all(summary["opponent_segments"][name] >= 1 for name in summary["opponents"])
     assert summary["enable_comets"] is True
     assert summary["reward_shaping"] == "annealed_base_plus_temporal_comet_auxiliary"
+    assert summary["ship_margin_scale"] == 0.0
     assert summary["decoder"]["max_moves_per_turn"] == 8
     assert summary["decoder"]["min_ships_to_launch"] == 2
     assert summary["decoder"]["reserve_home_ships"] == 8
