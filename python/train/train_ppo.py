@@ -45,6 +45,7 @@ class Phase0TrainingConfig:
     max_grad_norm: float = 0.5
     early_survival_window: int = 64
     opponents: tuple[str, ...] = ("greedy", "defensive", "rush", "anti_meta", "weak_random")
+    checkpoint_in: str | None = None
     checkpoint_out: str | None = None
     device: str = "cpu"
     enable_comets: bool = True
@@ -431,6 +432,16 @@ def _aggregate_episode_metrics(episodes: Sequence[dict[str, Any]]) -> dict[str, 
     }
 
 
+def _load_checkpoint(path: str, device: torch.device) -> dict[str, Any]:
+    try:
+        checkpoint = torch.load(path, map_location=device, weights_only=False)
+    except TypeError:
+        checkpoint = torch.load(path, map_location=device)
+    if not isinstance(checkpoint, dict) or "model_state_dict" not in checkpoint:
+        raise ValueError(f"invalid PPO checkpoint: {path}")
+    return checkpoint
+
+
 def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
     _set_seed(training_cfg.seed)
     device = torch.device(training_cfg.device)
@@ -438,6 +449,12 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
 
     model = FlatActorCritic(observation_dim()).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=training_cfg.learning_rate)
+    if training_cfg.checkpoint_in:
+        checkpoint = _load_checkpoint(training_cfg.checkpoint_in, device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer_state = checkpoint.get("optimizer_state_dict")
+        if optimizer_state:
+            optimizer.load_state_dict(optimizer_state)
 
     total_timesteps = 0
     update_idx = 0
@@ -491,6 +508,7 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
         "four_player_leader_scale_end": training_cfg.four_player_leader_scale_end,
         "four_player_third_player_scale_start": training_cfg.four_player_third_player_scale_start,
         "four_player_third_player_scale_end": training_cfg.four_player_third_player_scale_end,
+        "checkpoint_in": training_cfg.checkpoint_in,
         "checkpoint_out": training_cfg.checkpoint_out,
     }
     summary.update(_aggregate_episode_metrics(all_episode_metrics))
@@ -564,6 +582,7 @@ def main():
     parser.add_argument("--vf-coef", type=float, default=0.5)
     parser.add_argument("--max-grad-norm", type=float, default=0.5)
     parser.add_argument("--early-survival-window", type=int, default=64)
+    parser.add_argument("--checkpoint-in")
     parser.add_argument("--checkpoint-out")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--enable-comets", action=argparse.BooleanOptionalAction, default=True)
@@ -612,6 +631,7 @@ def main():
         max_grad_norm=args.max_grad_norm,
         early_survival_window=args.early_survival_window,
         opponents=_parse_opponents(args.opponents),
+        checkpoint_in=args.checkpoint_in,
         checkpoint_out=args.checkpoint_out,
         device=args.device,
         enable_comets=args.enable_comets,

@@ -4,6 +4,7 @@ import math
 from pathlib import Path
 
 import pytest
+import torch
 from python.train.train_ppo import (
     Phase0TrainingConfig,
     _parse_opponents,
@@ -210,6 +211,41 @@ def test_phase0_training_runs_real_ppo_loop_and_emits_metrics(tmp_path: Path):
     assert summary["mean_neutral_capture_rate"] >= 0.0
     assert 0.0 <= summary["mean_early_survival_rate"] <= 1.0
     assert checkpoint.exists()
+
+
+def test_phase0_training_can_resume_from_checkpoint(tmp_path: Path):
+    initial_checkpoint = tmp_path / "phase0_initial.pt"
+    resumed_checkpoint = tmp_path / "phase0_resumed.pt"
+    train_phase0(
+        Phase0TrainingConfig(
+            seed=7,
+            total_timesteps=16,
+            rollout_steps=8,
+            update_epochs=1,
+            minibatch_size=8,
+            checkpoint_out=str(initial_checkpoint),
+            enable_comets=False,
+        )
+    )
+
+    summary = train_phase0(
+        Phase0TrainingConfig(
+            seed=8,
+            total_timesteps=16,
+            rollout_steps=8,
+            update_epochs=1,
+            minibatch_size=8,
+            checkpoint_in=str(initial_checkpoint),
+            checkpoint_out=str(resumed_checkpoint),
+            enable_comets=False,
+        )
+    )
+
+    assert summary["checkpoint_in"] == str(initial_checkpoint)
+    assert resumed_checkpoint.exists()
+    resumed_payload = torch.load(resumed_checkpoint, map_location="cpu", weights_only=False)
+    assert resumed_payload["config"]["checkpoint_in"] == str(initial_checkpoint)
+    assert resumed_payload["summary"]["checkpoint_in"] == str(initial_checkpoint)
 
 
 def test_phase0_training_runs_real_ppo_loop_for_four_players(tmp_path: Path):
