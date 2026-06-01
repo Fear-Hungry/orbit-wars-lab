@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from math import atan2, cos, hypot, sin
+from math import atan2, ceil, cos, hypot, log, sin
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -14,6 +14,9 @@ from scripts.benchmark_submission import _load_submission_agent, _submission_run
 
 HEURISTIC_POLICIES = get_heuristic_policies()
 PROFILE_RAY_MAX_ANGLE = 0.36
+CENTER = 50.0
+ROTATION_RADIUS_LIMIT = 50.0
+SHIP_SPEED = 6.0
 
 
 def _empty_runtime_stats() -> dict[str, float]:
@@ -52,6 +55,36 @@ def _planet_field(planet: Any, key: str, index: int) -> Any:
     return planet[key] if isinstance(planet, dict) else planet[index]
 
 
+def _fleet_speed(ships: int) -> float:
+    scale = log(max(int(ships), 1)) / log(1000.0)
+    speed = 1.0 + (SHIP_SPEED - 1.0) * scale**1.5
+    return min(SHIP_SPEED, max(1.0, speed))
+
+
+def _rotate_about_center(point: tuple[float, float], angle: float) -> tuple[float, float]:
+    dx = point[0] - CENTER
+    dy = point[1] - CENTER
+    c = cos(angle)
+    s = sin(angle)
+    return (CENTER + dx * c - dy * s, CENTER + dx * s + dy * c)
+
+
+def _is_rotating_planet(planet: Any) -> bool:
+    x = float(_planet_field(planet, "x", 2))
+    y = float(_planet_field(planet, "y", 3))
+    radius = float(_planet_field(planet, "radius", 4))
+    return hypot(x - CENTER, y - CENTER) + radius < ROTATION_RADIUS_LIMIT
+
+
+def _predict_target_xy(state: dict[str, Any], source_xy: tuple[float, float], target: Any, ships: int) -> tuple[float, float]:
+    target_xy = (float(_planet_field(target, "x", 2)), float(_planet_field(target, "y", 3)))
+    if not _is_rotating_planet(target):
+        return target_xy
+    distance = hypot(target_xy[0] - source_xy[0], target_xy[1] - source_xy[1])
+    travel_steps = max(1, ceil(distance / _fleet_speed(ships)))
+    return _rotate_about_center(target_xy, float(state.get("angular_velocity", 0.0)) * travel_steps)
+
+
 def _action_target(state: dict[str, Any], action: list[float]) -> dict[str, Any]:
     if not isinstance(action, list) or len(action) != 3:
         return {"action": action, "target_id": None, "score": None}
@@ -66,9 +99,10 @@ def _action_target(state: dict[str, Any], action: list[float]) -> dict[str, Any]
         return {"action": action, "target_id": None, "score": None}
 
     source_xy = (float(_planet_field(source, "x", 2)), float(_planet_field(source, "y", 3)))
+    ships = max(1, int(action[2]))
     best: tuple[float, Any] | None = None
     for planet in state.get("planets", []):
-        target_xy = (float(_planet_field(planet, "x", 2)), float(_planet_field(planet, "y", 3)))
+        target_xy = _predict_target_xy(state, source_xy, planet, ships)
         distance = hypot(target_xy[0] - source_xy[0], target_xy[1] - source_xy[1])
         if distance <= 0.0:
             continue

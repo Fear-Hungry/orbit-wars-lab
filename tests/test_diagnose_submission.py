@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from scripts.diagnose_submission import diagnose_match
+from scripts.diagnose_submission import _action_target, diagnose_match
 
 
 def test_diagnose_match_records_timeline_and_outcome():
@@ -32,3 +32,20 @@ def test_diagnose_match_records_timeline_and_outcome():
         target = report["timeline"][0]["opponent_action_targets"][0]
         assert {"action", "target_id", "score"}.issubset(target)
     assert "final_totals" in report
+
+
+def test_action_target_uses_predicted_rotating_planet_position():
+    state = {
+        "angular_velocity": 0.05,
+        "planets": [
+            {"id": 0, "owner": 0, "x": 19.0, "y": 34.0, "radius": 2.0, "ships": 30, "production": 4},
+            {"id": 1, "owner": -1, "x": 31.0, "y": 69.0, "radius": 2.0, "ships": 6, "production": 5},
+            {"id": 2, "owner": -1, "x": 31.0, "y": 31.0, "radius": 2.0, "ships": 6, "production": 5},
+        ],
+        "fleets": [],
+    }
+
+    target = _action_target(state, [0, 1.25, 8])
+
+    assert target["target_id"] == 1
+    assert target["score"] is not None
