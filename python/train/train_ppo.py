@@ -44,7 +44,7 @@ class Phase0TrainingConfig:
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
     early_survival_window: int = 64
-    opponents: tuple[str, ...] = ("greedy", "defensive", "rush")
+    opponents: tuple[str, ...] = ("greedy", "defensive", "rush", "anti_meta", "weak_random")
     checkpoint_out: str | None = None
     device: str = "cpu"
     enable_comets: bool = True
@@ -551,7 +551,7 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--training-track", choices=("phase0_2p", "phase5_4p"), default="phase0_2p")
     parser.add_argument("--num-players", type=int, default=2)
-    parser.add_argument("--opponents", default="greedy,defensive,rush")
+    parser.add_argument("--opponents", default="greedy,defensive,rush,anti_meta,weak_random")
     parser.add_argument("--total-timesteps", type=int, default=200_000)
     parser.add_argument("--rollout-steps", type=int, default=256)
     parser.add_argument("--update-epochs", type=int, default=4)

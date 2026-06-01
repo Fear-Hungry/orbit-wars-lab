@@ -200,7 +200,7 @@ def test_phase0_training_runs_real_ppo_loop_and_emits_metrics(tmp_path: Path):
     assert summary["algorithm"] == "ppo"
     assert summary["timesteps"] == 48
     assert summary["updates"] >= 1
-    assert set(summary["opponents"]) == {"greedy", "defensive", "rush"}
+    assert set(summary["opponents"]) == {"greedy", "defensive", "rush", "anti_meta", "weak_random"}
     assert all(summary["opponent_segments"][name] >= 1 for name in summary["opponents"])
     assert summary["enable_comets"] is True
     assert summary["reward_shaping"] == "annealed_base_plus_temporal_comet_auxiliary"
