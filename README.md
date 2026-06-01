@@ -216,10 +216,13 @@ python -m scripts.parity_probe --episodes 32 --steps 500
 # 5. Treinar currículo simples
 python -m python.train.train_league --config configs/league.yaml
 
-# 6. Avaliar candidatos finais
+# 6. Selecionar checkpoint PPO por avaliação rápida
+python -m scripts.select_ppo_checkpoint "artifacts/ppo/*.pt"
+
+# 7. Avaliar candidatos finais
 python -m python.train.evaluate_population --config configs/eval_final.yaml
 
-# 7. Exportar submissão
+# 8. Exportar submissão
 python -m scripts.export_submission --checkpoint runs/best.pt --out submission.py
 ```
 

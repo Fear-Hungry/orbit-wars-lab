@@ -1,4 +1,4 @@
-.PHONY: install build test smoke bench fmt lint clean lab-doctor lab-heuristics lab-quick lab-eval lab-league lab-submission gate-check gate-check-final docker-build docker-shell docker-codex docker-smoke docker-test docker-train docker-gpu-build docker-gpu-shell docker-gpu-codex docker-gpu-check docker-gpu-train
+.PHONY: install build test smoke bench fmt lint clean lab-doctor lab-heuristics lab-quick lab-eval lab-league lab-submission gate-check gate-check-final ppo-select docker-build docker-shell docker-codex docker-smoke docker-test docker-train docker-gpu-build docker-gpu-shell docker-gpu-codex docker-gpu-check docker-gpu-train
 
 install:
 	pip install -U pip
@@ -40,6 +40,9 @@ gate-check:
 
 gate-check-final:
 	python -m scripts.gate_check --include-final
+
+ppo-select:
+	python -m scripts.select_ppo_checkpoint 'artifacts/ppo/*.pt'
 
 fmt:
 	cargo fmt --all || true
