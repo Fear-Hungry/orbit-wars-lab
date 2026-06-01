@@ -5,6 +5,7 @@ submission_gate:
   benchmark_seeds: 8
   technical_seeds: [0, 1, 2, 3]
   holdout_seeds: [17, 53, 101, 149, 233, 317, 401, 463]
+  final_seed_start: 100
   final_seeds: 20
   opponents: [greedy, defensive, rush, anti_meta, weak_random]
   floors:

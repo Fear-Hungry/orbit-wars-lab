@@ -1,4 +1,10 @@
-from scripts.gate_check import GateConfig, _gate_floors, _gate_holdout, _gate_regression
+from scripts.gate_check import (
+    GateConfig,
+    _final_seed_list,
+    _gate_floors,
+    _gate_holdout,
+    _gate_regression,
+)
 
 
 def _cfg() -> GateConfig:
@@ -9,6 +15,7 @@ def _cfg() -> GateConfig:
         benchmark_seeds=8,
         technical_seeds=[0, 1, 2, 3],
         holdout_seeds=[17, 53],
+        final_seed_start=100,
         final_seeds=20,
         opponents=["greedy", "weak_random"],
         floors={"greedy": 0.90, "weak_random": 0.85, "four_player": 0.50},
@@ -73,3 +80,7 @@ def test_gate_holdout_enforces_worst_decile_floor():
 
     assert not gate["passed"]
     assert gate["metrics"]["worst_decile_score_margin"] == -1.0
+
+
+def test_final_seed_list_uses_holdout_range_offset():
+    assert _final_seed_list(_cfg()) == list(range(100, 120))

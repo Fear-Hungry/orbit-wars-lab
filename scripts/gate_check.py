@@ -33,6 +33,7 @@ class GateConfig:
     benchmark_seeds: int
     technical_seeds: list[int]
     holdout_seeds: list[int]
+    final_seed_start: int
     final_seeds: int
     opponents: list[str]
     floors: dict[str, float]
@@ -50,6 +51,7 @@ def _load_config(path: Path) -> GateConfig:
         benchmark_seeds=int(cfg.get("benchmark_seeds", 8)),
         technical_seeds=[int(seed) for seed in cfg.get("technical_seeds", [0, 1, 2, 3])],
         holdout_seeds=[int(seed) for seed in cfg.get("holdout_seeds", [])],
+        final_seed_start=int(cfg.get("final_seed_start", 100)),
         final_seeds=int(cfg.get("final_seeds", 20)),
         opponents=[str(name) for name in cfg.get("opponents", list(HEURISTIC_POLICIES))],
         floors={str(key): float(value) for key, value in cfg.get("floors", {}).items()},
@@ -67,7 +69,19 @@ def _export_current_template(path: Path) -> Path:
 
 def _run_pytest() -> dict[str, Any]:
     cmd = [sys.executable, "-m", "pytest", "-q", "tests/test_submission_pipeline.py"]
-    result = subprocess.run(cmd, text=True, capture_output=True, check=False)
+    try:
+        result = subprocess.run(cmd, text=True, capture_output=True, check=False, timeout=120)
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        stderr = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+        return {
+            "name": "gate_0_pytest",
+            "command": cmd,
+            "returncode": None,
+            "passed": False,
+            "stdout_tail": stdout[-4000:],
+            "stderr_tail": (stderr + "\npytest timed out after 120 seconds")[-4000:],
+        }
     return {
         "name": "gate_0_pytest",
         "command": cmd,
@@ -76,6 +90,10 @@ def _run_pytest() -> dict[str, Any]:
         "stdout_tail": result.stdout[-4000:],
         "stderr_tail": result.stderr[-4000:],
     }
+
+
+def _final_seed_list(cfg: GateConfig) -> list[int]:
+    return list(range(cfg.final_seed_start, cfg.final_seed_start + max(1, cfg.final_seeds)))
 
 
 def _load_runtime(path: Path):
@@ -289,7 +307,7 @@ def main() -> None:
 
     final_report = None
     if args.include_final:
-        final_report = _run_benchmark(submission_path, cfg, list(range(max(1, cfg.final_seeds))))
+        final_report = _run_benchmark(submission_path, cfg, _final_seed_list(cfg))
         _write_report(out_dir / "final_20_seed_benchmark.json", final_report)
         final_floor_gate = _gate_floors(final_report, cfg)
         final_floor_gate["name"] = "gate_5_final_20_seed_floors"
