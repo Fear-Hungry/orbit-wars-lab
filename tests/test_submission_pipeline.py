@@ -201,6 +201,60 @@ def test_exported_submission_tracks_recent_weak_enemy_captures(tmp_path: Path):
     assert action["fsm_state"] == "PUNISH_WEAK_CAPTURE"
 
 
+def test_exported_submission_throttles_sources_with_many_outgoing_fleets(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_source_throttle")
+    module._PROFILE_STATE.clear()
+    obs = {
+        "player": 0,
+        "step": 20,
+        "angular_velocity": 0.0,
+        "planets": [
+            [0, 0, 20.0, 20.0, 2.0, 18, 3],
+            [1, -1, 40.0, 20.0, 2.0, 5, 3],
+            [2, 1, 82.0, 82.0, 2.0, 25, 3],
+        ],
+        "fleets": [
+            [10, 0, 25.0, 20.0, 0.0, 0, 2],
+            [11, 0, 26.0, 20.0, 0.0, 0, 2],
+            [12, 0, 27.0, 20.0, 0.0, 0, 2],
+        ],
+    }
+
+    features = module.encode(obs)
+    action = module.policy_forward(features)
+    moves = module.decode(action, obs)
+
+    assert moves == []
+
+
+def test_exported_submission_prefers_nearby_neutral_in_opening(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_opening_distance")
+    module._PROFILE_STATE.clear()
+    obs = {
+        "player": 0,
+        "step": 8,
+        "angular_velocity": 0.0,
+        "planets": [
+            [0, 0, 80.0, 50.0, 2.0, 40, 5],
+            [1, -1, 70.0, 50.0, 2.0, 8, 5],
+            [2, -1, 20.0, 80.0, 2.0, 8, 5],
+            [3, 1, 10.0, 90.0, 2.0, 50, 3],
+        ],
+        "fleets": [],
+    }
+
+    features = module.encode(obs)
+    action = module.policy_forward(features)
+    moves = module.decode(action, obs)
+
+    assert action["fsm_state"] == "OPENING_EXPAND"
+    assert moves
+    source_xy = (80.0, 50.0)
+    near_angle = module._angle(source_xy, (70.0, 50.0))
+    far_angle = module._angle(source_xy, (20.0, 80.0))
+    assert module._angle_delta(moves[0][1], near_angle) < module._angle_delta(moves[0][1], far_angle)
+
+
 def test_exported_submission_falls_back_on_illegal_output(tmp_path: Path):
     rendered = render_submission(
         Path("python/submission/submission_template.py").read_text(encoding="utf-8"),

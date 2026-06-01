@@ -73,6 +73,10 @@ def _fleet_angle(fleet):
     return float(_field(fleet, 4, "angle"))
 
 
+def _fleet_from_planet_id(fleet):
+    return int(_field(fleet, 5, "from_planet_id"))
+
+
 def _fleet_ships(fleet):
     return int(_field(fleet, 6, "ships"))
 
@@ -307,6 +311,18 @@ def _source_priority(source, own_count, enemies, action):
     )
 
 
+def _outgoing_by_source(obs, player):
+    outgoing = {}
+    for fleet in obs.get("fleets", []):
+        if _fleet_owner(fleet) != player:
+            continue
+        source_id = _fleet_from_planet_id(fleet)
+        item = outgoing.setdefault(source_id, [0, 0])
+        item[0] += 1
+        item[1] += _fleet_ships(fleet)
+    return outgoing
+
+
 def encode(obs):
     player = int(obs.get("player", 0))
     planets = obs.get("planets", [])
@@ -440,6 +456,8 @@ def _target_value(obs, source, target, committed, action, own, enemies):
 
     roi = value / max(required, 1)
     distance_penalty = 0.16 * distance
+    if action.get("fsm_state") == "OPENING_EXPAND" and owner == -1:
+        distance_penalty += 0.12 * distance
     if ffa:
         distance_penalty += 0.06 * distance
     if action.get("expand") and owner != -1:
@@ -458,6 +476,7 @@ def decode(action, obs):
 
     committed_by_target = {}
     launched_by_source = {}
+    outgoing_by_source = _outgoing_by_source(obs, player)
     used_targets = set()
     moves = []
 
@@ -472,6 +491,8 @@ def decode(action, obs):
         available = _planet_ships(source) - reserve - launched_by_source.get(source_id, 0)
         if available < MIN_SHIPS_TO_LAUNCH:
             continue
+        outgoing_count = outgoing_by_source.get(source_id, [0, 0])[0]
+        min_launch = MIN_SHIPS_TO_LAUNCH + min(12, 4 * outgoing_count)
 
         best = None
         source_xy = (_planet_x(source), _planet_y(source))
@@ -484,7 +505,7 @@ def decode(action, obs):
                 continue
             if required > available:
                 score -= 6.0 + 0.35 * (required - available)
-            if ships < MIN_SHIPS_TO_LAUNCH:
+            if ships < min_launch:
                 continue
             if best is None or score > best["score"]:
                 best = {
