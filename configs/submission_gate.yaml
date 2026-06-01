@@ -21,3 +21,24 @@ submission_gate:
     max_worst_decile_score_margin_drop: 0.10
   holdout:
     min_worst_decile_score_margin: -0.30
+  critical_matchups:
+    - opponent: weak_random
+      seed: 1
+      submission_player: 0
+      min_win_points: 1.0
+      min_normalized_margin: 0.0
+    - opponent: weak_random
+      seed: 1
+      submission_player: 1
+      min_win_points: 1.0
+      min_normalized_margin: 0.0
+    - opponent: rush
+      seed: 1
+      submission_player: 0
+      min_win_points: 1.0
+      min_normalized_margin: 0.0
+    - opponent: rush
+      seed: 1
+      submission_player: 1
+      min_win_points: 1.0
+      min_normalized_margin: 0.0

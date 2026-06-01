@@ -39,6 +39,7 @@ class GateConfig:
     floors: dict[str, float]
     regression: dict[str, float]
     min_holdout_worst_decile: float
+    critical_matchups: list[dict[str, Any]]
 
 
 def _load_config(path: Path) -> GateConfig:
@@ -57,6 +58,7 @@ def _load_config(path: Path) -> GateConfig:
         floors={str(key): float(value) for key, value in cfg.get("floors", {}).items()},
         regression={str(key): float(value) for key, value in cfg.get("regression", {}).items()},
         min_holdout_worst_decile=float(cfg.get("holdout", {}).get("min_worst_decile_score_margin", -0.3)),
+        critical_matchups=[dict(item) for item in cfg.get("critical_matchups", [])],
     )
 
 
@@ -221,6 +223,63 @@ def _gate_floors(report: dict[str, Any], cfg: GateConfig) -> dict[str, Any]:
     return {"name": "gate_2_per_opponent_floors", "passed": all(check["passed"] for check in checks), "checks": checks}
 
 
+def _gate_critical_matchups(path: Path, cfg: GateConfig) -> dict[str, Any]:
+    checks = []
+    if not cfg.critical_matchups:
+        return {"name": "gate_2b_critical_matchups", "passed": True, "checks": checks}
+
+    runtime = _load_runtime(path)
+    for item in cfg.critical_matchups:
+        opponent_name = str(item["opponent"])
+        if opponent_name not in HEURISTIC_POLICIES:
+            raise ValueError(f"unknown critical matchup opponent: {opponent_name}")
+        seed = int(item["seed"])
+        expected_player = int(item["submission_player"])
+        min_win_points = float(item.get("min_win_points", 1.0))
+        min_margin = float(item.get("min_normalized_margin", -1.0))
+        benchmark = benchmark_two_player(
+            runtime,
+            opponent_name,
+            HEURISTIC_POLICIES[opponent_name],
+            seeds=[seed],
+            episode_steps=cfg.episode_steps,
+            enable_comets=cfg.enable_comets,
+            act_timeout=cfg.act_timeout,
+        )
+        matches = [
+            record
+            for record in benchmark["records"]
+            if int(record["seed"]) == seed and int(record["submission_player"]) == expected_player
+        ]
+        if len(matches) != 1:
+            checks.append(
+                {
+                    "opponent": opponent_name,
+                    "seed": seed,
+                    "submission_player": expected_player,
+                    "passed": False,
+                    "error": f"expected one record, found {len(matches)}",
+                }
+            )
+            continue
+        record = matches[0]
+        win_points = float(record["win_points"])
+        margin = float(record["normalized_margin"])
+        checks.append(
+            {
+                "opponent": opponent_name,
+                "seed": seed,
+                "submission_player": expected_player,
+                "win_points": win_points,
+                "min_win_points": min_win_points,
+                "normalized_margin": margin,
+                "min_normalized_margin": min_margin,
+                "passed": win_points >= min_win_points and margin >= min_margin,
+            }
+        )
+    return {"name": "gate_2b_critical_matchups", "passed": all(check["passed"] for check in checks), "checks": checks}
+
+
 def _gate_regression(candidate: dict[str, Any], baseline: dict[str, Any], cfg: GateConfig) -> dict[str, Any]:
     candidate_metrics = _summary_metrics(candidate)
     baseline_metrics = _summary_metrics(baseline)
@@ -297,6 +356,7 @@ def main() -> None:
     _write_report(out_dir / "baseline_benchmark.json", baseline_report)
 
     gates.append(_gate_floors(candidate_report, cfg))
+    gates.append(_gate_critical_matchups(submission_path, cfg))
     gates.append(_gate_regression(candidate_report, baseline_report, cfg))
 
     holdout_report = None

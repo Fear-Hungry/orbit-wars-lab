@@ -1,6 +1,9 @@
+from pathlib import Path
+
 from scripts.gate_check import (
     GateConfig,
     _final_seed_list,
+    _gate_critical_matchups,
     _gate_floors,
     _gate_holdout,
     _gate_regression,
@@ -25,6 +28,7 @@ def _cfg() -> GateConfig:
             "max_worst_decile_score_margin_drop": 0.10,
         },
         min_holdout_worst_decile=-0.30,
+        critical_matchups=[],
     )
 
 
@@ -84,3 +88,9 @@ def test_gate_holdout_enforces_worst_decile_floor():
 
 def test_final_seed_list_uses_holdout_range_offset():
     assert _final_seed_list(_cfg()) == list(range(100, 120))
+
+
+def test_gate_critical_matchups_passes_when_no_cases_are_configured():
+    gate = _gate_critical_matchups(Path("unused.py"), _cfg())
+
+    assert gate == {"name": "gate_2b_critical_matchups", "passed": True, "checks": []}
