@@ -1,0 +1,10 @@
+eval:
+  seeds: [0, 1]
+  games_per_pair: 1
+  include_2p: true
+  include_4p: true
+  episode_steps: 128
+  enable_comets: true
+  act_timeout: 1.0
+  ppo_action_selection: sample
+  ppo_sample_seed: 20260601

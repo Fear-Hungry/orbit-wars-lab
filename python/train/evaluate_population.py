@@ -35,6 +35,8 @@ class EvaluationConfig:
     episode_steps: int = 500
     enable_comets: bool = True
     act_timeout: float = 1.0
+    ppo_action_selection: str = "argmax"
+    ppo_sample_seed: int = 0
 
 
 @dataclass
@@ -71,6 +73,8 @@ def load_evaluation_config(path: str | Path) -> EvaluationConfig:
         episode_steps=int(eval_cfg.get("episode_steps", 500)),
         enable_comets=bool(eval_cfg.get("enable_comets", True)),
         act_timeout=float(eval_cfg.get("act_timeout", 1.0)),
+        ppo_action_selection=str(eval_cfg.get("ppo_action_selection", "argmax")),
+        ppo_sample_seed=int(eval_cfg.get("ppo_sample_seed", 0)),
     )
 
 
@@ -142,12 +146,14 @@ def _moves_are_legal(state: dict[str, Any], player: int, moves: list[list[float]
     return moves_are_legal(state, player, moves)
 
 
-def _policy_runtime(spec: AgentSpec) -> Any:
+def _policy_runtime(spec: AgentSpec, cfg: EvaluationConfig, *, seed: int, player_index: int) -> Any:
     if spec.kind == "heuristic":
         try:
             return HEURISTIC_POLICIES[spec.policy or ""]
         except KeyError as exc:
             raise ValueError(f"unknown heuristic policy: {spec.policy}") from exc
+    if cfg.ppo_action_selection not in {"argmax", "sample"}:
+        raise ValueError(f"unknown ppo_action_selection: {cfg.ppo_action_selection}")
 
     checkpoint_path = Path(spec.checkpoint or "")
     payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
@@ -155,12 +161,25 @@ def _policy_runtime(spec: AgentSpec) -> Any:
     model.load_state_dict(payload["model_state_dict"])
     model.eval()
     decoder_cfg = _decoder_config(spec, payload)
+    sample_generator = torch.Generator()
+    sample_generator.manual_seed(
+        int(cfg.ppo_sample_seed)
+        + (int(seed) + 1) * 1_009
+        + (int(player_index) + 1) * 9_973
+        + sum(ord(ch) for ch in spec.id)
+    )
 
     def act(state: dict[str, Any], player: int) -> list[list[float]]:
         obs = torch.as_tensor(encode_state(state, player), dtype=torch.float32).unsqueeze(0)
         with torch.no_grad():
             out = model.forward(obs)
-        action = [int(out[key].argmax(dim=-1).item()) for key in ("source", "target", "frac", "offset")]
+        if cfg.ppo_action_selection == "sample":
+            action = [
+                int(torch.multinomial(torch.softmax(out[key].squeeze(0), dim=-1), 1, generator=sample_generator).item())
+                for key in ("source", "target", "frac", "offset")
+            ]
+        else:
+            action = [int(out[key].argmax(dim=-1).item()) for key in ("source", "target", "frac", "offset")]
         return decode_discrete_action(state, player, action, decoder_cfg)
 
     return act
@@ -217,7 +236,10 @@ def _bucket_for_match(players: list[AgentSpec], player_index: int) -> str:
 
 
 def _run_match(players: list[AgentSpec], seed: int, cfg: EvaluationConfig) -> tuple[list[float], dict[str, dict[str, float]], list[float]]:
-    runtime = {spec.id: _policy_runtime(spec) for spec in players}
+    runtime = {
+        spec.id: _policy_runtime(spec, cfg, seed=seed, player_index=idx)
+        for idx, spec in enumerate(players)
+    }
     backend = RustBatchBackend(
         num_envs=1,
         num_players=len(players),

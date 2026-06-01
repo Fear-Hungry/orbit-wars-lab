@@ -9,7 +9,9 @@ from python.league.evaluation import AgentSpec, load_population_manifest
 from python.league.hall_of_fame import HallOfFame, HallOfFameEntry, save_hall_of_fame
 from python.orbit_wars_gym.encoding import observation_dim
 from python.train.evaluate_population import (
+    EvaluationConfig,
     _decoder_config,
+    _policy_runtime,
     attach_hall_of_fame_snapshots,
     evaluate_population,
     load_evaluation_config,
@@ -204,3 +206,41 @@ def test_decoder_config_falls_back_to_checkpoint_payload():
     assert cfg.max_moves_per_turn == 4
     assert cfg.fractions == (0.2, 0.4)
     assert cfg.angle_offsets == (-0.1, 0.0, 0.1)
+
+
+def test_evaluation_config_supports_seeded_ppo_sampling(tmp_path: Path):
+    config_path = tmp_path / "eval.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "eval": {
+                    "seeds": [0],
+                    "games_per_pair": 1,
+                    "include_2p": True,
+                    "include_4p": False,
+                    "ppo_action_selection": "sample",
+                    "ppo_sample_seed": 123,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = load_evaluation_config(config_path)
+
+    assert cfg.ppo_action_selection == "sample"
+    assert cfg.ppo_sample_seed == 123
+
+
+def test_ppo_policy_runtime_rejects_unknown_action_selection(tmp_path: Path):
+    checkpoint_path = tmp_path / "policy.pt"
+    torch.save({"model_state_dict": FlatActorCritic(observation_dim()).state_dict()}, checkpoint_path)
+    spec = AgentSpec(id="candidate", kind="ppo", role="league", checkpoint=str(checkpoint_path))
+    cfg = EvaluationConfig(seeds=[0], games_per_pair=1, include_2p=True, include_4p=False, ppo_action_selection="bad")
+
+    try:
+        _policy_runtime(spec, cfg, seed=0, player_index=0)
+    except ValueError as exc:
+        assert "ppo_action_selection" in str(exc)
+    else:
+        raise AssertionError("expected invalid action selection to fail")
