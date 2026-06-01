@@ -224,12 +224,15 @@ python -m python.train.evaluate_population --config configs/eval_final.yaml
 
 # 8. Exportar submissão heurística atual
 python -m scripts.export_submission --out submission.py
+
+# 9. Exportar um checkpoint PPO selecionado
+python -m scripts.export_submission --checkpoint artifacts/ppo/best.pt --out submission.py
 ```
 
-Observação: exportar checkpoints PPO diretamente para a submissão Kaggle ainda não
-está implementado. `scripts.export_submission --checkpoint ...` falha
-explicitamente para evitar submeter a heurística com apenas um comentário de
-origem do checkpoint.
+Observação: `scripts.export_submission --checkpoint ...` embute o checkpoint PPO
+em um runtime Python autocontido, sem `torch` ou `numpy` na submissão. Ainda é
+necessário selecionar o checkpoint por benchmark antes de submeter; checkpoints
+fracos agora são exportáveis, mas continuam sendo candidatos ruins.
 
 ## Princípio competitivo
 

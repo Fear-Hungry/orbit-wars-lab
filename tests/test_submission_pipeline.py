@@ -6,8 +6,11 @@ from pathlib import Path
 from time import perf_counter
 
 import pytest
+import torch
 from kaggle_environments import make
+from python.agents.policy import FlatActorCritic
 from python.agents.submission_adapter import safe_submission_agent
+from python.orbit_wars_gym.encoding import observation_dim
 from python.orbit_wars_gym.entities import planet_id, planet_owner
 from scripts.export_submission import render_submission, validate_submission_template
 
@@ -90,12 +93,42 @@ def test_submission_template_exports_self_contained_agent(tmp_path: Path):
     _assert_moves_are_legal(SAMPLE_OBS, moves)
 
 
-def test_export_refuses_checkpoint_until_neural_export_exists():
-    with pytest.raises(NotImplementedError, match="PPO checkpoint export is not implemented"):
-        render_submission(
-            Path("python/submission/submission_template.py").read_text(encoding="utf-8"),
-            checkpoint="artifacts/ppo/current.pt",
-        )
+def test_submission_template_exports_neural_checkpoint_without_runtime_torch(tmp_path: Path):
+    checkpoint = tmp_path / "policy.pt"
+    torch.save(
+        {
+            "model_state_dict": FlatActorCritic(observation_dim()).state_dict(),
+            "summary": {
+                "decoder": {
+                    "fractions": [0.10, 0.25, 0.50, 0.75],
+                    "angle_offsets": [-0.261799, -0.130899, 0.0, 0.130899, 0.261799],
+                    "max_moves_per_turn": 4,
+                    "min_ships_to_launch": 2,
+                    "reserve_home_ships": 8,
+                }
+            },
+        },
+        checkpoint,
+    )
+
+    rendered = render_submission(
+        Path("python/submission/submission_template.py").read_text(encoding="utf-8"),
+        checkpoint=str(checkpoint),
+    )
+    assert "import torch" not in rendered
+    assert "import numpy" not in rendered
+    assert "_NEURAL_POLICY" in rendered
+
+    out = tmp_path / "submission_neural.py"
+    out.write_text(rendered, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("submission_neural_module", out)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    moves = module.agent(SAMPLE_OBS)
+    _assert_moves_are_legal(SAMPLE_OBS, moves)
 
 
 def test_submission_template_accepts_dict_entities(tmp_path: Path):
