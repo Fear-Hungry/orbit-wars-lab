@@ -36,10 +36,10 @@ lab-submission:
 	python -m python.lab.cli bench-submission
 
 gate-check:
-	python -m scripts.gate_check
+	uv run --extra dev python -m scripts.gate_check
 
 gate-check-final:
-	python -m scripts.gate_check --include-final
+	uv run --extra dev python -m scripts.gate_check --include-final
 
 ppo-select:
 	python -m scripts.select_ppo_checkpoint 'artifacts/ppo/*.pt'

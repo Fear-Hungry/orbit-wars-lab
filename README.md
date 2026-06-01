@@ -208,7 +208,7 @@ python -m scripts.benchmark_sim --num-envs 1024 --steps 500
 pytest -q
 
 # 3. Rodar gates pré-submissão no template atual
-python -m scripts.gate_check
+uv run --extra dev python -m scripts.gate_check
 
 # 4. Gerar probes de paridade contra Kaggle
 python -m scripts.parity_probe --episodes 32 --steps 500
