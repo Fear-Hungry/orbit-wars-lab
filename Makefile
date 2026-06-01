@@ -1,4 +1,4 @@
-.PHONY: install build test smoke bench fmt lint clean lab-doctor lab-heuristics lab-quick lab-eval lab-league lab-submission gate-check gate-check-final ppo-train-targeted ppo-select ppo-select-targeted ppo-bench-exported docker-build docker-shell docker-codex docker-smoke docker-test docker-train docker-gpu-build docker-gpu-shell docker-gpu-codex docker-gpu-check docker-gpu-train
+.PHONY: install build test smoke bench fmt lint clean lab-doctor lab-heuristics lab-quick lab-eval lab-league lab-submission gate-check gate-check-final ppo-train-targeted ppo-select ppo-select-targeted ppo-bench-exported ppo-select-exported docker-build docker-shell docker-codex docker-smoke docker-test docker-train docker-gpu-build docker-gpu-shell docker-gpu-codex docker-gpu-check docker-gpu-train
 
 PPO_SEED ?= 11
 PPO_TIMESTEPS ?= 32768
@@ -65,6 +65,9 @@ ppo-select-targeted:
 
 ppo-bench-exported:
 	uv run --extra dev python -m scripts.benchmark_ppo_submission --checkpoint $(PPO_CHECKPOINT_IN) --submission-out artifacts/ppo/$(PPO_RUN_NAME)_submission.py --out artifacts/ppo/$(PPO_RUN_NAME)_submission_benchmark.json --seeds $(PPO_EXPORT_BENCH_SEEDS) --opponents $(PPO_TARGETED_OPPONENTS)
+
+ppo-select-exported:
+	uv run --extra dev python -m scripts.select_ppo_submission $(PPO_CHECKPOINT_IN) $(PPO_CHECKPOINT_OUT) --out-dir artifacts/ppo/$(PPO_RUN_NAME)_exported_selection --output artifacts/ppo/$(PPO_RUN_NAME)_exported_selection.json --seeds $(PPO_EXPORT_BENCH_SEEDS) --opponents $(PPO_TARGETED_OPPONENTS) --skip-4p
 
 fmt:
 	cargo fmt --all || true
