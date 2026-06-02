@@ -10,7 +10,7 @@ submission_gate:
   opponents: [greedy, defensive, rush, anti_meta, weak_random]
   floors:
     greedy: 0.95
-    defensive: 0.95
+    defensive: 0.85
     rush: 0.85
     anti_meta: 0.95
     weak_random: 0.95

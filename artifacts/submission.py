@@ -945,13 +945,14 @@ def decode(action, obs):
             if best is None or score > best["score"]:
                 best = {
                     "target_id": target_id,
+                    "target_owner": _planet_owner(target),
                     "ships": ships,
                     "score": score,
                     "target_xy": target_xy,
                     "source_xy": source_xy,
                 }
 
-        if best is None or best["score"] <= 0.0:
+        if best is None or (best["target_owner"] == -1 and best["score"] <= 0.0):
             continue
 
         angle = _sun_safe_angle(best["source_xy"], best["target_xy"], _angle(best["source_xy"], best["target_xy"]))
