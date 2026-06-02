@@ -12,7 +12,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 194.0,
-              "elapsed_seconds": 0.19560749098309316,
+              "elapsed_seconds": 0.19181191199459136,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 0.0,
@@ -23,7 +23,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 205.0,
-              "elapsed_seconds": 0.2043697981571313,
+              "elapsed_seconds": 0.19765431084670126,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 0.0,
@@ -34,7 +34,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 179.0,
-              "elapsed_seconds": 0.07475925367907621,
+              "elapsed_seconds": 0.07178982306504622,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 1.0,
@@ -45,7 +45,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 174.0,
-              "elapsed_seconds": 0.06867116194916889,
+              "elapsed_seconds": 0.06542029694537632,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 1.0,
@@ -56,7 +56,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 211.0,
-              "elapsed_seconds": 0.16659182193689048,
+              "elapsed_seconds": 0.1687584660248831,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 2.0,
@@ -66,8 +66,8 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 81.0,
-              "elapsed_seconds": 0.04613677196903154,
+              "decision_turns": 223.0,
+              "elapsed_seconds": 0.1868199132150039,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 2.0,
@@ -78,7 +78,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 240.0,
-              "elapsed_seconds": 0.07223230780800804,
+              "elapsed_seconds": 0.07247720679151826,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 3.0,
@@ -89,7 +89,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 232.0,
-              "elapsed_seconds": 0.06339779467089102,
+              "elapsed_seconds": 0.062028049986111,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 3.0,
@@ -100,7 +100,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 315.0,
-              "elapsed_seconds": 0.08779029702418484,
+              "elapsed_seconds": 0.08292513297055848,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 4.0,
@@ -111,7 +111,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 321.0,
-              "elapsed_seconds": 0.0822604515706189,
+              "elapsed_seconds": 0.07988045131787658,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 4.0,
@@ -122,7 +122,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 194.0,
-              "elapsed_seconds": 0.16775768296793103,
+              "elapsed_seconds": 0.1637291871884372,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 5.0,
@@ -133,7 +133,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 181.0,
-              "elapsed_seconds": 0.16528887880849652,
+              "elapsed_seconds": 0.16373105297680013,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 5.0,
@@ -144,7 +144,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 159.0,
-              "elapsed_seconds": 0.1767066910979338,
+              "elapsed_seconds": 0.16945007277536206,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 6.0,
@@ -155,7 +155,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 175.0,
-              "elapsed_seconds": 0.19967119512148201,
+              "elapsed_seconds": 0.19528328886372037,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 6.0,
@@ -166,7 +166,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 215.0,
-              "elapsed_seconds": 0.14341456090915017,
+              "elapsed_seconds": 0.1399772978038527,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 7.0,
@@ -177,7 +177,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 219.0,
-              "elapsed_seconds": 0.14817694804514758,
+              "elapsed_seconds": 0.1449202830553986,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 7.0,
@@ -190,7 +190,7 @@
             "crash_rate": 0.0,
             "games": 16,
             "invalid_action_rate": 0.0,
-            "mean_decision_ms": 0.6260495012741231,
+            "mean_decision_ms": 0.627482323485958,
             "mean_score_margin": 1.0,
             "timeout_rate": 0.0,
             "win_rate": 1.0
@@ -203,7 +203,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 240.0,
-              "elapsed_seconds": 0.22482575071626343,
+              "elapsed_seconds": 0.22115685979952104,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 0.0,
@@ -214,7 +214,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 231.0,
-              "elapsed_seconds": 0.2303092730580829,
+              "elapsed_seconds": 0.22577484097564593,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 0.0,
@@ -225,7 +225,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 221.0,
-              "elapsed_seconds": 0.08050864597316831,
+              "elapsed_seconds": 0.07782435114495456,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 1.0,
@@ -236,7 +236,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 247.0,
-              "elapsed_seconds": 0.11288716187118553,
+              "elapsed_seconds": 0.10757163978996687,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 1.0,
@@ -247,7 +247,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 156.0,
-              "elapsed_seconds": 0.12500892512616701,
+              "elapsed_seconds": 0.12033090900513344,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 2.0,
@@ -257,8 +257,8 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 90.0,
-              "elapsed_seconds": 0.06428080075420439,
+              "decision_turns": 156.0,
+              "elapsed_seconds": 0.12137092699413188,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 2.0,
@@ -269,7 +269,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 327.0,
-              "elapsed_seconds": 0.12914831380476244,
+              "elapsed_seconds": 0.1255216799909249,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 3.0,
@@ -280,7 +280,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 263.0,
-              "elapsed_seconds": 0.10215872511616908,
+              "elapsed_seconds": 0.09987416295916773,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 3.0,
@@ -291,7 +291,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 381.0,
-              "elapsed_seconds": 0.11467170505784452,
+              "elapsed_seconds": 0.11335005797445774,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 4.0,
@@ -302,7 +302,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 400.0,
-              "elapsed_seconds": 0.13915575336432084,
+              "elapsed_seconds": 0.13563191873254254,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 4.0,
@@ -313,7 +313,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 152.0,
-              "elapsed_seconds": 0.09561815223423764,
+              "elapsed_seconds": 0.09792654795455746,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 5.0,
@@ -324,7 +324,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 153.0,
-              "elapsed_seconds": 0.0914469740819186,
+              "elapsed_seconds": 0.08998793899081647,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 5.0,
@@ -335,7 +335,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 211.0,
-              "elapsed_seconds": 0.22360680985730141,
+              "elapsed_seconds": 0.22229075388167985,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 6.0,
@@ -346,7 +346,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 213.0,
-              "elapsed_seconds": 0.21078986881184392,
+              "elapsed_seconds": 0.20538958220276982,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 6.0,
@@ -357,7 +357,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 214.0,
-              "elapsed_seconds": 0.11305624322267249,
+              "elapsed_seconds": 0.10717568817199208,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 7.0,
@@ -368,7 +368,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 188.0,
-              "elapsed_seconds": 0.10992326610721648,
+              "elapsed_seconds": 0.10599784398800693,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 7.0,
@@ -381,7 +381,7 @@
             "crash_rate": 0.0,
             "games": 16,
             "invalid_action_rate": 0.0,
-            "mean_decision_ms": 0.5878482151226903,
+            "mean_decision_ms": 0.5801160944727602,
             "mean_score_margin": 1.0,
             "timeout_rate": 0.0,
             "win_rate": 1.0
@@ -394,7 +394,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 166.0,
-              "elapsed_seconds": 0.16609696895466186,
+              "elapsed_seconds": 0.16373306800960563,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 0.0,
@@ -405,7 +405,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 152.0,
-              "elapsed_seconds": 0.15878956398228183,
+              "elapsed_seconds": 0.1549587287590839,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 0.0,
@@ -416,7 +416,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 178.0,
-              "elapsed_seconds": 0.07357886218233034,
+              "elapsed_seconds": 0.07113357898197137,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 1.0,
@@ -427,7 +427,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 173.0,
-              "elapsed_seconds": 0.06715156993595883,
+              "elapsed_seconds": 0.06532072395202704,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 1.0,
@@ -438,7 +438,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 236.0,
-              "elapsed_seconds": 0.16687577500124462,
+              "elapsed_seconds": 0.16315704901353456,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 2.0,
@@ -448,8 +448,8 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 232.0,
-              "elapsed_seconds": 0.03505787401809357,
+              "decision_turns": 246.0,
+              "elapsed_seconds": 0.1731730380852241,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 2.0,
@@ -460,7 +460,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 243.0,
-              "elapsed_seconds": 0.06329246520181186,
+              "elapsed_seconds": 0.06245054965256713,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 3.0,
@@ -471,7 +471,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 227.0,
-              "elapsed_seconds": 0.057863310154061764,
+              "elapsed_seconds": 0.05591891086078249,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 3.0,
@@ -482,7 +482,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 456.0,
-              "elapsed_seconds": 0.11888928100233898,
+              "elapsed_seconds": 0.11573305990896188,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 4.0,
@@ -493,7 +493,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 475.0,
-              "elapsed_seconds": 0.12486823339713737,
+              "elapsed_seconds": 0.12020464794477448,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 4.0,
@@ -504,7 +504,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 155.0,
-              "elapsed_seconds": 0.08267844701185822,
+              "elapsed_seconds": 0.0811200650932733,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 5.0,
@@ -515,7 +515,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 152.0,
-              "elapsed_seconds": 0.08690396178280935,
+              "elapsed_seconds": 0.08386671807966195,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 5.0,
@@ -526,7 +526,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 164.0,
-              "elapsed_seconds": 0.16403041683952324,
+              "elapsed_seconds": 0.16281826092745177,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 6.0,
@@ -537,7 +537,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 161.0,
-              "elapsed_seconds": 0.1662264492479153,
+              "elapsed_seconds": 0.16381906179594807,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 6.0,
@@ -548,7 +548,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 187.0,
-              "elapsed_seconds": 0.10913163915392943,
+              "elapsed_seconds": 0.10694695022539236,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 7.0,
@@ -559,7 +559,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 155.0,
-              "elapsed_seconds": 0.08351937524275854,
+              "elapsed_seconds": 0.08378025170532055,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 7.0,
@@ -572,7 +572,7 @@
             "crash_rate": 0.0,
             "games": 16,
             "invalid_action_rate": 0.0,
-            "mean_decision_ms": 0.49116007776444054,
+            "mean_decision_ms": 0.5184726781042486,
             "mean_score_margin": 1.0,
             "timeout_rate": 0.0,
             "win_rate": 1.0
@@ -585,7 +585,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 229.0,
-              "elapsed_seconds": 0.20033857683301903,
+              "elapsed_seconds": 0.20002684084465727,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 0.0,
@@ -596,7 +596,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 247.0,
-              "elapsed_seconds": 0.2190673352451995,
+              "elapsed_seconds": 0.21408679397427477,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 0.0,
@@ -607,7 +607,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 343.0,
-              "elapsed_seconds": 0.18763969372957945,
+              "elapsed_seconds": 0.18190839781891555,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 1.0,
@@ -618,7 +618,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 276.0,
-              "elapsed_seconds": 0.15208505597547628,
+              "elapsed_seconds": 0.1487176112132147,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 1.0,
@@ -629,7 +629,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 403.0,
-              "elapsed_seconds": 0.5034494748106226,
+              "elapsed_seconds": 0.4956541131832637,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 2.0,
@@ -639,8 +639,8 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 90.0,
-              "elapsed_seconds": 0.05955369389266707,
+              "decision_turns": 353.0,
+              "elapsed_seconds": 0.34921647695591673,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 2.0,
@@ -651,7 +651,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 267.0,
-              "elapsed_seconds": 0.09593825310003012,
+              "elapsed_seconds": 0.09751041707932018,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 3.0,
@@ -662,7 +662,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 218.0,
-              "elapsed_seconds": 0.07697733014356345,
+              "elapsed_seconds": 0.07600920295226388,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 3.0,
@@ -673,7 +673,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 441.0,
-              "elapsed_seconds": 0.1168929927807767,
+              "elapsed_seconds": 0.11270779417827725,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 4.0,
@@ -684,7 +684,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 413.0,
-              "elapsed_seconds": 0.10505207776441239,
+              "elapsed_seconds": 0.1018669209734071,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 4.0,
@@ -695,7 +695,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 182.0,
-              "elapsed_seconds": 0.14892352573224343,
+              "elapsed_seconds": 0.14393681220826693,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 5.0,
@@ -706,7 +706,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 148.0,
-              "elapsed_seconds": 0.0999162519001402,
+              "elapsed_seconds": 0.09742369104060344,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 5.0,
@@ -717,7 +717,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 193.0,
-              "elapsed_seconds": 0.22114283617702313,
+              "elapsed_seconds": 0.22088303469354287,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 6.0,
@@ -728,7 +728,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 196.0,
-              "elapsed_seconds": 0.22650694620097056,
+              "elapsed_seconds": 0.22499952898942865,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 6.0,
@@ -739,7 +739,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 233.0,
-              "elapsed_seconds": 0.12290329704410397,
+              "elapsed_seconds": 0.11909730502520688,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 7.0,
@@ -750,7 +750,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 189.0,
-              "elapsed_seconds": 0.11804519491852261,
+              "elapsed_seconds": 0.11503000717493705,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 7.0,
@@ -763,7 +763,7 @@
             "crash_rate": 0.0,
             "games": 16,
             "invalid_action_rate": 0.0,
-            "mean_decision_ms": 0.6525153727257499,
+            "mean_decision_ms": 0.6693777299250744,
             "mean_score_margin": 1.0,
             "timeout_rate": 0.0,
             "win_rate": 1.0
@@ -776,7 +776,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 207.0,
-              "elapsed_seconds": 0.1778578540252056,
+              "elapsed_seconds": 0.17305954106268473,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 0.0,
@@ -787,7 +787,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 207.0,
-              "elapsed_seconds": 0.1827327169594355,
+              "elapsed_seconds": 0.17530209384858608,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 0.0,
@@ -798,7 +798,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 174.0,
-              "elapsed_seconds": 0.07625784008996561,
+              "elapsed_seconds": 0.07242501893779263,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 1.0,
@@ -809,7 +809,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 203.0,
-              "elapsed_seconds": 0.07077243988169357,
+              "elapsed_seconds": 0.06701576116029173,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 1.0,
@@ -820,7 +820,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 251.0,
-              "elapsed_seconds": 0.21871598431607708,
+              "elapsed_seconds": 0.2151224909175653,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 2.0,
@@ -830,19 +830,19 @@
             },
             {
               "crashes": 0.0,
-              "decision_turns": 362.0,
-              "elapsed_seconds": 0.03632667424972169,
+              "decision_turns": 191.0,
+              "elapsed_seconds": 0.08803257506224327,
               "invalid_actions": 0.0,
-              "normalized_margin": 1.0,
+              "normalized_margin": -1.0,
               "seed": 2.0,
               "submission_player": 1.0,
               "timeouts": 0.0,
-              "win_points": 1.0
+              "win_points": 0.0
             },
             {
               "crashes": 0.0,
               "decision_turns": 259.0,
-              "elapsed_seconds": 0.07472415009397082,
+              "elapsed_seconds": 0.07332178408978507,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 3.0,
@@ -853,7 +853,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 256.0,
-              "elapsed_seconds": 0.08081499274703674,
+              "elapsed_seconds": 0.08246141520794481,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 3.0,
@@ -864,7 +864,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 358.0,
-              "elapsed_seconds": 0.09378864971222356,
+              "elapsed_seconds": 0.09568097078590654,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 4.0,
@@ -875,7 +875,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 481.0,
-              "elapsed_seconds": 0.12084214328206144,
+              "elapsed_seconds": 0.1258105038141366,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 4.0,
@@ -886,7 +886,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 220.0,
-              "elapsed_seconds": 0.15601703120046295,
+              "elapsed_seconds": 0.15538343318621628,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 5.0,
@@ -897,7 +897,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 196.0,
-              "elapsed_seconds": 0.1616348830575589,
+              "elapsed_seconds": 0.15846257586963475,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 5.0,
@@ -908,7 +908,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 173.0,
-              "elapsed_seconds": 0.20737193390959874,
+              "elapsed_seconds": 0.203598697000416,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 6.0,
@@ -919,7 +919,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 200.0,
-              "elapsed_seconds": 0.21180689681204967,
+              "elapsed_seconds": 0.209381327877054,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 6.0,
@@ -930,7 +930,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 221.0,
-              "elapsed_seconds": 0.1246026752924081,
+              "elapsed_seconds": 0.12109750302624889,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 7.0,
@@ -941,7 +941,7 @@
             {
               "crashes": 0.0,
               "decision_turns": 238.0,
-              "elapsed_seconds": 0.1022230461530853,
+              "elapsed_seconds": 0.09871381634729914,
               "invalid_actions": 0.0,
               "normalized_margin": 1.0,
               "seed": 7.0,
@@ -954,10 +954,10 @@
             "crash_rate": 0.0,
             "games": 16,
             "invalid_action_rate": 0.0,
-            "mean_decision_ms": 0.5233374717380318,
-            "mean_score_margin": 1.0,
+            "mean_decision_ms": 0.5514653215629219,
+            "mean_score_margin": 0.875,
             "timeout_rate": 0.0,
-            "win_rate": 1.0
+            "win_rate": 0.9375
           }
         }
       ]
@@ -975,7 +975,7 @@
         {
           "crashes": 0.0,
           "decision_turns": 212.0,
-          "elapsed_seconds": 0.22191963394288905,
+          "elapsed_seconds": 0.21563757202238776,
           "invalid_actions": 0.0,
           "lineup": [
             "anti_meta",
@@ -990,7 +990,7 @@
         {
           "crashes": 0.0,
           "decision_turns": 243.0,
-          "elapsed_seconds": 0.10019153810571879,
+          "elapsed_seconds": 0.09884626281564124,
           "invalid_actions": 0.0,
           "lineup": [
             "defensive",
@@ -1005,7 +1005,7 @@
         {
           "crashes": 0.0,
           "decision_turns": 217.0,
-          "elapsed_seconds": 0.17035831604152918,
+          "elapsed_seconds": 0.16953336502774619,
           "invalid_actions": 0.0,
           "lineup": [
             "anti_meta",
@@ -1020,7 +1020,7 @@
         {
           "crashes": 0.0,
           "decision_turns": 257.0,
-          "elapsed_seconds": 0.07019783192663454,
+          "elapsed_seconds": 0.07193497821572237,
           "invalid_actions": 0.0,
           "lineup": [
             "anti_meta",
@@ -1035,7 +1035,7 @@
         {
           "crashes": 0.0,
           "decision_turns": 280.0,
-          "elapsed_seconds": 0.03733890497824177,
+          "elapsed_seconds": 0.03729313606163487,
           "invalid_actions": 0.0,
           "lineup": [
             "weak_random",
@@ -1050,7 +1050,7 @@
         {
           "crashes": 0.0,
           "decision_turns": 201.0,
-          "elapsed_seconds": 0.16546135800308548,
+          "elapsed_seconds": 0.16172724007628858,
           "invalid_actions": 0.0,
           "lineup": [
             "defensive",
@@ -1065,7 +1065,7 @@
         {
           "crashes": 0.0,
           "decision_turns": 214.0,
-          "elapsed_seconds": 0.1399247950175777,
+          "elapsed_seconds": 0.13796267300494947,
           "invalid_actions": 0.0,
           "lineup": [
             "greedy",
@@ -1080,7 +1080,7 @@
         {
           "crashes": 0.0,
           "decision_turns": 209.0,
-          "elapsed_seconds": 0.11154770571738482,
+          "elapsed_seconds": 0.10814823510008864,
           "invalid_actions": 0.0,
           "lineup": [
             "anti_meta",
@@ -1097,7 +1097,7 @@
         "crash_rate": 0.0,
         "games": 8,
         "invalid_action_rate": 0.0,
-        "mean_decision_ms": 0.5547954630294933,
+        "mean_decision_ms": 0.5461448239631528,
         "mean_score_margin": 0.75,
         "timeout_rate": 0.0,
         "win_rate": 0.875
