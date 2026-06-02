@@ -593,7 +593,7 @@ def _frontier_reinforcement_moves(obs, own, enemies, action, launched_by_source,
     if max_moves_left <= 0 or len(own) < 5 or not enemies or step <= FSM_OPENING_TURNS:
         return []
     ffa = bool(action.get("ffa"))
-    if not ffa and (len(own) < 6 or step < 100):
+    if not ffa and (len(own) < 4 or step < 55):
         return []
     player = int(obs.get("player", 0))
     own_with_pressure = [(planet, _nearest_enemy_distance(planet, enemies)) for planet in own]
