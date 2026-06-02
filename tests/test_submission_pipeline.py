@@ -242,6 +242,74 @@ def test_exported_submission_tracks_recent_weak_enemy_captures(tmp_path: Path):
     assert action["fsm_state"] == "PUNISH_WEAK_CAPTURE"
 
 
+def test_exported_submission_projects_future_incoming_combat(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_future_projection")
+    obs = {
+        "player": 0,
+        "step": 40,
+        "angular_velocity": 0.0,
+        "planets": [
+            [0, 0, 20.0, 20.0, 2.0, 40, 3],
+            [1, 1, 35.0, 20.0, 2.0, 6, 2],
+        ],
+        "fleets": [[20, 2, 30.0, 20.0, 0.0, 9, 12]],
+    }
+
+    owner, ships = module._project_planet_state(obs, obs["planets"][1], 4, cache={})
+
+    assert owner == 2
+    assert ships > 0
+
+
+def test_exported_submission_skips_late_neutral_without_breakeven(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_neutral_breakeven")
+    obs = {
+        "player": 0,
+        "step": 498,
+        "angular_velocity": 0.0,
+        "planets": [
+            [0, 0, 20.0, 20.0, 2.0, 80, 3],
+            [1, -1, 28.0, 20.0, 2.0, 20, 1],
+        ],
+        "fleets": [],
+    }
+
+    features = module.encode(obs)
+    action = module.policy_forward(features)
+    moves = module.decode(action, obs)
+
+    assert moves == []
+
+
+def test_exported_submission_moves_surplus_toward_frontier(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_frontier_reinforcement")
+    obs = {
+        "player": 0,
+        "step": 120,
+        "angular_velocity": 0.0,
+        "planets": [
+            [0, 0, 20.0, 20.0, 2.0, 70, 2],
+            [1, 0, 72.0, 70.0, 2.0, 12, 4],
+            [2, 0, 45.0, 40.0, 2.0, 18, 2],
+            [4, 0, 35.0, 25.0, 2.0, 22, 2],
+            [5, 0, 25.0, 42.0, 2.0, 20, 2],
+            [3, 1, 84.0, 72.0, 2.0, 40, 4],
+            [6, 2, 85.0, 60.0, 2.0, 35, 3],
+        ],
+        "fleets": [],
+    }
+    features = module.encode(obs)
+    action = module.policy_forward(features)
+    own = [planet for planet in obs["planets"] if planet[1] == 0]
+    enemies = [planet for planet in obs["planets"] if planet[1] == 1]
+
+    moves = module._frontier_reinforcement_moves(obs, own, enemies, action, {}, 2)
+
+    assert moves
+    assert int(moves[0][0]) == 0
+    _assert_moves_are_legal(obs, moves)
+
+
 def test_exported_submission_throttles_sources_with_many_outgoing_fleets(tmp_path: Path):
     module = _load_rendered_submission(tmp_path, "submission_source_throttle")
     module._PROFILE_STATE.clear()

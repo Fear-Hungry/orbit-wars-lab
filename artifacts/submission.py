@@ -15,6 +15,8 @@ PROFILE_DECAY = 0.82
 PROFILE_RAY_MAX_ANGLE = 0.36
 PROFILE_CAPTURE_TTL = 18
 FSM_OPENING_TURNS = 55
+MAX_GAME_TURNS = 500
+FUTURE_FLEET_HORIZON = 90
 
 _PROFILE_STATE = {}
 
@@ -136,6 +138,13 @@ def _predict_target_xy(obs, source_xy, target, ships):
     return _rotate_about_center(target_xy, float(obs.get("angular_velocity", 0.0)) * travel_steps)
 
 
+def _planet_xy_at(obs, planet, turns):
+    point = (_planet_x(planet), _planet_y(planet))
+    if not _is_rotating_planet(planet):
+        return point
+    return _rotate_about_center(point, float(obs.get("angular_velocity", 0.0)) * max(0, int(turns)))
+
+
 def _distance(a, b):
     return hypot(a[0] - b[0], a[1] - b[1])
 
@@ -162,6 +171,104 @@ def _estimate_fleet_target(obs, fleet):
         if best is None or score < best[0]:
             best = (score, planet)
     return None if best is None else best[1]
+
+
+def _fleet_eta_to_planet(obs, fleet, target, max_turns):
+    origin = (_fleet_x(fleet), _fleet_y(fleet))
+    angle = _fleet_angle(fleet)
+    speed = _fleet_speed(_fleet_ships(fleet))
+    radius = max(0.5, _planet_radius(target))
+    for turns in range(1, max(1, int(max_turns)) + 1):
+        target_xy = _planet_xy_at(obs, target, turns)
+        if _angle_delta(angle, _angle(origin, target_xy)) > PROFILE_RAY_MAX_ANGLE:
+            continue
+        if _distance(origin, target_xy) <= speed * turns + radius + 0.75:
+            return turns
+    return None
+
+
+def _resolve_arrivals(owner, garrison, arrivals):
+    if not arrivals:
+        return owner, max(0, int(garrison))
+
+    attackers = [(int(fleet_owner), int(ships)) for fleet_owner, ships in arrivals.items() if int(ships) > 0]
+    if not attackers:
+        return owner, max(0, int(garrison))
+    attackers.sort(key=lambda item: (item[1], -item[0]), reverse=True)
+
+    survivor_owner, survivor_ships = attackers[0]
+    if len(attackers) > 1:
+        second_ships = attackers[1][1]
+        if survivor_ships == second_ships:
+            return owner, max(0, int(garrison))
+        survivor_ships -= second_ships
+
+    if survivor_owner == owner:
+        return owner, max(0, int(garrison) + survivor_ships)
+    if survivor_ships > garrison:
+        return survivor_owner, int(survivor_ships - garrison)
+    if survivor_ships == garrison:
+        return -1, 0
+    return owner, int(garrison - survivor_ships)
+
+
+def _project_planet_state(obs, target, horizon, extra_arrivals=None, cache=None):
+    horizon = max(0, min(FUTURE_FLEET_HORIZON, int(horizon)))
+    extra_key = tuple((int(eta), int(owner), int(ships)) for eta, owner, ships in (extra_arrivals or ()) if int(ships) > 0)
+    cache_key = (_planet_id(target), horizon, extra_key)
+    if cache is not None and cache_key in cache:
+        return cache[cache_key]
+
+    owner = _planet_owner(target)
+    garrison = _planet_ships(target)
+    production = _planet_production(target)
+    target_id = _planet_id(target)
+    arrivals_by_turn = {}
+
+    if horizon > 0:
+        fleet_target_cache = None if cache is None else cache.setdefault(("fleet_targets",), {})
+        fleet_eta_cache = None if cache is None else cache.setdefault(("fleet_etas",), {})
+        for fleet in obs.get("fleets", []):
+            fleet_key = (_fleet_owner(fleet), _fleet_id(fleet), _fleet_x(fleet), _fleet_y(fleet), _fleet_angle(fleet))
+            if fleet_target_cache is not None and fleet_key in fleet_target_cache:
+                estimated_target_id = fleet_target_cache[fleet_key]
+            else:
+                estimated_target = _estimate_fleet_target(obs, fleet)
+                estimated_target_id = None if estimated_target is None else _planet_id(estimated_target)
+                if fleet_target_cache is not None:
+                    fleet_target_cache[fleet_key] = estimated_target_id
+            if estimated_target_id != target_id:
+                continue
+            eta_key = (fleet_key, target_id, horizon)
+            if fleet_eta_cache is not None and eta_key in fleet_eta_cache:
+                eta = fleet_eta_cache[eta_key]
+            else:
+                eta = _fleet_eta_to_planet(obs, fleet, target, horizon)
+                if fleet_eta_cache is not None:
+                    fleet_eta_cache[eta_key] = eta
+            if eta is None:
+                continue
+            turn_arrivals = arrivals_by_turn.setdefault(eta, {})
+            fleet_owner = _fleet_owner(fleet)
+            turn_arrivals[fleet_owner] = turn_arrivals.get(fleet_owner, 0) + _fleet_ships(fleet)
+
+    for arrival in extra_arrivals or ():
+        eta, arrival_owner, ships = arrival
+        eta = max(1, min(horizon, int(eta))) if horizon > 0 else 0
+        if eta <= 0 or int(ships) <= 0:
+            continue
+        turn_arrivals = arrivals_by_turn.setdefault(eta, {})
+        arrival_owner = int(arrival_owner)
+        turn_arrivals[arrival_owner] = turn_arrivals.get(arrival_owner, 0) + int(ships)
+
+    for turn in range(1, horizon + 1):
+        if owner != -1:
+            garrison += production
+        owner, garrison = _resolve_arrivals(owner, garrison, arrivals_by_turn.get(turn, {}))
+    result = (owner, garrison)
+    if cache is not None:
+        cache[cache_key] = result
+    return result
 
 
 def _empty_profile_state(step):
@@ -270,16 +377,39 @@ def _fsm_state(features):
     step = int(features.get("step", 0))
     if features.get("enemy_players", 0) >= 2 and features.get("to_me_ratio", 0.0) >= 0.58:
         return "DEFEND_UNDER_PRESSURE"
-    if features.get("recent_enemy_captures"):
-        return "PUNISH_WEAK_CAPTURE"
     if step <= FSM_OPENING_TURNS and features.get("neutral_count", 0) > 0 and features.get("own_count", 0) <= 4:
         return "OPENING_EXPAND"
+    if (
+        features.get("recent_enemy_captures")
+        and not (
+            features.get("neutral_count", 0) >= 8
+            and features.get("enemy_prod", 0) > features.get("own_prod", 0)
+        )
+    ):
+        return "PUNISH_WEAK_CAPTURE"
     if features.get("enemy_prod", 0) > features.get("own_prod", 0) and features.get("neutral_count", 0) > 0:
         return "ECON_CONSOLIDATE"
     return "BASELINE"
 
 
-def _reserve_for_source(source, own_count, enemies, action):
+def _incoming_threat_before(obs, source, player, horizon):
+    if obs is None or player is None:
+        return 0
+    threat = 0
+    source_id = _planet_id(source)
+    for fleet in obs.get("fleets", []):
+        if _fleet_owner(fleet) in (-1, player):
+            continue
+        estimated_target = _estimate_fleet_target(obs, fleet)
+        if estimated_target is None or _planet_id(estimated_target) != source_id:
+            continue
+        eta = _fleet_eta_to_planet(obs, fleet, source, horizon)
+        if eta is not None and eta <= horizon:
+            threat += _fleet_ships(fleet)
+    return threat
+
+
+def _reserve_for_source(source, own_count, enemies, action, obs=None, player=None):
     reserve = RESERVE_HOME_SHIPS
     if own_count <= 2:
         reserve += 4
@@ -298,11 +428,19 @@ def _reserve_for_source(source, own_count, enemies, action):
             reserve += 4
         elif nearest_enemy < 28.0:
             reserve += 2
+    incoming_threat = _incoming_threat_before(obs, source, player, 40)
+    step = int((obs or {}).get("step", (obs or {}).get("turn", 0)))
+    if step >= 30 and action.get("fsm_state") == "OPENING_EXPAND" and incoming_threat <= 0 and _planet_production(source) <= 1:
+        reserve = min(reserve, RESERVE_HOME_SHIPS)
+    if incoming_threat >= _planet_ships(source) and incoming_threat > 0:
+        reserve = min(reserve, max(MIN_CAPTURE_MARGIN, _planet_ships(source) // 3))
+    else:
+        reserve = max(reserve, incoming_threat + MIN_CAPTURE_MARGIN)
     return reserve
 
 
-def _source_priority(source, own_count, enemies, action):
-    reserve = _reserve_for_source(source, own_count, enemies, action)
+def _source_priority(source, own_count, enemies, action, obs=None, player=None):
+    reserve = _reserve_for_source(source, own_count, enemies, action, obs, player)
     surplus = max(0, _planet_ships(source) - reserve)
     return (
         surplus,
@@ -323,6 +461,73 @@ def _outgoing_by_source(obs, player):
     return outgoing
 
 
+def _incoming_ships_to_target(obs, target, owner):
+    target_id = _planet_id(target)
+    ships = 0
+    for fleet in obs.get("fleets", []):
+        if _fleet_owner(fleet) != owner:
+            continue
+        estimated_target = _estimate_fleet_target(obs, fleet)
+        if estimated_target is not None and _planet_id(estimated_target) == target_id:
+            ships += _fleet_ships(fleet)
+    return ships
+
+
+def _nearest_enemy_distance(planet, enemies):
+    if not enemies:
+        return 999.0
+    source_xy = (_planet_x(planet), _planet_y(planet))
+    return min(_distance(source_xy, (_planet_x(enemy), _planet_y(enemy))) for enemy in enemies)
+
+
+def _frontier_reinforcement_moves(obs, own, enemies, action, launched_by_source, max_moves_left):
+    step = int(obs.get("step", obs.get("turn", 0)))
+    if max_moves_left <= 0 or len(own) < 5 or not enemies or step <= FSM_OPENING_TURNS or not action.get("ffa"):
+        return []
+    player = int(obs.get("player", 0))
+    own_with_pressure = [(planet, _nearest_enemy_distance(planet, enemies)) for planet in own]
+    frontier = [
+        planet
+        for planet, enemy_distance in own_with_pressure
+        if enemy_distance <= 24.0
+    ]
+    if not frontier:
+        return []
+
+    moves = []
+    for source, source_enemy_distance in sorted(own_with_pressure, key=lambda item: item[1], reverse=True):
+        if len(moves) >= max_moves_left:
+            break
+        source_id = _planet_id(source)
+        if source in frontier:
+            continue
+        if source_enemy_distance < 44.0:
+            continue
+        reserve = _reserve_for_source(source, len(own), enemies, action, obs, player)
+        available = _planet_ships(source) - reserve - launched_by_source.get(source_id, 0)
+        if available < MIN_SHIPS_TO_LAUNCH + 18:
+            continue
+        source_xy = (_planet_x(source), _planet_y(source))
+        target = min(
+            frontier,
+            key=lambda planet: (
+                _nearest_enemy_distance(planet, enemies),
+                _distance(source_xy, (_planet_x(planet), _planet_y(planet))),
+                -_planet_production(planet),
+            ),
+        )
+        target_enemy_distance = _nearest_enemy_distance(target, enemies)
+        if target_enemy_distance >= source_enemy_distance:
+            continue
+        ships = max(MIN_SHIPS_TO_LAUNCH, min(available // 2, available - 12))
+        target_xy = _predict_target_xy(obs, source_xy, target, ships)
+        angle = _sun_safe_angle(source_xy, target_xy, _angle(source_xy, target_xy))
+        moves.append([source_id, float(angle), int(ships)])
+        launched_by_source[source_id] = launched_by_source.get(source_id, 0) + int(ships)
+        break
+    return moves
+
+
 def encode(obs):
     player = int(obs.get("player", 0))
     planets = obs.get("planets", [])
@@ -333,10 +538,14 @@ def encode(obs):
 
     owner_totals = {}
     owner_prod = {}
+    owner_fleet_ships = {}
     for planet in planets:
         owner = _planet_owner(planet)
         owner_totals[owner] = owner_totals.get(owner, 0) + _planet_ships(planet)
         owner_prod[owner] = owner_prod.get(owner, 0) + _planet_production(planet)
+    for fleet in obs.get("fleets", []):
+        owner = _fleet_owner(fleet)
+        owner_fleet_ships[owner] = owner_fleet_ships.get(owner, 0) + _fleet_ships(fleet)
 
     leader_owner = None
     if enemies:
@@ -355,6 +564,8 @@ def encode(obs):
         "neutral_count": len(neutrals),
         "own_ships": sum(_planet_ships(planet) for planet in own),
         "enemy_ships": sum(_planet_ships(planet) for planet in enemies),
+        "own_fleet_ships": owner_fleet_ships.get(player, 0),
+        "enemy_fleet_ships": sum(owner_fleet_ships.get(owner, 0) for owner in enemy_owners),
         "own_prod": sum(_planet_production(planet) for planet in own),
         "enemy_prod": sum(_planet_production(planet) for planet in enemies),
         "leader_owner": leader_owner,
@@ -383,6 +594,7 @@ def policy_forward(features):
         "pressure": bool(pressure),
         "behind_on_econ": bool(behind_on_econ),
         "leader_owner": features["leader_owner"],
+        "own_count": int(features["own_count"]),
         "neutral_count": int(features["neutral_count"]),
         "fsm_state": state,
         "recent_enemy_captures": set(features.get("recent_enemy_captures", set())),
@@ -390,32 +602,70 @@ def policy_forward(features):
         "to_neutral_ratio": float(features.get("to_neutral_ratio", 0.0)),
         "to_me_ratio": float(features.get("to_me_ratio", 0.0)),
         "to_leader_ratio": float(features.get("to_leader_ratio", 0.0)),
+        "enemy_overextended": bool(
+            features.get("enemy_fleet_ships", 0) > 1.15 * max(1, features.get("enemy_ships", 0))
+            and features.get("to_neutral_ratio", 0.0) >= 0.80
+        ),
     }
 
 
 def _required_ships(obs, source, target, committed, action):
+    player = int(obs.get("player", 0))
+    projection_cache = action.setdefault("_projection_cache", {})
     source_xy = (_planet_x(source), _planet_y(source))
     estimate = max(MIN_SHIPS_TO_LAUNCH, _planet_ships(target) + MIN_CAPTURE_MARGIN)
+    projected_owner = _planet_owner(target)
+    projected_ships = _planet_ships(target)
+    travel_steps = 1
     target_xy = _predict_target_xy(obs, source_xy, target, estimate)
-    travel_steps = max(1, ceil(_distance(source_xy, target_xy) / _fleet_speed(estimate)))
-    owner = _planet_owner(target)
-    growth = 0
-    if owner != -1:
-        growth = travel_steps * _planet_production(target)
-    need = _planet_ships(target) + growth + MIN_CAPTURE_MARGIN - int(committed)
-    if owner == action.get("leader_owner"):
-        need += 1
-    return max(MIN_SHIPS_TO_LAUNCH, need), target_xy
+    for _ in range(3):
+        target_xy = _predict_target_xy(obs, source_xy, target, estimate)
+        travel_steps = max(1, ceil(_distance(source_xy, target_xy) / _fleet_speed(estimate)))
+        projected_owner, projected_ships = _project_planet_state(
+            obs,
+            target,
+            travel_steps,
+            cache=projection_cache,
+        )
+        current_owner = _planet_owner(target)
+        if projected_owner == player and current_owner == player:
+            need = MIN_SHIPS_TO_LAUNCH
+        else:
+            if projected_owner == player:
+                need = _planet_ships(target) + MIN_CAPTURE_MARGIN - int(committed)
+            else:
+                need = max(_planet_ships(target), projected_ships) + MIN_CAPTURE_MARGIN - int(committed)
+            if projected_owner == action.get("leader_owner"):
+                need += 1
+        next_estimate = max(MIN_SHIPS_TO_LAUNCH, int(need))
+        if abs(next_estimate - estimate) <= 1:
+            estimate = next_estimate
+            break
+        estimate = next_estimate
+    return max(MIN_SHIPS_TO_LAUNCH, int(estimate)), target_xy, travel_steps, projected_owner, projected_ships
 
 
 def _target_value(obs, source, target, committed, action, own, enemies):
-    required, target_xy = _required_ships(obs, source, target, committed, action)
+    player = int(obs.get("player", 0))
+    projection_cache = action.setdefault("_projection_cache", {})
+    step = int(obs.get("step", obs.get("turn", 0)))
+    required, target_xy, travel_steps, projected_owner, projected_ships = _required_ships(obs, source, target, committed, action)
     source_xy = (_planet_x(source), _planet_y(source))
     distance = _distance(source_xy, target_xy)
     owner = _planet_owner(target)
     production = _planet_production(target)
     ships = _planet_ships(target)
     ffa = bool(action.get("ffa"))
+    turns_remaining = max(0, MAX_GAME_TURNS - step - travel_steps)
+    own_incoming = _incoming_ships_to_target(obs, target, player)
+
+    after_owner, after_ships = _project_planet_state(
+        obs,
+        target,
+        travel_steps,
+        extra_arrivals=[(travel_steps, player, int(committed) + int(required))],
+        cache=projection_cache,
+    )
 
     own_proximity = min(
         (_distance((_planet_x(planet), _planet_y(planet)), target_xy) for planet in own if _planet_id(planet) != _planet_id(source)),
@@ -426,11 +676,28 @@ def _target_value(obs, source, target, committed, action, own, enemies):
         default=distance,
     )
 
-    value = production * (14.0 if owner == -1 else 17.0)
+    projected_gain = 0.0
+    if projected_owner != player and after_owner == player:
+        projected_gain += after_ships + production * min(40, turns_remaining)
+    elif owner != player and projected_owner == player and after_owner == player:
+        projected_gain += 0.45 * after_ships + production * min(24, turns_remaining)
+    elif projected_owner == player and after_owner == player:
+        projected_gain += 0.35 * required
+    elif after_owner not in (-1, player):
+        projected_gain -= 12.0
+
+    if owner == -1 and production * max(1, turns_remaining) <= required:
+        return -999.0, required, target_xy
+    value = projected_gain + production * (8.0 if owner == -1 else 11.0)
     if owner == -1:
         value += 8.0
         if ffa:
             value += 4.0
+        if action.get("fsm_state") == "OPENING_EXPAND" and own_incoming > 0 and ships >= 12:
+            value += min(48.0, 1.4 * own_incoming + 8.0 * production)
+            overcommit = own_incoming - 2.2 * max(1, ships + MIN_CAPTURE_MARGIN)
+            if overcommit > 0:
+                value -= 1.6 * overcommit
     else:
         value += 8.0
     if owner == action.get("leader_owner"):
@@ -445,6 +712,8 @@ def _target_value(obs, source, target, committed, action, own, enemies):
         value += 2.0
     if action.get("expand") and action.get("neutral_count", 0) > 0 and owner != -1:
         value -= 10.0
+        if action.get("enemy_overextended") and owner not in (-1, player):
+            value += 18.0 + 8.0 * production - 0.18 * ships
     if ffa and owner not in (-1, action.get("leader_owner")):
         value -= 6.0
     if ffa and owner == action.get("leader_owner"):
@@ -462,7 +731,8 @@ def _target_value(obs, source, target, committed, action, own, enemies):
         distance_penalty += 0.06 * distance
     if action.get("expand") and owner != -1:
         distance_penalty += 0.08 * distance
-    return value + 24.0 * roi - distance_penalty - 0.22 * ships, required, target_xy
+    future_penalty = 0.16 * max(0, projected_ships - ships)
+    return value + 24.0 * roi - distance_penalty - 0.22 * ships - future_penalty, required, target_xy
 
 
 def decode(action, obs):
@@ -481,13 +751,17 @@ def decode(action, obs):
     moves = []
 
     max_moves = 4 if action.get("ffa") else MAX_MOVES_PER_TURN
-    sources = sorted(own, key=lambda planet: _source_priority(planet, len(own), enemies, action), reverse=True)
+    sources = sorted(
+        own,
+        key=lambda planet: _source_priority(planet, len(own), enemies, action, obs, player),
+        reverse=True,
+    )
 
     for source in sources:
         if len(moves) >= max_moves:
             break
         source_id = _planet_id(source)
-        reserve = _reserve_for_source(source, len(own), enemies, action)
+        reserve = _reserve_for_source(source, len(own), enemies, action, obs, player)
         available = _planet_ships(source) - reserve - launched_by_source.get(source_id, 0)
         if available < MIN_SHIPS_TO_LAUNCH:
             continue
@@ -524,6 +798,18 @@ def decode(action, obs):
         launched_by_source[source_id] = launched_by_source.get(source_id, 0) + int(best["ships"])
         committed_by_target[best["target_id"]] = committed_by_target.get(best["target_id"], 0) + int(best["ships"])
         used_targets.add(best["target_id"])
+
+    if len(moves) < max_moves:
+        moves.extend(
+            _frontier_reinforcement_moves(
+                obs,
+                own,
+                enemies,
+                action,
+                launched_by_source,
+                max_moves - len(moves),
+            )
+        )
 
     return moves
 
