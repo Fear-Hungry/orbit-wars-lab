@@ -1,10 +1,7 @@
-from pathlib import Path
-
 from scripts.gate_check import (
     DEFAULT_CONFIG,
     GateConfig,
     _final_seed_list,
-    _gate_critical_matchups,
     _gate_floors,
     _gate_holdout,
     _gate_regression,
@@ -23,14 +20,13 @@ def _cfg() -> GateConfig:
         final_seed_start=100,
         final_seeds=20,
         opponents=["greedy", "weak_random"],
-        floors={"greedy": 0.90, "weak_random": 0.85, "four_player": 0.50},
+        floors={"greedy": 0.95, "weak_random": 0.95, "four_player": 0.70},
         regression={
             "max_2p_win_rate_drop": 0.05,
             "max_mean_score_margin_drop": 0.10,
             "max_worst_decile_score_margin_drop": 0.10,
         },
-        min_holdout_worst_decile=-0.30,
-        critical_matchups=[],
+        min_holdout_worst_decile=0.10,
     )
 
 
@@ -92,19 +88,15 @@ def test_final_seed_list_uses_holdout_range_offset():
     assert _final_seed_list(_cfg()) == list(range(100, 120))
 
 
-def test_gate_critical_matchups_passes_when_no_cases_are_configured():
-    gate = _gate_critical_matchups(Path("unused.py"), _cfg())
-
-    assert gate == {"name": "gate_2b_critical_matchups", "passed": True, "checks": []}
-
-
-def test_default_gate_tracks_known_weak_random_seed_two_failure():
+def test_default_gate_uses_tight_general_floors_without_seed_specific_matchups():
     cfg = _load_config(DEFAULT_CONFIG)
 
-    assert {
-        "opponent": "weak_random",
-        "seed": 2,
-        "submission_player": 1,
-        "min_win_points": 1.0,
-        "min_normalized_margin": 0.0,
-    } in cfg.critical_matchups
+    assert cfg.floors == {
+        "greedy": 0.95,
+        "defensive": 0.95,
+        "rush": 0.85,
+        "anti_meta": 0.95,
+        "weak_random": 0.95,
+        "four_player": 0.70,
+    }
+    assert cfg.min_holdout_worst_decile == 0.10

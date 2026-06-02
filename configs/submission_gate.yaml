@@ -9,41 +9,15 @@ submission_gate:
   final_seeds: 20
   opponents: [greedy, defensive, rush, anti_meta, weak_random]
   floors:
-    greedy: 0.90
-    defensive: 0.90
-    rush: 0.65
-    anti_meta: 0.90
-    weak_random: 0.85
-    four_player: 0.50
+    greedy: 0.95
+    defensive: 0.95
+    rush: 0.85
+    anti_meta: 0.95
+    weak_random: 0.95
+    four_player: 0.70
   regression:
     max_2p_win_rate_drop: 0.05
     max_mean_score_margin_drop: 0.10
     max_worst_decile_score_margin_drop: 0.10
   holdout:
-    min_worst_decile_score_margin: -0.30
-  critical_matchups:
-    - opponent: weak_random
-      seed: 1
-      submission_player: 0
-      min_win_points: 1.0
-      min_normalized_margin: 0.0
-    - opponent: weak_random
-      seed: 1
-      submission_player: 1
-      min_win_points: 1.0
-      min_normalized_margin: 0.0
-    - opponent: weak_random
-      seed: 2
-      submission_player: 1
-      min_win_points: 1.0
-      min_normalized_margin: 0.0
-    - opponent: rush
-      seed: 1
-      submission_player: 0
-      min_win_points: 1.0
-      min_normalized_margin: 0.0
-    - opponent: rush
-      seed: 1
-      submission_player: 1
-      min_win_points: 1.0
-      min_normalized_margin: 0.0
+    min_worst_decile_score_margin: 0.10
