@@ -83,6 +83,18 @@ def _fleet_ships(fleet):
     return int(_field(fleet, 6, "ships"))
 
 
+def _comet_planet_ids(group):
+    return list(_field(group, 0, "planet_ids"))
+
+
+def _comet_paths(group):
+    return list(_field(group, 1, "paths"))
+
+
+def _comet_path_index(group):
+    return int(_field(group, 2, "path_index"))
+
+
 def _angle(a, b):
     return atan2(b[1] - a[1], b[0] - a[0])
 
@@ -129,6 +141,41 @@ def _is_rotating_planet(planet):
     return orbital_radius + _planet_radius(planet) < ROTATION_RADIUS_LIMIT
 
 
+def _comet_path_for_planet(obs, planet_id):
+    for group in obs.get("comets", []):
+        planet_ids = _comet_planet_ids(group)
+        try:
+            offset = planet_ids.index(int(planet_id))
+        except ValueError:
+            continue
+        paths = _comet_paths(group)
+        if offset < len(paths):
+            return paths[offset], _comet_path_index(group)
+    return None, None
+
+
+def _is_comet(obs, planet):
+    return _planet_id(planet) in set(int(pid) for pid in obs.get("comet_planet_ids", []))
+
+
+def _comet_turns_remaining(obs, planet):
+    path, path_index = _comet_path_for_planet(obs, _planet_id(planet))
+    if path is None or path_index is None:
+        return None
+    return max(0, len(path) - max(0, int(path_index)))
+
+
+def _comet_xy_at(obs, planet, turns):
+    path, path_index = _comet_path_for_planet(obs, _planet_id(planet))
+    if path is None or path_index is None:
+        return None
+    index = int(path_index) + max(0, int(turns))
+    if index < 0 or index >= len(path):
+        return None
+    point = path[index]
+    return (float(point[0]), float(point[1]))
+
+
 def _predict_target_xy(obs, source_xy, target, ships):
     target_xy = (_planet_x(target), _planet_y(target))
     if not _is_rotating_planet(target):
@@ -139,6 +186,10 @@ def _predict_target_xy(obs, source_xy, target, ships):
 
 
 def _planet_xy_at(obs, planet, turns):
+    if _is_comet(obs, planet):
+        comet_xy = _comet_xy_at(obs, planet, turns)
+        if comet_xy is not None:
+            return comet_xy
     point = (_planet_x(planet), _planet_y(planet))
     if not _is_rotating_planet(planet):
         return point
@@ -178,7 +229,17 @@ def _fleet_eta_to_planet(obs, fleet, target, max_turns):
     angle = _fleet_angle(fleet)
     speed = _fleet_speed(_fleet_ships(fleet))
     radius = max(0.5, _planet_radius(target))
-    for turns in range(1, max(1, int(max_turns)) + 1):
+    limit = max(1, int(max_turns))
+    target_xy = (_planet_x(target), _planet_y(target))
+    estimate = max(1, min(limit, ceil(max(0.0, _distance(origin, target_xy) - radius - 0.75) / max(speed, 0.1))))
+    for _ in range(4):
+        target_xy = _planet_xy_at(obs, target, estimate)
+        next_estimate = max(1, min(limit, ceil(max(0.0, _distance(origin, target_xy) - radius - 0.75) / max(speed, 0.1))))
+        if abs(next_estimate - estimate) <= 1:
+            estimate = next_estimate
+            break
+        estimate = next_estimate
+    for turns in range(max(1, estimate - 3), min(limit, estimate + 4) + 1):
         target_xy = _planet_xy_at(obs, target, turns)
         if _angle_delta(angle, _angle(origin, target_xy)) > PROFILE_RAY_MAX_ANGLE:
             continue
@@ -226,19 +287,9 @@ def _project_planet_state(obs, target, horizon, extra_arrivals=None, cache=None)
     arrivals_by_turn = {}
 
     if horizon > 0:
-        fleet_target_cache = None if cache is None else cache.setdefault(("fleet_targets",), {})
         fleet_eta_cache = None if cache is None else cache.setdefault(("fleet_etas",), {})
-        for fleet in obs.get("fleets", []):
+        for fleet in _fleets_by_target(obs, cache).get(target_id, []):
             fleet_key = (_fleet_owner(fleet), _fleet_id(fleet), _fleet_x(fleet), _fleet_y(fleet), _fleet_angle(fleet))
-            if fleet_target_cache is not None and fleet_key in fleet_target_cache:
-                estimated_target_id = fleet_target_cache[fleet_key]
-            else:
-                estimated_target = _estimate_fleet_target(obs, fleet)
-                estimated_target_id = None if estimated_target is None else _planet_id(estimated_target)
-                if fleet_target_cache is not None:
-                    fleet_target_cache[fleet_key] = estimated_target_id
-            if estimated_target_id != target_id:
-                continue
             eta_key = (fleet_key, target_id, horizon)
             if fleet_eta_cache is not None and eta_key in fleet_eta_cache:
                 eta = fleet_eta_cache[eta_key]
@@ -392,21 +443,68 @@ def _fsm_state(features):
     return "BASELINE"
 
 
-def _incoming_threat_before(obs, source, player, horizon):
+def _fleet_target_id(obs, fleet, cache=None):
+    fleet_key = (_fleet_owner(fleet), _fleet_id(fleet), _fleet_x(fleet), _fleet_y(fleet), _fleet_angle(fleet))
+    if cache is not None and fleet_key in cache:
+        return cache[fleet_key]
+    estimated_target = _estimate_fleet_target(obs, fleet)
+    target_id = None if estimated_target is None else _planet_id(estimated_target)
+    if cache is not None:
+        cache[fleet_key] = target_id
+    return target_id
+
+
+def _fleets_by_target(obs, cache=None):
+    index_key = ("fleets_by_target",)
+    if cache is not None and index_key in cache:
+        return cache[index_key]
+    fleet_target_cache = None if cache is None else cache.setdefault(("fleet_targets",), {})
+    grouped = {}
+    for fleet in obs.get("fleets", []):
+        target_id = _fleet_target_id(obs, fleet, fleet_target_cache)
+        if target_id is not None:
+            grouped.setdefault(target_id, []).append(fleet)
+    if cache is not None:
+        cache[index_key] = grouped
+    return grouped
+
+
+def _incoming_threats_by_target(obs, player, horizon, cache=None):
     if obs is None or player is None:
-        return 0
-    threat = 0
-    source_id = _planet_id(source)
+        return {}
+    threat_key = ("incoming_threats_by_target", int(player), int(horizon))
+    if cache is not None and threat_key in cache:
+        return cache[threat_key]
+    fleet_target_cache = None if cache is None else cache.setdefault(("fleet_targets",), {})
+    fleet_eta_cache = None if cache is None else cache.setdefault(("fleet_etas",), {})
+    planets_by_id = {_planet_id(planet): planet for planet in obs.get("planets", [])}
+    threats = {}
     for fleet in obs.get("fleets", []):
         if _fleet_owner(fleet) in (-1, player):
             continue
-        estimated_target = _estimate_fleet_target(obs, fleet)
-        if estimated_target is None or _planet_id(estimated_target) != source_id:
+        target_id = _fleet_target_id(obs, fleet, fleet_target_cache)
+        if target_id is None:
             continue
-        eta = _fleet_eta_to_planet(obs, fleet, source, horizon)
+        target = planets_by_id.get(target_id)
+        if target is None:
+            continue
+        fleet_key = (_fleet_owner(fleet), _fleet_id(fleet), _fleet_x(fleet), _fleet_y(fleet), _fleet_angle(fleet))
+        eta_key = (fleet_key, target_id, int(horizon))
+        if fleet_eta_cache is not None and eta_key in fleet_eta_cache:
+            eta = fleet_eta_cache[eta_key]
+        else:
+            eta = _fleet_eta_to_planet(obs, fleet, target, horizon)
+            if fleet_eta_cache is not None:
+                fleet_eta_cache[eta_key] = eta
         if eta is not None and eta <= horizon:
-            threat += _fleet_ships(fleet)
-    return threat
+            threats[target_id] = threats.get(target_id, 0) + _fleet_ships(fleet)
+    if cache is not None:
+        cache[threat_key] = threats
+    return threats
+
+
+def _incoming_threat_before(obs, source, player, horizon, cache=None):
+    return _incoming_threats_by_target(obs, player, horizon, cache).get(_planet_id(source), 0)
 
 
 def _reserve_for_source(source, own_count, enemies, action, obs=None, player=None):
@@ -428,7 +526,8 @@ def _reserve_for_source(source, own_count, enemies, action, obs=None, player=Non
             reserve += 4
         elif nearest_enemy < 28.0:
             reserve += 2
-    incoming_threat = _incoming_threat_before(obs, source, player, 40)
+    cache = None if action is None else action.setdefault("_projection_cache", {})
+    incoming_threat = _incoming_threat_before(obs, source, player, 40, cache)
     step = int((obs or {}).get("step", (obs or {}).get("turn", 0)))
     if step >= 30 and action.get("fsm_state") == "OPENING_EXPAND" and incoming_threat <= 0 and _planet_production(source) <= 1:
         reserve = min(reserve, RESERVE_HOME_SHIPS)
@@ -461,16 +560,25 @@ def _outgoing_by_source(obs, player):
     return outgoing
 
 
-def _incoming_ships_to_target(obs, target, owner):
-    target_id = _planet_id(target)
-    ships = 0
+def _incoming_by_target(obs, owner, cache=None):
+    incoming_key = ("incoming_by_target", int(owner))
+    if cache is not None and incoming_key in cache:
+        return cache[incoming_key]
+    fleet_target_cache = None if cache is None else cache.setdefault(("fleet_targets",), {})
+    incoming = {}
     for fleet in obs.get("fleets", []):
         if _fleet_owner(fleet) != owner:
             continue
-        estimated_target = _estimate_fleet_target(obs, fleet)
-        if estimated_target is not None and _planet_id(estimated_target) == target_id:
-            ships += _fleet_ships(fleet)
-    return ships
+        target_id = _fleet_target_id(obs, fleet, fleet_target_cache)
+        if target_id is not None:
+            incoming[target_id] = incoming.get(target_id, 0) + _fleet_ships(fleet)
+    if cache is not None:
+        cache[incoming_key] = incoming
+    return incoming
+
+
+def _incoming_ships_to_target(obs, target, owner, cache=None):
+    return _incoming_by_target(obs, owner, cache).get(_planet_id(target), 0)
 
 
 def _nearest_enemy_distance(planet, enemies):
@@ -482,14 +590,21 @@ def _nearest_enemy_distance(planet, enemies):
 
 def _frontier_reinforcement_moves(obs, own, enemies, action, launched_by_source, max_moves_left):
     step = int(obs.get("step", obs.get("turn", 0)))
-    if max_moves_left <= 0 or len(own) < 5 or not enemies or step <= FSM_OPENING_TURNS or not action.get("ffa"):
+    if max_moves_left <= 0 or len(own) < 5 or not enemies or step <= FSM_OPENING_TURNS:
+        return []
+    ffa = bool(action.get("ffa"))
+    if not ffa and (len(own) < 6 or step < 100):
         return []
     player = int(obs.get("player", 0))
     own_with_pressure = [(planet, _nearest_enemy_distance(planet, enemies)) for planet in own]
+    frontier_limit = 24.0 if ffa else 20.0
+    source_min_distance = 44.0 if ffa else 52.0
+    min_available = MIN_SHIPS_TO_LAUNCH + (18 if ffa else 28)
+    keep_after_send = 12 if ffa else 20
     frontier = [
         planet
         for planet, enemy_distance in own_with_pressure
-        if enemy_distance <= 24.0
+        if enemy_distance <= frontier_limit
     ]
     if not frontier:
         return []
@@ -501,11 +616,11 @@ def _frontier_reinforcement_moves(obs, own, enemies, action, launched_by_source,
         source_id = _planet_id(source)
         if source in frontier:
             continue
-        if source_enemy_distance < 44.0:
+        if source_enemy_distance < source_min_distance:
             continue
         reserve = _reserve_for_source(source, len(own), enemies, action, obs, player)
         available = _planet_ships(source) - reserve - launched_by_source.get(source_id, 0)
-        if available < MIN_SHIPS_TO_LAUNCH + 18:
+        if available < min_available:
             continue
         source_xy = (_planet_x(source), _planet_y(source))
         target = min(
@@ -519,12 +634,47 @@ def _frontier_reinforcement_moves(obs, own, enemies, action, launched_by_source,
         target_enemy_distance = _nearest_enemy_distance(target, enemies)
         if target_enemy_distance >= source_enemy_distance:
             continue
-        ships = max(MIN_SHIPS_TO_LAUNCH, min(available // 2, available - 12))
+        ships = max(MIN_SHIPS_TO_LAUNCH, min(available // (2 if ffa else 3), available - keep_after_send))
         target_xy = _predict_target_xy(obs, source_xy, target, ships)
         angle = _sun_safe_angle(source_xy, target_xy, _angle(source_xy, target_xy))
         moves.append([source_id, float(angle), int(ships)])
         launched_by_source[source_id] = launched_by_source.get(source_id, 0) + int(ships)
         break
+    return moves
+
+
+def _expiring_comet_evacuation_moves(obs, own, action, launched_by_source, max_moves_left):
+    if max_moves_left <= 0 or len(own) < 2:
+        return []
+    durable_own = [planet for planet in own if not _is_comet(obs, planet)]
+    if not durable_own:
+        return []
+
+    moves = []
+    for source in sorted(own, key=lambda planet: (_comet_turns_remaining(obs, planet) or 999, -_planet_ships(planet))):
+        if len(moves) >= max_moves_left:
+            break
+        source_life = _comet_turns_remaining(obs, source)
+        if source_life is None or source_life > 12:
+            continue
+        source_id = _planet_id(source)
+        available = _planet_ships(source) - 1 - launched_by_source.get(source_id, 0)
+        if available < MIN_SHIPS_TO_LAUNCH:
+            continue
+        source_xy = (_planet_x(source), _planet_y(source))
+        target = min(
+            durable_own,
+            key=lambda planet: (
+                _distance(source_xy, (_planet_x(planet), _planet_y(planet))),
+                -_planet_production(planet),
+                -_planet_ships(planet),
+            ),
+        )
+        ships = int(available)
+        target_xy = _predict_target_xy(obs, source_xy, target, ships)
+        angle = _sun_safe_angle(source_xy, target_xy, _angle(source_xy, target_xy))
+        moves.append([source_id, float(angle), ships])
+        launched_by_source[source_id] = launched_by_source.get(source_id, 0) + ships
     return moves
 
 
@@ -656,8 +806,12 @@ def _target_value(obs, source, target, committed, action, own, enemies):
     production = _planet_production(target)
     ships = _planet_ships(target)
     ffa = bool(action.get("ffa"))
-    turns_remaining = max(0, MAX_GAME_TURNS - step - travel_steps)
-    own_incoming = _incoming_ships_to_target(obs, target, player)
+    game_turns_remaining = max(0, MAX_GAME_TURNS - step - travel_steps)
+    comet_turns_remaining = _comet_turns_remaining(obs, target)
+    if comet_turns_remaining is not None and comet_turns_remaining <= 1:
+        return -999.0, required, target_xy
+    turns_remaining = game_turns_remaining
+    own_incoming = _incoming_ships_to_target(obs, target, player, projection_cache)
 
     after_owner, after_ships = _project_planet_state(
         obs,
@@ -751,6 +905,7 @@ def decode(action, obs):
     moves = []
 
     max_moves = 4 if action.get("ffa") else MAX_MOVES_PER_TURN
+    moves.extend(_expiring_comet_evacuation_moves(obs, own, action, launched_by_source, max_moves - len(moves)))
     sources = sorted(
         own,
         key=lambda planet: _source_priority(planet, len(own), enemies, action, obs, player),
@@ -761,11 +916,17 @@ def decode(action, obs):
         if len(moves) >= max_moves:
             break
         source_id = _planet_id(source)
+        source_life = _comet_turns_remaining(obs, source)
+        if source_life is not None and source_life <= 1:
+            continue
         reserve = _reserve_for_source(source, len(own), enemies, action, obs, player)
+        outgoing_count = outgoing_by_source.get(source_id, [0, 0])[0]
+        step = int(obs.get("step", obs.get("turn", 0)))
+        if step > FSM_OPENING_TURNS and outgoing_count >= 3 and (action.get("pressure") or action.get("behind_on_econ") or len(own) >= 3):
+            reserve += min(18, 3 * (outgoing_count - 2))
         available = _planet_ships(source) - reserve - launched_by_source.get(source_id, 0)
         if available < MIN_SHIPS_TO_LAUNCH:
             continue
-        outgoing_count = outgoing_by_source.get(source_id, [0, 0])[0]
         min_launch = MIN_SHIPS_TO_LAUNCH + min(12, 4 * outgoing_count)
 
         best = None

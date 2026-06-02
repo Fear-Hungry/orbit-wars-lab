@@ -281,6 +281,103 @@ def test_exported_submission_skips_late_neutral_without_breakeven(tmp_path: Path
     assert moves == []
 
 
+def test_exported_submission_skips_expiring_comet_target(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_expiring_comet_target")
+    obs = {
+        "player": 0,
+        "step": 80,
+        "angular_velocity": 0.0,
+        "planets": [
+            [0, 0, 20.0, 20.0, 2.0, 90, 3],
+            [9, -1, 35.0, 20.0, 1.0, 2, 1],
+        ],
+        "fleets": [],
+        "comet_planet_ids": [9],
+        "comets": [
+            {
+                "planet_ids": [9],
+                "paths": [[[35.0, 20.0], [39.0, 20.0]]],
+                "path_index": 1,
+            }
+        ],
+    }
+
+    features = module.encode(obs)
+    action = module.policy_forward(features)
+    score, _required, _target_xy = module._target_value(
+        obs,
+        obs["planets"][0],
+        obs["planets"][1],
+        0,
+        action,
+        [obs["planets"][0]],
+        [],
+    )
+
+    assert score == -999.0
+
+
+def test_exported_submission_does_not_launch_from_expiring_comet(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_expiring_comet_source")
+    obs = {
+        "player": 0,
+        "step": 80,
+        "angular_velocity": 0.0,
+        "planets": [
+            [9, 0, 20.0, 20.0, 1.0, 90, 1],
+            [1, -1, 30.0, 20.0, 2.0, 5, 3],
+            [2, 1, 80.0, 80.0, 2.0, 20, 3],
+        ],
+        "fleets": [],
+        "comet_planet_ids": [9],
+        "comets": [
+            {
+                "planet_ids": [9],
+                "paths": [[[20.0, 20.0], [24.0, 20.0]]],
+                "path_index": 1,
+            }
+        ],
+    }
+
+    features = module.encode(obs)
+    action = module.policy_forward(features)
+    moves = module.decode(action, obs)
+
+    assert moves == []
+
+
+def test_exported_submission_evacuates_owned_comet_before_expiration(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_comet_evacuation")
+    obs = {
+        "player": 0,
+        "step": 90,
+        "angular_velocity": 0.0,
+        "planets": [
+            [0, 0, 20.0, 20.0, 2.0, 18, 3],
+            [9, 0, 30.0, 20.0, 1.0, 28, 1],
+            [2, 1, 80.0, 80.0, 2.0, 20, 3],
+        ],
+        "fleets": [],
+        "comet_planet_ids": [9],
+        "comets": [
+            {
+                "planet_ids": [9],
+                "paths": [[[30.0, 20.0], [34.0, 20.0], [38.0, 20.0]]],
+                "path_index": 1,
+            }
+        ],
+    }
+
+    features = module.encode(obs)
+    action = module.policy_forward(features)
+    moves = module.decode(action, obs)
+
+    assert moves
+    assert int(moves[0][0]) == 9
+    assert int(moves[0][2]) == 27
+    _assert_moves_are_legal(obs, moves)
+
+
 def test_exported_submission_moves_surplus_toward_frontier(tmp_path: Path):
     module = _load_rendered_submission(tmp_path, "submission_frontier_reinforcement")
     obs = {
@@ -305,6 +402,36 @@ def test_exported_submission_moves_surplus_toward_frontier(tmp_path: Path):
 
     moves = module._frontier_reinforcement_moves(obs, own, enemies, action, {}, 2)
 
+    assert moves
+    assert int(moves[0][0]) == 0
+    _assert_moves_are_legal(obs, moves)
+
+
+def test_exported_submission_moves_surplus_toward_frontier_in_two_player(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_frontier_reinforcement_2p")
+    obs = {
+        "player": 0,
+        "step": 140,
+        "angular_velocity": 0.0,
+        "planets": [
+            [0, 0, 12.0, 12.0, 2.0, 90, 2],
+            [1, 0, 72.0, 70.0, 2.0, 14, 4],
+            [2, 0, 45.0, 40.0, 2.0, 18, 2],
+            [4, 0, 35.0, 25.0, 2.0, 22, 2],
+            [5, 0, 25.0, 42.0, 2.0, 20, 2],
+            [7, 0, 18.0, 35.0, 2.0, 18, 2],
+            [3, 1, 84.0, 72.0, 2.0, 40, 4],
+        ],
+        "fleets": [],
+    }
+    features = module.encode(obs)
+    action = module.policy_forward(features)
+    own = [planet for planet in obs["planets"] if planet[1] == 0]
+    enemies = [planet for planet in obs["planets"] if planet[1] == 1]
+
+    moves = module._frontier_reinforcement_moves(obs, own, enemies, action, {}, 2)
+
+    assert not action["ffa"]
     assert moves
     assert int(moves[0][0]) == 0
     _assert_moves_are_legal(obs, moves)
