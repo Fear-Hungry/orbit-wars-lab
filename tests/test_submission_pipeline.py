@@ -210,6 +210,31 @@ def test_exported_submission_fsm_defends_under_ffa_pressure(tmp_path: Path):
     _assert_moves_are_legal(obs, moves)
 
 
+def test_exported_submission_detects_fleet_pressure_ratio(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_fleet_pressure")
+    module._PROFILE_STATE.clear()
+    obs = {
+        "player": 0,
+        "step": 90,
+        "angular_velocity": 0.0,
+        "planets": [
+            [0, 0, 20.0, 20.0, 2.0, 48, 4],
+            [1, 1, 82.0, 20.0, 2.0, 15, 3],
+            [2, -1, 50.0, 50.0, 2.0, 5, 2],
+        ],
+        "fleets": [[10, 1, 60.0, 20.0, math.pi, 1, 45]],
+    }
+
+    features = module.encode(obs)
+    action = module.policy_forward(features)
+
+    assert features["enemy_fleet_ratio"] > 0.60
+    assert features["to_me_ratio"] > 0.95
+    assert features["enemy_fleet_ships"] >= 0.85 * features["own_ships"]
+    assert action["fleet_pressure"]
+    assert action["pressure"]
+
+
 def test_exported_submission_tracks_recent_weak_enemy_captures(tmp_path: Path):
     module = _load_rendered_submission(tmp_path, "submission_profile_capture")
     module._PROFILE_STATE.clear()
