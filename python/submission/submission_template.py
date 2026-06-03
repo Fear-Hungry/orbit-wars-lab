@@ -761,9 +761,22 @@ def policy_forward(features):
         or not (pressure or behind_on_econ)
     )
     state = _fsm_state(features)
+    if pressure:
+        strategy_phase = "PRESSURE"
+    elif opportunistic_expand:
+        strategy_phase = "OPPORTUNISTIC"
+    elif adaptive_opening_expand:
+        strategy_phase = "ADAPTIVE_OPENING"
+    elif state == "OPENING_EXPAND":
+        strategy_phase = "OPENING"
+    elif behind_on_econ:
+        strategy_phase = "ECON_CONSOLIDATE"
+    else:
+        strategy_phase = "BASELINE"
     if ffa and state == "DEFEND_UNDER_PRESSURE" and features.get("profile_total", 0.0) >= 16.0:
         pressure = True
         expand = False
+        strategy_phase = "PRESSURE"
     return {
         "expand": bool(expand),
         "ffa": bool(ffa),
@@ -773,6 +786,7 @@ def policy_forward(features):
         "own_count": int(features["own_count"]),
         "neutral_count": int(features["neutral_count"]),
         "fsm_state": state,
+        "strategy_phase": strategy_phase,
         "recent_enemy_captures": set(features.get("recent_enemy_captures", set())),
         "profile_total": float(features.get("profile_total", 0.0)),
         "production_ratio": float(production_ratio),

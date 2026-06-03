@@ -628,6 +628,7 @@ def test_exported_submission_uses_low_enemy_fleet_ratio_for_opportunism(tmp_path
     assert not action["adaptive_opening_expand"]
     assert action["opportunistic_expand"]
     assert action["expand"]
+    assert action["strategy_phase"] == "OPPORTUNISTIC"
 
 
 def test_exported_submission_detects_ratio_pressure_before_extreme_fleet_pressure(tmp_path: Path):
