@@ -630,6 +630,39 @@ def test_exported_submission_uses_low_enemy_fleet_ratio_for_opportunism(tmp_path
     assert action["expand"]
 
 
+def test_exported_submission_detects_ratio_pressure_before_extreme_fleet_pressure(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_ratio_pressure")
+    features = {
+        "player": 0,
+        "step": 120,
+        "own_count": 5,
+        "enemy_count": 4,
+        "enemy_players": 1,
+        "neutral_count": 3,
+        "own_ships": 100,
+        "enemy_ships": 60,
+        "own_fleet_ships": 8,
+        "enemy_fleet_ships": 90,
+        "enemy_fleet_ratio": 0.62,
+        "own_prod": 20,
+        "enemy_prod": 18,
+        "leader_owner": 1,
+        "angular_velocity": 0.0,
+        "profile_total": 30.0,
+        "to_neutral_ratio": 0.1,
+        "to_me_ratio": 0.82,
+        "to_leader_ratio": 0.0,
+        "recent_enemy_captures": set(),
+    }
+
+    action = module.policy_forward(features)
+
+    assert action["ratio_pressure"]
+    assert not action["fleet_pressure"]
+    assert action["pressure"]
+    assert not action["opportunistic_expand"]
+
+
 def test_exported_submission_falls_back_on_illegal_output(tmp_path: Path):
     rendered = render_submission(
         Path("python/submission/submission_template.py").read_text(encoding="utf-8"),

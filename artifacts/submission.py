@@ -731,10 +731,11 @@ def encode(obs):
 def policy_forward(features):
     ffa = features["enemy_players"] >= 2
     pressure = features["enemy_ships"] >= max(features["own_ships"] - 4, 1)
+    ratio_pressure = features.get("enemy_fleet_ratio", 0.0) >= 0.60 and features.get("to_me_ratio", 0.0) >= 0.80
     fleet_pressure = features.get("enemy_fleet_ratio", 0.0) >= 0.70 and (
         features.get("to_me_ratio", 0.0) >= 0.95 and features.get("enemy_fleet_ships", 0) >= 0.85 * max(1, features["own_ships"])
     )
-    pressure = pressure or fleet_pressure
+    pressure = pressure or ratio_pressure or fleet_pressure
     behind_on_econ = features["enemy_prod"] > features["own_prod"]
     neutrals_open = features["neutral_count"] > 0
     production_ratio = features["own_prod"] / max(1, features["enemy_prod"])
@@ -778,6 +779,7 @@ def policy_forward(features):
         "adaptive_opening_expand": bool(adaptive_opening_expand),
         "opportunistic_expand": bool(opportunistic_expand),
         "enemy_fleet_ratio": float(features.get("enemy_fleet_ratio", 0.0)),
+        "ratio_pressure": bool(ratio_pressure),
         "fleet_pressure": bool(fleet_pressure),
         "to_neutral_ratio": float(features.get("to_neutral_ratio", 0.0)),
         "to_me_ratio": float(features.get("to_me_ratio", 0.0)),
