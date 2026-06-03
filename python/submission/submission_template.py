@@ -737,9 +737,17 @@ def policy_forward(features):
     pressure = pressure or fleet_pressure
     behind_on_econ = features["enemy_prod"] > features["own_prod"]
     neutrals_open = features["neutral_count"] > 0
+    production_ratio = features["own_prod"] / max(1, features["enemy_prod"])
+    adaptive_opening_expand = (
+        15 <= features["step"] <= 80
+        and neutrals_open
+        and not pressure
+        and production_ratio < 1.0
+    )
     expand = neutrals_open and (
         features["own_count"] <= 3
         or ffa
+        or adaptive_opening_expand
         or not (pressure or behind_on_econ)
     )
     state = _fsm_state(features)
@@ -757,6 +765,8 @@ def policy_forward(features):
         "fsm_state": state,
         "recent_enemy_captures": set(features.get("recent_enemy_captures", set())),
         "profile_total": float(features.get("profile_total", 0.0)),
+        "production_ratio": float(production_ratio),
+        "adaptive_opening_expand": bool(adaptive_opening_expand),
         "enemy_fleet_ratio": float(features.get("enemy_fleet_ratio", 0.0)),
         "fleet_pressure": bool(fleet_pressure),
         "to_neutral_ratio": float(features.get("to_neutral_ratio", 0.0)),

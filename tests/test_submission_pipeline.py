@@ -544,6 +544,34 @@ def test_exported_submission_prioritizes_safe_high_production_opening_neutral(tm
     assert module._angle_delta(moves[0][1], strong_angle) < module._angle_delta(moves[0][1], weak_angle)
 
 
+def test_exported_submission_expands_when_behind_on_production_in_opening(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_adaptive_opening_expand")
+    module._PROFILE_STATE.clear()
+    obs = {
+        "player": 0,
+        "step": 45,
+        "angular_velocity": 0.0,
+        "planets": [
+            [0, 0, 20.0, 20.0, 2.0, 55, 2],
+            [1, 0, 25.0, 20.0, 2.0, 18, 1],
+            [2, 0, 20.0, 28.0, 2.0, 15, 1],
+            [3, 0, 28.0, 28.0, 2.0, 14, 1],
+            [4, -1, 42.0, 20.0, 2.0, 8, 4],
+            [5, 1, 82.0, 82.0, 2.0, 20, 7],
+        ],
+        "fleets": [],
+    }
+
+    features = module.encode(obs)
+    action = module.policy_forward(features)
+
+    assert features["own_count"] > 3
+    assert action["behind_on_econ"]
+    assert not action["pressure"]
+    assert action["adaptive_opening_expand"]
+    assert action["expand"]
+
+
 def test_exported_submission_falls_back_on_illegal_output(tmp_path: Path):
     rendered = render_submission(
         Path("python/submission/submission_template.py").read_text(encoding="utf-8"),
