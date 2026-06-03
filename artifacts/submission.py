@@ -744,10 +744,19 @@ def policy_forward(features):
         and not pressure
         and production_ratio < 1.0
     )
+    opportunistic_expand = (
+        25 <= features["step"] <= 160
+        and neutrals_open
+        and not pressure
+        and features.get("enemy_fleet_ratio", 0.0) < 0.20
+        and production_ratio >= 0.85
+        and features["own_count"] >= 3
+    )
     expand = neutrals_open and (
         features["own_count"] <= 3
         or ffa
         or adaptive_opening_expand
+        or opportunistic_expand
         or not (pressure or behind_on_econ)
     )
     state = _fsm_state(features)
@@ -767,6 +776,7 @@ def policy_forward(features):
         "profile_total": float(features.get("profile_total", 0.0)),
         "production_ratio": float(production_ratio),
         "adaptive_opening_expand": bool(adaptive_opening_expand),
+        "opportunistic_expand": bool(opportunistic_expand),
         "enemy_fleet_ratio": float(features.get("enemy_fleet_ratio", 0.0)),
         "fleet_pressure": bool(fleet_pressure),
         "to_neutral_ratio": float(features.get("to_neutral_ratio", 0.0)),
@@ -882,6 +892,8 @@ def _target_value(obs, source, target, committed, action, own, enemies):
         value += 5.0
     if action.get("expand") and owner == -1:
         value += 8.0
+    if action.get("opportunistic_expand") and owner == -1:
+        value += 6.0
     if action.get("pressure") and owner not in (-1, int(obs.get("player", 0))):
         value += 3.0
     if ffa and action.get("fsm_state") == "DEFEND_UNDER_PRESSURE" and owner == -1:

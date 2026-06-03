@@ -597,6 +597,39 @@ def test_exported_submission_penalizes_exposed_depth_two_response(tmp_path: Path
     assert safe_penalty == 0.0
 
 
+def test_exported_submission_uses_low_enemy_fleet_ratio_for_opportunism(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_low_fleet_ratio_opportunism")
+    features = {
+        "player": 0,
+        "step": 90,
+        "own_count": 4,
+        "enemy_count": 3,
+        "enemy_players": 1,
+        "neutral_count": 5,
+        "own_ships": 80,
+        "enemy_ships": 70,
+        "own_fleet_ships": 10,
+        "enemy_fleet_ships": 5,
+        "enemy_fleet_ratio": 0.08,
+        "own_prod": 18,
+        "enemy_prod": 20,
+        "leader_owner": 1,
+        "angular_velocity": 0.0,
+        "profile_total": 20.0,
+        "to_neutral_ratio": 0.1,
+        "to_me_ratio": 0.0,
+        "to_leader_ratio": 0.0,
+        "recent_enemy_captures": set(),
+    }
+
+    action = module.policy_forward(features)
+
+    assert not action["pressure"]
+    assert not action["adaptive_opening_expand"]
+    assert action["opportunistic_expand"]
+    assert action["expand"]
+
+
 def test_exported_submission_falls_back_on_illegal_output(tmp_path: Path):
     rendered = render_submission(
         Path("python/submission/submission_template.py").read_text(encoding="utf-8"),
