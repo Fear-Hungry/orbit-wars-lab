@@ -745,6 +745,7 @@ def policy_forward(features):
         and not pressure
         and production_ratio < 1.0
     )
+    orbital_opening_window = 10 <= features["step"] <= 13 and neutrals_open and not pressure and not ffa
     opportunistic_expand = (
         25 <= features["step"] <= 160
         and neutrals_open
@@ -791,6 +792,7 @@ def policy_forward(features):
         "profile_total": float(features.get("profile_total", 0.0)),
         "production_ratio": float(production_ratio),
         "adaptive_opening_expand": bool(adaptive_opening_expand),
+        "orbital_opening_window": bool(orbital_opening_window),
         "opportunistic_expand": bool(opportunistic_expand),
         "enemy_fleet_ratio": float(features.get("enemy_fleet_ratio", 0.0)),
         "ratio_pressure": bool(ratio_pressure),
@@ -897,6 +899,10 @@ def _target_value(obs, source, target, committed, action, own, enemies):
             safe_opening_neutral = production >= 4 and distance <= 30.0 and enemy_proximity >= distance * 0.9
             if safe_opening_neutral:
                 value += 36.0 + 6.0 * production
+        if action.get("orbital_opening_window") and _is_rotating_planet(target):
+            safe_orbital_neutral = production >= 4 and distance <= 35.0 and enemy_proximity >= distance * 1.1
+            if safe_orbital_neutral:
+                value += 14.0 + 3.0 * production
         if action.get("fsm_state") == "OPENING_EXPAND" and own_incoming > 0 and ships >= 12:
             value += min(48.0, 1.4 * own_incoming + 8.0 * production)
             overcommit = own_incoming - 2.2 * max(1, ships + MIN_CAPTURE_MARGIN)
@@ -1016,6 +1022,8 @@ def decode(action, obs):
             committed = committed_by_target.get(target_id, 0)
             score, required, target_xy = _target_value(obs, source, target, committed, action, own, enemies)
             ships = min(available, required)
+            if action.get("orbital_opening_window") and _planet_owner(target) == -1 and _is_rotating_planet(target):
+                ships = min(available, max(ships, int(available * 0.55)))
             if target_id in used_targets and required <= MIN_SHIPS_TO_LAUNCH:
                 continue
             if required > available:

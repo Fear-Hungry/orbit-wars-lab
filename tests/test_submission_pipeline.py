@@ -572,6 +572,37 @@ def test_exported_submission_expands_when_behind_on_production_in_opening(tmp_pa
     assert action["expand"]
 
 
+def test_exported_submission_explores_safe_orbital_neutral_during_opening_window(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_opening_orbital_window")
+    module._PROFILE_STATE.clear()
+    obs = {
+        "player": 0,
+        "step": 12,
+        "angular_velocity": 0.03,
+        "planets": [
+            [0, 0, 20.0, 20.0, 2.0, 50, 3],
+            [1, -1, 35.0, 20.0, 2.0, 9, 5],
+            [2, -1, 20.0, 42.0, 2.0, 4, 1],
+            [3, 1, 85.0, 85.0, 2.0, 28, 4],
+        ],
+        "fleets": [],
+    }
+
+    features = module.encode(obs)
+    action = module.policy_forward(features)
+    moves = module.decode(action, obs)
+
+    assert action["orbital_opening_window"]
+    assert moves
+    source_xy = (20.0, 20.0)
+    orbital_xy = module._predict_target_xy(obs, source_xy, obs["planets"][1], moves[0][2])
+    weak_xy = module._predict_target_xy(obs, source_xy, obs["planets"][2], moves[0][2])
+    assert module._angle_delta(moves[0][1], module._angle(source_xy, orbital_xy)) < module._angle_delta(
+        moves[0][1], module._angle(source_xy, weak_xy)
+    )
+    assert 19 <= moves[0][2] <= 22
+
+
 def test_exported_submission_penalizes_exposed_depth_two_response(tmp_path: Path):
     module = _load_rendered_submission(tmp_path, "submission_depth_two_guard")
     module._PROFILE_STATE.clear()
