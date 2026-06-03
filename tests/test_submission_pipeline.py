@@ -628,6 +628,34 @@ def test_exported_submission_penalizes_exposed_depth_two_response(tmp_path: Path
     assert safe_penalty == 0.0
 
 
+def test_exported_submission_hammers_committed_enemy_target_when_enemy_overextended(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_pressure_hammer")
+    module._PROFILE_STATE.clear()
+    obs = {
+        "player": 0,
+        "step": 140,
+        "angular_velocity": 0.0,
+        "planets": [
+            [0, 0, 20.0, 20.0, 2.0, 45, 4],
+            [1, 0, 24.0, 20.0, 2.0, 35, 3],
+            [2, 1, 42.0, 22.0, 2.0, 22, 4],
+            [3, -1, 78.0, 78.0, 2.0, 8, 2],
+        ],
+        "fleets": [],
+    }
+    action = module.policy_forward(module.encode(obs))
+    action["enemy_overextended"] = True
+    own = [obs["planets"][0], obs["planets"][1]]
+    enemies = [obs["planets"][2]]
+    source = obs["planets"][1]
+    target = obs["planets"][2]
+
+    solo_score, _, _ = module._target_value(obs, source, target, 0, action, own, enemies)
+    hammer_score, _, _ = module._target_value(obs, source, target, 18, action, own, enemies)
+
+    assert hammer_score > solo_score
+
+
 def test_exported_submission_uses_low_enemy_fleet_ratio_for_opportunism(tmp_path: Path):
     module = _load_rendered_submission(tmp_path, "submission_low_fleet_ratio_opportunism")
     features = {

@@ -916,6 +916,8 @@ def _target_value(obs, source, target, committed, action, own, enemies):
         value += 8.0
     if action.get("opportunistic_expand") and owner == -1:
         value += 6.0
+    if committed > 0 and owner not in (-1, player) and action.get("enemy_overextended"):
+        value += min(12.0, 4.0 + 0.25 * committed + 1.5 * production)
     if action.get("pressure") and owner not in (-1, int(obs.get("player", 0))):
         value += 3.0
     if ffa and action.get("fsm_state") == "DEFEND_UNDER_PRESSURE" and owner == -1:
