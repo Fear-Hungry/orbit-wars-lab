@@ -913,6 +913,34 @@ def _target_value(obs, source, target, committed, action, own, enemies):
     return value + 24.0 * roi - distance_penalty - 0.22 * ships - future_penalty, required, target_xy
 
 
+def _opponent_response_penalty(obs, source, target, ships, target_xy, action, enemies, remaining_after_launch):
+    if action.get("ffa") or _planet_owner(target) == int(obs.get("player", 0)):
+        return 0.0
+    source_production = _planet_production(source)
+    if source_production <= 1 and action.get("own_count", 0) > 3:
+        return 0.0
+
+    source_xy = (_planet_x(source), _planet_y(source))
+    my_travel = max(1, ceil(_distance(source_xy, target_xy) / _fleet_speed(ships)))
+    best_penalty = 0.0
+    for enemy in enemies:
+        enemy_ships = _planet_ships(enemy)
+        enemy_attack = max(0, enemy_ships - RESERVE_HOME_SHIPS)
+        if enemy_attack < MIN_SHIPS_TO_LAUNCH:
+            continue
+        enemy_xy = (_planet_x(enemy), _planet_y(enemy))
+        enemy_eta = max(1, ceil(_distance(enemy_xy, source_xy) / _fleet_speed(enemy_attack)))
+        if enemy_eta > my_travel + 8:
+            continue
+        source_defense = remaining_after_launch + source_production * min(enemy_eta, 12)
+        exposure = enemy_attack - source_defense - MIN_CAPTURE_MARGIN
+        if exposure <= 0:
+            continue
+        penalty = 10.0 + 4.0 * source_production + 0.45 * exposure + 0.8 * max(0, my_travel - enemy_eta)
+        best_penalty = max(best_penalty, penalty)
+    return best_penalty
+
+
 def decode(action, obs):
     player = int(obs.get("player", 0))
     planets = obs.get("planets", [])
@@ -966,6 +994,8 @@ def decode(action, obs):
                 score -= 6.0 + 0.35 * (required - available)
             if ships < min_launch:
                 continue
+            remaining_after_launch = _planet_ships(source) - launched_by_source.get(source_id, 0) - ships
+            score -= _opponent_response_penalty(obs, source, target, ships, target_xy, action, enemies, remaining_after_launch)
             if best is None or score > best["score"]:
                 best = {
                     "target_id": target_id,

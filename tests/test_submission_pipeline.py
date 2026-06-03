@@ -572,6 +572,31 @@ def test_exported_submission_expands_when_behind_on_production_in_opening(tmp_pa
     assert action["expand"]
 
 
+def test_exported_submission_penalizes_exposed_depth_two_response(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_depth_two_guard")
+    module._PROFILE_STATE.clear()
+    obs = {
+        "player": 0,
+        "step": 70,
+        "angular_velocity": 0.0,
+        "planets": [
+            [0, 0, 20.0, 20.0, 2.0, 34, 4],
+            [1, -1, 42.0, 20.0, 2.0, 8, 4],
+            [2, 1, 32.0, 20.0, 2.0, 44, 3],
+        ],
+        "fleets": [],
+    }
+    action = module.policy_forward(module.encode(obs))
+    source, target, enemy = obs["planets"]
+    target_xy = module._predict_target_xy(obs, (20.0, 20.0), target, 24)
+
+    exposed_penalty = module._opponent_response_penalty(obs, source, target, 24, target_xy, action, [enemy], 10)
+    safe_penalty = module._opponent_response_penalty(obs, source, target, 12, target_xy, action, [enemy], 22)
+
+    assert exposed_penalty > 0.0
+    assert safe_penalty == 0.0
+
+
 def test_exported_submission_falls_back_on_illegal_output(tmp_path: Path):
     rendered = render_submission(
         Path("python/submission/submission_template.py").read_text(encoding="utf-8"),
