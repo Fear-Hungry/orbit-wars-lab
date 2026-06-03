@@ -754,6 +754,11 @@ def policy_forward(features):
         and production_ratio >= 0.85
         and features["own_count"] >= 3
     )
+    total_war = (
+        not neutrals_open
+        and production_ratio < 0.75
+        and features["enemy_ships"] > 1.25 * max(1, features["own_ships"])
+    )
     expand = neutrals_open and (
         features["own_count"] <= 3
         or ffa
@@ -762,7 +767,9 @@ def policy_forward(features):
         or not (pressure or behind_on_econ)
     )
     state = _fsm_state(features)
-    if pressure:
+    if total_war:
+        strategy_phase = "TOTAL_WAR"
+    elif pressure:
         strategy_phase = "PRESSURE"
     elif opportunistic_expand:
         strategy_phase = "OPPORTUNISTIC"
@@ -794,6 +801,7 @@ def policy_forward(features):
         "adaptive_opening_expand": bool(adaptive_opening_expand),
         "orbital_opening_window": bool(orbital_opening_window),
         "opportunistic_expand": bool(opportunistic_expand),
+        "total_war": bool(total_war),
         "enemy_fleet_ratio": float(features.get("enemy_fleet_ratio", 0.0)),
         "ratio_pressure": bool(ratio_pressure),
         "fleet_pressure": bool(fleet_pressure),
@@ -918,6 +926,8 @@ def _target_value(obs, source, target, committed, action, own, enemies):
         value += 6.0
     if committed > 0 and owner not in (-1, player) and action.get("enemy_overextended"):
         value += min(12.0, 4.0 + 0.25 * committed + 1.5 * production)
+    if action.get("total_war") and owner not in (-1, player):
+        value += 8.0 + 3.0 * production
     if action.get("pressure") and owner not in (-1, int(obs.get("player", 0))):
         value += 3.0
     if ffa and action.get("fsm_state") == "DEFEND_UNDER_PRESSURE" and owner == -1:

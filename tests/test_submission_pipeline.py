@@ -656,6 +656,37 @@ def test_exported_submission_hammers_committed_enemy_target_when_enemy_overexten
     assert hammer_score > solo_score
 
 
+def test_exported_submission_enters_total_war_when_far_behind_without_neutrals(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_total_war")
+    features = {
+        "player": 0,
+        "step": 260,
+        "own_count": 3,
+        "enemy_count": 5,
+        "enemy_players": 1,
+        "neutral_count": 0,
+        "own_ships": 80,
+        "enemy_ships": 120,
+        "own_fleet_ships": 0,
+        "enemy_fleet_ships": 10,
+        "enemy_fleet_ratio": 0.08,
+        "own_prod": 12,
+        "enemy_prod": 20,
+        "leader_owner": 1,
+        "angular_velocity": 0.0,
+        "profile_total": 0.0,
+        "to_neutral_ratio": 0.0,
+        "to_me_ratio": 0.0,
+        "to_leader_ratio": 0.0,
+        "recent_enemy_captures": set(),
+    }
+
+    action = module.policy_forward(features)
+
+    assert action["total_war"]
+    assert action["strategy_phase"] == "TOTAL_WAR"
+
+
 def test_exported_submission_uses_low_enemy_fleet_ratio_for_opportunism(tmp_path: Path):
     module = _load_rendered_submission(tmp_path, "submission_low_fleet_ratio_opportunism")
     features = {
