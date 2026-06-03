@@ -516,6 +516,34 @@ def test_exported_submission_prefers_nearby_neutral_in_opening(tmp_path: Path):
     assert module._angle_delta(moves[0][1], near_angle) < module._angle_delta(moves[0][1], far_angle)
 
 
+def test_exported_submission_prioritizes_safe_high_production_opening_neutral(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_opening_safe_neutral")
+    module._PROFILE_STATE.clear()
+    obs = {
+        "player": 0,
+        "step": 6,
+        "angular_velocity": 0.0,
+        "planets": [
+            [0, 0, 20.0, 20.0, 2.0, 42, 3],
+            [1, -1, 28.0, 28.0, 2.0, 4, 1],
+            [2, -1, 45.0, 20.0, 2.0, 8, 5],
+            [3, 1, 82.0, 82.0, 2.0, 40, 3],
+        ],
+        "fleets": [],
+    }
+
+    features = module.encode(obs)
+    action = module.policy_forward(features)
+    moves = module.decode(action, obs)
+
+    assert action["fsm_state"] == "OPENING_EXPAND"
+    assert moves
+    source_xy = (20.0, 20.0)
+    weak_angle = module._angle(source_xy, (28.0, 28.0))
+    strong_angle = module._angle(source_xy, (45.0, 20.0))
+    assert module._angle_delta(moves[0][1], strong_angle) < module._angle_delta(moves[0][1], weak_angle)
+
+
 def test_exported_submission_falls_back_on_illegal_output(tmp_path: Path):
     rendered = render_submission(
         Path("python/submission/submission_template.py").read_text(encoding="utf-8"),

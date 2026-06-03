@@ -857,6 +857,10 @@ def _target_value(obs, source, target, committed, action, own, enemies):
         value += 8.0
         if ffa:
             value += 4.0
+        if not ffa and action.get("fsm_state") == "OPENING_EXPAND" and step <= 10:
+            safe_opening_neutral = production >= 4 and distance <= 30.0 and enemy_proximity >= distance * 0.9
+            if safe_opening_neutral:
+                value += 36.0 + 6.0 * production
         if action.get("fsm_state") == "OPENING_EXPAND" and own_incoming > 0 and ships >= 12:
             value += min(48.0, 1.4 * own_incoming + 8.0 * production)
             overcommit = own_incoming - 2.2 * max(1, ships + MIN_CAPTURE_MARGIN)
