@@ -1169,11 +1169,23 @@ def _safe_opening_neutral(source, target, enemies):
     distance = _distance(source_xy, target_xy)
     if distance > 30.0:
         return False
+    required = max(MIN_SHIPS_TO_LAUNCH, _planet_ships(target) + MIN_CAPTURE_MARGIN)
+    my_eta = max(1, ceil(distance / _fleet_speed(required)))
     enemy_proximity = min(
         (_distance((_planet_x(enemy), _planet_y(enemy)), target_xy) for enemy in enemies),
         default=distance,
     )
-    return enemy_proximity >= distance * 0.9
+    if enemy_proximity < distance * 0.9:
+        return False
+    for enemy in enemies:
+        enemy_attack = max(0, _planet_ships(enemy) - RESERVE_HOME_SHIPS)
+        if enemy_attack < required:
+            continue
+        enemy_xy = (_planet_x(enemy), _planet_y(enemy))
+        enemy_eta = max(1, ceil(_distance(enemy_xy, target_xy) / _fleet_speed(enemy_attack)))
+        if enemy_eta <= my_eta + 2:
+            return False
+    return True
 
 
 def _select_hammer_target(obs, sources, targets, action, own, enemies, launched_by_source):

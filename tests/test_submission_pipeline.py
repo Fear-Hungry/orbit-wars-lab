@@ -547,6 +547,15 @@ def test_exported_submission_prioritizes_safe_high_production_opening_neutral(tm
     assert module._angle_delta(moves[0][1], strong_angle) < module._angle_delta(moves[0][1], weak_angle)
 
 
+def test_exported_submission_rejects_opening_neutral_with_enemy_snipe_eta(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_opening_snipe_eta")
+    source = [0, 0, 20.0, 20.0, 2.0, 42, 3]
+    target = [1, -1, 45.0, 20.0, 2.0, 8, 5]
+    enemy = [2, 1, 66.0, 20.0, 2.0, 70, 4]
+
+    assert not module._safe_opening_neutral(source, target, [enemy])
+
+
 def test_exported_submission_expands_when_behind_on_production_in_opening(tmp_path: Path):
     module = _load_rendered_submission(tmp_path, "submission_adaptive_opening_expand")
     module._PROFILE_STATE.clear()
