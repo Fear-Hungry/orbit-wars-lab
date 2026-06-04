@@ -40,18 +40,52 @@ Antes de rejeitar mudanças de abertura, hammer, reserva, lookahead ou fase, rod
 
 ```bash
 rtk .venv/bin/python -m scripts.benchmark_submission \
+  --submission artifacts/submission.py \
+  --opponents artifacts/submission_v_old.py \
+  --seeds 96 --episode-steps 500 --jobs 4 --skip-4p \
+  --out artifacts/baseline_96seed.json
+
+rtk .venv/bin/python -m scripts.benchmark_submission \
   --submission artifacts/submission_candidate.py \
-  --opponents artifacts/submission_v_old.py greedy rush \
-  --seeds 256 --episode-steps 500 --jobs 8 \
-  --out artifacts/candidate_256seed.json
+  --opponents artifacts/submission_v_old.py \
+  --seeds 96 --episode-steps 500 --jobs 4 --skip-4p \
+  --out artifacts/candidate_96seed.json
 
 rtk .venv/bin/python -m scripts.compare_benchmark_significance \
-  --baseline artifacts/baseline_256seed.json \
-  --candidate artifacts/candidate_256seed.json \
+  --baseline artifacts/baseline_96seed.json \
+  --candidate artifacts/candidate_96seed.json \
   --min-games 128 --min-effect 0.05
 ```
 
-Interprete `underpowered` como "amostra insuficiente", não como regressão real. Só trate como regressão quando o comparador marcar `significant_regression` e o resultado fizer sentido no breakdown por oponente.
+Interprete `underpowered` como "amostra insuficiente", não como regressão real. Só promova uma mudança quando algum oponente-decisor marcar `margin_significant_improvement`, `paired_significant_improvement` ou `significant_improvement` e nenhum marcar regressão significativa. `inconclusive` é descarte, não commit.
+
+Rode `greedy`, `rush` e `4p` em baixa amostra como sanity técnico, não como decisor de melhoria 2p:
+
+```bash
+rtk .venv/bin/python -m scripts.benchmark_submission \
+  --submission artifacts/submission_candidate.py \
+  --opponents greedy rush \
+  --seeds 8 --episode-steps 500 --jobs 4 \
+  --out artifacts/candidate_sanity_8seed.json
+```
+
+Regra operacional:
+
+- `16` seeds: smoke, legalidade e regressão grosseira;
+- `64` seeds: triagem de ideias candidatas;
+- `96` seeds contra oponente com headroom: decisão iterativa 2p;
+- `256+` seeds: confirmação final quando uma mudança estrutural já passou no decisor;
+- rejeição por benchmark exige `significant_regression` ou falha técnica objetiva;
+- mudanças avaliadas nos mesmos seeds devem usar o bloco pareado do comparador (`paired_*`);
+- quando houver margem normalizada por jogo, priorize o veredito de margem (`margin_*`) sobre win rate binário.
+
+Para medir se o benchmark está barato o bastante antes de subir a amostra:
+
+```bash
+rtk .venv/bin/python -m scripts.measure_benchmark_throughput \
+  --seeds 4 8 16 --jobs 1 4 8 --skip-4p \
+  --out artifacts/throughput/summary.json
+```
 
 ## Avaliar população de candidatos
 
