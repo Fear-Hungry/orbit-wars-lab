@@ -58,7 +58,7 @@ Este é um repositório inicial para desenvolvimento. Ele já contém:
 Ainda exige trabalho antes de treino pesado:
 
 - completar paridade bit-a-bit contra o ambiente oficial;
-- substituir a API PyO3 de debug por API NumPy zero-copy para alto throughput;
+- migrar loops de treino para a API PyO3 rápida com ações NumPy, MessagePack e estado codificado em Rust;
 - validar geração de cometas contra o oficial;
 - integrar PPO real com coleta de trajetórias em batch;
 - calibrar reward shaping e action decoder por replays.

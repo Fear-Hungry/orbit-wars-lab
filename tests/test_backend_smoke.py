@@ -175,6 +175,24 @@ def test_backend_flat_step_with_encoded_states_matches_python_encoder():
     assert encoded[0].tolist() == pytest.approx(encode_state(states[0], 0).tolist(), abs=1e-6)
 
 
+def test_backend_flat_step_with_states_matches_nested_step():
+    try:
+        flat = RustBatchBackend(num_envs=1, num_players=2, seed=0)
+        nested = RustBatchBackend(num_envs=1, num_players=2, seed=0)
+    except BackendUnavailable as exc:
+        pytest.skip(str(exc))
+
+    flat.reset(123)
+    nested.reset(123)
+    action_rows = np.asarray([[0, 0, 0, 0.0, 5]], dtype=np.float64)
+
+    outcomes, states = flat.step_flat_with_states(action_rows)
+    expected_outcomes, expected_states = nested.step_with_states([[[[0, 0.0, 5]], []]])
+
+    assert outcomes == expected_outcomes
+    assert states == expected_states
+
+
 def test_backend_rejects_invalid_player_count():
     with pytest.raises(ValueError, match="2 or 4 players"):
         RustBatchBackend(num_envs=1, num_players=3, seed=0)

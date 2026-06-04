@@ -84,6 +84,23 @@ class RustBatchBackend:
         payload = json.loads(self.sim.step_with_states_json(json.dumps(actions)))
         return payload[0], payload[1]
 
+    def step_flat_with_states(self, actions: np.ndarray) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Step with a flat action table and return outcomes plus full states.
+
+        `actions` has shape `(n, 5)` with rows
+        `[env_index, player_index, from_planet_id, angle, ships]`.
+        """
+
+        action_rows = np.asarray(actions, dtype=np.float64)
+        if action_rows.ndim != 2 or action_rows.shape[1] != 5:
+            raise ValueError("flat action array must have shape (n, 5)")
+        if hasattr(self.sim, "step_flat_with_states_msgpack"):
+            payload = self.sim.step_flat_with_states_msgpack(action_rows)
+            outcomes, states = msgpack.unpackb(payload, raw=False, strict_map_key=False)
+            return outcomes, states
+
+        return self.step_with_states(_flat_actions_to_nested(action_rows, self.num_envs, self.num_players))
+
     def step_with_encoded_states(
         self,
         actions: list[list[list[list[float]]]],

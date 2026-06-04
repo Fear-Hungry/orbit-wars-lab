@@ -232,6 +232,24 @@ impl PyBatchSimulator {
         Ok(PyBytes::new(py, &encoded))
     }
 
+    /// Fast API: flat NumPy actions in, MessagePack `(outcomes, states)` out.
+    ///
+    /// `actions_rows` must have shape `(n, 5)` with rows:
+    /// `[env_index, player_index, from_planet_id, angle, ships]`.
+    #[pyo3(signature = (actions_rows))]
+    fn step_flat_with_states_msgpack<'py>(
+        &mut self,
+        py: Python<'py>,
+        actions_rows: PyReadonlyArray2<'_, f64>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let actions =
+            parse_flat_actions_array(actions_rows, self.inner.games.len(), self.inner.num_players)?;
+        let payload = py.detach(|| self.inner.step_with_states(actions));
+        let encoded = rmp_serde::to_vec_named(&payload)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(PyBytes::new(py, &encoded))
+    }
+
     /// Fast training API: binary actions in, `(outcomes, encoded_states)` out.
     ///
     /// This keeps the post-step state on the Rust side and only materializes the
