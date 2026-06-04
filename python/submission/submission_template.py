@@ -1017,6 +1017,56 @@ def _opponent_response_penalty(obs, source, target, ships, target_xy, action, en
     return best_penalty
 
 
+def _best_enemy_capture_threat(obs, own, enemies, action, launched_by_source, candidate_source_id=None, candidate_ships=0):
+    if action.get("ffa") or not own or not enemies:
+        return 0.0
+    player = int(obs.get("player", 0))
+    projection_cache = action.setdefault("_projection_cache", {})
+    best_threat = 0.0
+    for planet in own:
+        planet_id = _planet_id(planet)
+        committed = launched_by_source.get(planet_id, 0)
+        if candidate_source_id == planet_id:
+            committed += int(candidate_ships)
+        base_defense = _planet_ships(planet) - committed
+        if base_defense <= 0:
+            base_defense = 0
+        planet_xy = (_planet_x(planet), _planet_y(planet))
+        incoming = _incoming_threat_before(obs, planet, player, 18, projection_cache)
+        for enemy in enemies:
+            enemy_attack = max(0, _planet_ships(enemy) - RESERVE_HOME_SHIPS)
+            if enemy_attack < MIN_SHIPS_TO_LAUNCH:
+                continue
+            enemy_xy = (_planet_x(enemy), _planet_y(enemy))
+            eta = max(1, ceil(_distance(enemy_xy, planet_xy) / _fleet_speed(enemy_attack)))
+            if eta > 18:
+                continue
+            defense = base_defense + _planet_production(planet) * min(eta, 18) - incoming
+            exposure = enemy_attack - defense - MIN_CAPTURE_MARGIN
+            if exposure <= 0:
+                continue
+            threat = 4.0 + 2.2 * _planet_production(planet) + 0.22 * exposure + 0.10 * max(0, 18 - eta)
+            if planet_id == candidate_source_id:
+                threat += 2.0
+            best_threat = max(best_threat, threat)
+    return best_threat
+
+
+def _opponent_best_response_delta(obs, own, enemies, action, launched_by_source, source, ships):
+    source_id = _planet_id(source)
+    before = _best_enemy_capture_threat(obs, own, enemies, action, launched_by_source)
+    after = _best_enemy_capture_threat(
+        obs,
+        own,
+        enemies,
+        action,
+        launched_by_source,
+        candidate_source_id=source_id,
+        candidate_ships=ships,
+    )
+    return max(0.0, after - before)
+
+
 def _target_recapture_penalty(obs, source, target, ships, target_xy, action, enemies):
     player = int(obs.get("player", 0))
     if action.get("ffa") or action.get("total_war"):
@@ -1213,6 +1263,7 @@ def decode(action, obs):
                 continue
             remaining_after_launch = _planet_ships(source) - launched_by_source.get(source_id, 0) - ships
             score -= _opponent_response_penalty(obs, source, target, ships, target_xy, action, enemies, remaining_after_launch)
+            score -= _opponent_best_response_delta(obs, own, enemies, action, launched_by_source, source, ships)
             score -= _target_recapture_penalty(obs, source, target, ships, target_xy, action, enemies)
             if best is None or score > best["score"]:
                 best = {

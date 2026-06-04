@@ -628,6 +628,35 @@ def test_exported_submission_penalizes_exposed_depth_two_response(tmp_path: Path
     assert safe_penalty == 0.0
 
 
+def test_exported_submission_penalizes_only_new_best_response_risk(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_best_response_delta")
+    module._PROFILE_STATE.clear()
+    obs = {
+        "player": 0,
+        "step": 120,
+        "angular_velocity": 0.0,
+        "planets": [
+            [0, 0, 20.0, 20.0, 2.0, 60, 4],
+            [1, 0, 70.0, 20.0, 2.0, 60, 4],
+            [2, 1, 42.0, 20.0, 2.0, 65, 3],
+            [3, -1, 26.0, 20.0, 2.0, 5, 4],
+        ],
+        "fleets": [],
+    }
+    action = module.policy_forward(module.encode(obs))
+    own = obs["planets"][:2]
+    enemies = [obs["planets"][2]]
+    launched = {}
+
+    baseline = module._opponent_best_response_delta(obs, own, enemies, action, launched, own[0], 0)
+    exposed = module._opponent_best_response_delta(obs, own, enemies, action, launched, own[0], 45)
+    remote = module._opponent_best_response_delta(obs, own, enemies, action, launched, own[1], 12)
+
+    assert baseline == 0.0
+    assert exposed > 0.0
+    assert remote == 0.0
+
+
 def test_exported_submission_hammers_committed_enemy_target_when_enemy_overextended(tmp_path: Path):
     module = _load_rendered_submission(tmp_path, "submission_pressure_hammer")
     module._PROFILE_STATE.clear()
