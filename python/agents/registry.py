@@ -18,7 +18,7 @@ HEURISTIC_NAMES: tuple[str, ...] = (
 
 _ROOT = Path(__file__).resolve().parents[2]
 PRODUCER_SETUP_COMMAND = "rtk .venv/bin/python -m scripts.prepare_producer_opponent"
-PRODUCER_AGENT_PATH = _ROOT / "artifacts/opponents/producer_agent.py"
+PRODUCER_AGENT_PATH = _ROOT / "tests/opponents/producer/producer_agent.py"
 _PRODUCER_AGENT: Callable[[dict[str, Any]], list[list[float]]] | None = None
 
 
@@ -28,7 +28,8 @@ def _load_producer_agent() -> Callable[[dict[str, Any]], list[list[float]]]:
         return _PRODUCER_AGENT
     if not PRODUCER_AGENT_PATH.exists():
         raise RuntimeError(
-            f"Producer opponent artifact is missing. Run `{PRODUCER_SETUP_COMMAND}` first."
+            f"Producer opponent fixture is missing. Restore tests/opponents/producer or run "
+            f"`{PRODUCER_SETUP_COMMAND}`."
         )
     spec = importlib.util.spec_from_file_location("producer_agent", PRODUCER_AGENT_PATH)
     if spec is None or spec.loader is None:

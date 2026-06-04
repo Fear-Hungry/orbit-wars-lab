@@ -57,7 +57,8 @@ def _submission_runtime(agent: Callable[[dict[str, Any]], list[list[float]]]) ->
 def _resolve_opponent(spec: str) -> tuple[str, Policy]:
     if spec == "producer" and not PRODUCER_AGENT_PATH.exists():
         raise RuntimeError(
-            f"Producer opponent artifact is missing. Run `{PRODUCER_SETUP_COMMAND}` first."
+            f"Producer opponent fixture is missing. Restore tests/opponents/producer or run "
+            f"`{PRODUCER_SETUP_COMMAND}`."
         )
     if spec in HEURISTIC_POLICIES:
         return spec, HEURISTIC_POLICIES[spec]

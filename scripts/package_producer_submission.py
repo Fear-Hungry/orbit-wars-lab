@@ -19,7 +19,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Package the prepared Producer agent as a Kaggle submission tar.gz."
     )
-    parser.add_argument("--producer-dir", type=Path, default=Path("artifacts/opponents/producer"))
+    parser.add_argument(
+        "--producer-dir", type=Path, default=Path("tests/opponents/producer/producer")
+    )
     parser.add_argument("--out", type=Path, default=Path("artifacts/submission_producer.tar.gz"))
     args = parser.parse_args()
 
@@ -27,7 +29,8 @@ def main() -> None:
     orbit_lite = args.producer_dir / "orbit_lite"
     if not main_py.exists() or not orbit_lite.is_dir():
         raise FileNotFoundError(
-            f"missing Producer files in {args.producer_dir}; run scripts.prepare_producer_opponent first"
+            f"missing Producer files in {args.producer_dir}; restore tests/opponents/producer or "
+            "run scripts.prepare_producer_opponent first"
         )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)

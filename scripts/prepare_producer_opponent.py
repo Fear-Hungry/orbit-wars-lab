@@ -84,7 +84,7 @@ def main() -> None:
         description="Prepare Slawek Biel's Producer as a local benchmark opponent."
     )
     parser.add_argument("--kernel", default="slawekbiel/the-producer-agent")
-    parser.add_argument("--out-dir", type=Path, default=Path("artifacts/opponents"))
+    parser.add_argument("--out-dir", type=Path, default=Path("tests/opponents/producer"))
     parser.add_argument(
         "--tmp-dir", type=Path, default=Path("/tmp/orbit_wars_public/the-producer-agent-output")
     )

@@ -39,10 +39,8 @@ Benchmarks de 16 seeds (`32` partidas 2p por oponente) servem para smoke e regre
 Antes de rejeitar mudanças de abertura, hammer, reserva, lookahead ou fase, rode uma amostra maior contra o Producer. Ele é o oponente decisor; `submission_v_old.py`, `greedy` e `rush` são sanity checks técnicos.
 
 ```bash
-rtk .venv/bin/python -m scripts.prepare_producer_opponent
-
 rtk .venv/bin/python -m scripts.benchmark_submission \
-  --submission artifacts/opponents/producer_agent.py \
+  --submission tests/opponents/producer/producer_agent.py \
   --opponents producer \
   --seeds 96 --episode-steps 500 --jobs 4 --skip-4p \
   --out artifacts/producer_mirror_96seed.json
@@ -74,8 +72,6 @@ rtk .venv/bin/python -m scripts.benchmark_submission \
 Para usar o Producer público como oponente externo local:
 
 ```bash
-rtk .venv/bin/python -m scripts.prepare_producer_opponent
-
 rtk .venv/bin/python -m scripts.benchmark_submission \
   --submission artifacts/submission.py \
   --opponents producer \
@@ -86,7 +82,6 @@ rtk .venv/bin/python -m scripts.benchmark_submission \
 Para empacotar o Producer fiel como submissão Kaggle:
 
 ```bash
-rtk .venv/bin/python -m scripts.prepare_producer_opponent
 rtk .venv/bin/python -m scripts.package_producer_submission \
   --out artifacts/submission_producer.tar.gz
 ```

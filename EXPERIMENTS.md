@@ -26,7 +26,7 @@ Métricas úteis:
 
 Artefato decisor: `artifacts/submission_producer.tar.gz`
 
-Régua honesta: Producer local em `artifacts/opponents/producer_agent.py`
+Régua honesta: Producer local trackeado em `tests/opponents/producer/producer_agent.py`
 
 Resumo da régua honesta conhecida:
 
