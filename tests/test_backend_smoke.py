@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import numpy as np
 import pytest
 from python.agents.submission_adapter import safe_submission_agent
 
@@ -134,6 +135,44 @@ def test_backend_encoded_states_match_python_encoder():
     _, states = sim.step_with_states([[[[0, 0.0, 5]], []]])
     encoded_after_step = sim.encoded_states(0)
     assert encoded_after_step[0].tolist() == pytest.approx(encode_state(states[0], 0).tolist(), abs=1e-6)
+
+
+def test_backend_step_with_encoded_states_matches_python_encoder():
+    try:
+        sim = RustBatchBackend(num_envs=1, num_players=2, seed=0)
+    except BackendUnavailable as exc:
+        pytest.skip(str(exc))
+
+    sim.reset(123)
+    actions = [[[[0, 0.0, 5]], []]]
+    outcomes, encoded = sim.step_with_encoded_states(actions, 0)
+
+    sim.reset(123)
+    expected_outcomes, states = sim.step_with_states(actions)
+
+    assert outcomes == expected_outcomes
+    assert encoded.shape == (1, observation_dim())
+    assert encoded[0].dtype.name == "float32"
+    assert encoded[0].tolist() == pytest.approx(encode_state(states[0], 0).tolist(), abs=1e-6)
+
+
+def test_backend_flat_step_with_encoded_states_matches_python_encoder():
+    try:
+        sim = RustBatchBackend(num_envs=1, num_players=2, seed=0)
+    except BackendUnavailable as exc:
+        pytest.skip(str(exc))
+
+    sim.reset(123)
+    action_rows = np.asarray([[0, 0, 0, 0.0, 5]], dtype=np.float64)
+    outcomes, encoded = sim.step_flat_with_encoded_states(action_rows, 0)
+
+    sim.reset(123)
+    expected_outcomes, states = sim.step_with_states([[[[0, 0.0, 5]], []]])
+
+    assert outcomes == expected_outcomes
+    assert encoded.shape == (1, observation_dim())
+    assert encoded[0].dtype.name == "float32"
+    assert encoded[0].tolist() == pytest.approx(encode_state(states[0], 0).tolist(), abs=1e-6)
 
 
 def test_backend_rejects_invalid_player_count():

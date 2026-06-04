@@ -84,6 +84,75 @@ class RustBatchBackend:
         payload = json.loads(self.sim.step_with_states_json(json.dumps(actions)))
         return payload[0], payload[1]
 
+    def step_with_encoded_states(
+        self,
+        actions: list[list[list[list[float]]]],
+        player: int,
+        *,
+        max_planets: int = 96,
+        max_fleets: int = 256,
+        include_fleets: bool = True,
+    ) -> tuple[list[dict[str, Any]], np.ndarray]:
+        """Step once and return outcomes plus flat encoded observations.
+
+        The Rust fast path avoids serializing the full post-step GameState into
+        Python dicts. It is intended for training/evaluation loops that only need
+        the vector observation, not the whole simulator state.
+        """
+
+        dim = 8 + max_planets * 14 + max_fleets * 10
+        if hasattr(self.sim, "step_with_encoded_states_msgpack"):
+            outcomes_payload, encoded_payload = self.sim.step_with_encoded_states_msgpack(
+                _pack_actions_binary(actions),
+                int(player),
+                int(max_planets),
+                int(max_fleets),
+                bool(include_fleets),
+            )
+            outcomes = msgpack.unpackb(outcomes_payload, raw=False, strict_map_key=False)
+            encoded = np.asarray(encoded_payload, dtype=np.float32).reshape(self.num_envs, dim)
+            return outcomes, encoded
+
+        outcomes, states = self.step_with_states(actions)
+        from .encoding import EncoderConfig, encode_state
+
+        cfg = EncoderConfig(max_planets=max_planets, max_fleets=max_fleets, include_fleets=include_fleets)
+        encoded = np.stack([encode_state(state, player, cfg) for state in states]).astype(np.float32, copy=False)
+        return outcomes, encoded
+
+    def step_flat_with_encoded_states(
+        self,
+        actions: np.ndarray,
+        player: int,
+        *,
+        max_planets: int = 96,
+        max_fleets: int = 256,
+        include_fleets: bool = True,
+    ) -> tuple[list[dict[str, Any]], np.ndarray]:
+        """Step with a flat action table and return encoded observations.
+
+        `actions` has shape `(n, 5)` with rows
+        `[env_index, player_index, from_planet_id, angle, ships]`.
+        """
+
+        dim = 8 + max_planets * 14 + max_fleets * 10
+        action_rows = np.asarray(actions, dtype=np.float64)
+        if action_rows.ndim != 2 or action_rows.shape[1] != 5:
+            raise ValueError("flat action array must have shape (n, 5)")
+        if hasattr(self.sim, "step_flat_with_encoded_states_msgpack"):
+            outcomes_payload, encoded_payload = self.sim.step_flat_with_encoded_states_msgpack(
+                action_rows,
+                int(player),
+                int(max_planets),
+                int(max_fleets),
+                bool(include_fleets),
+            )
+            outcomes = msgpack.unpackb(outcomes_payload, raw=False, strict_map_key=False)
+            encoded = np.asarray(encoded_payload, dtype=np.float32).reshape(self.num_envs, dim)
+            return outcomes, encoded
+
+        return self.step_with_encoded_states(_flat_actions_to_nested(action_rows, self.num_envs, self.num_players), player)
+
     def encoded_states(
         self,
         player: int,
@@ -123,3 +192,16 @@ def _pack_actions_binary(actions: list[list[list[list[float]]]]) -> bytes:
             for move in player_actions:
                 out.extend(_MOVE.pack(int(move[0]), float(move[1]), int(move[2])))
     return bytes(out)
+
+
+def _flat_actions_to_nested(actions: np.ndarray, num_envs: int, num_players: int) -> list[list[list[list[float]]]]:
+    nested: list[list[list[list[float]]]] = [[[] for _ in range(num_players)] for _ in range(num_envs)]
+    for row in actions:
+        env_index = int(row[0])
+        player_index = int(row[1])
+        if env_index < 0 or env_index >= num_envs:
+            raise ValueError("flat action env index out of range")
+        if player_index < 0 or player_index >= num_players:
+            raise ValueError("flat action player index out of range")
+        nested[env_index][player_index].append([int(row[2]), float(row[3]), int(row[4])])
+    return nested

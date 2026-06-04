@@ -1,4 +1,4 @@
-use numpy::PyArray1;
+use numpy::{PyArray1, PyReadonlyArray2};
 use orbit_wars_core::{BatchSimulator, Config, Fleet, GameState, Move, Planet};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -231,6 +231,86 @@ impl PyBatchSimulator {
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         Ok(PyBytes::new(py, &encoded))
     }
+
+    /// Fast training API: binary actions in, `(outcomes, encoded_states)` out.
+    ///
+    /// This keeps the post-step state on the Rust side and only materializes the
+    /// flat PPO observation array in Python. Use `step_with_states_msgpack` for
+    /// debug paths that need full dict-like GameState payloads.
+    #[pyo3(signature = (actions_bytes, player, max_planets=96, max_fleets=256, include_fleets=true))]
+    fn step_with_encoded_states_msgpack<'py>(
+        &mut self,
+        py: Python<'py>,
+        actions_bytes: &[u8],
+        player: i8,
+        max_planets: usize,
+        max_fleets: usize,
+        include_fleets: bool,
+    ) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyArray1<f32>>)> {
+        let actions = parse_actions_binary(actions_bytes)?;
+        let (outcomes, encoded_states) = py.detach(|| {
+            let (outcomes, states) = self.inner.step_with_states(actions);
+            let dim = encoded_state_dim(max_planets, max_fleets);
+            let mut encoded = Vec::with_capacity(states.len() * dim);
+            for state in &states {
+                encode_state_into(
+                    state,
+                    player,
+                    max_planets,
+                    max_fleets,
+                    include_fleets,
+                    &mut encoded,
+                );
+            }
+            (outcomes, encoded)
+        });
+        let encoded_outcomes = rmp_serde::to_vec_named(&outcomes)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok((
+            PyBytes::new(py, &encoded_outcomes),
+            PyArray1::from_vec(py, encoded_states),
+        ))
+    }
+
+    /// Fastest training API: flat NumPy actions in, `(outcomes, encoded_states)` out.
+    ///
+    /// `actions_rows` must have shape `(n, 5)` with rows:
+    /// `[env_index, player_index, from_planet_id, angle, ships]`.
+    #[pyo3(signature = (actions_rows, player, max_planets=96, max_fleets=256, include_fleets=true))]
+    fn step_flat_with_encoded_states_msgpack<'py>(
+        &mut self,
+        py: Python<'py>,
+        actions_rows: PyReadonlyArray2<'_, f64>,
+        player: i8,
+        max_planets: usize,
+        max_fleets: usize,
+        include_fleets: bool,
+    ) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyArray1<f32>>)> {
+        let actions =
+            parse_flat_actions_array(actions_rows, self.inner.games.len(), self.inner.num_players)?;
+        let (outcomes, encoded_states) = py.detach(|| {
+            let (outcomes, states) = self.inner.step_with_states(actions);
+            let dim = encoded_state_dim(max_planets, max_fleets);
+            let mut encoded = Vec::with_capacity(states.len() * dim);
+            for state in &states {
+                encode_state_into(
+                    state,
+                    player,
+                    max_planets,
+                    max_fleets,
+                    include_fleets,
+                    &mut encoded,
+                );
+            }
+            (outcomes, encoded)
+        });
+        let encoded_outcomes = rmp_serde::to_vec_named(&outcomes)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok((
+            PyBytes::new(py, &encoded_outcomes),
+            PyArray1::from_vec(py, encoded_states),
+        ))
+    }
 }
 
 fn read_u32(raw: &[u8], offset: &mut usize) -> PyResult<u32> {
@@ -294,6 +374,41 @@ fn parse_actions_binary(raw: &[u8]) -> PyResult<Vec<Vec<Vec<Move>>>> {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "action buffer has trailing bytes",
         ));
+    }
+    Ok(actions)
+}
+
+fn parse_flat_actions_array(
+    actions_rows: PyReadonlyArray2<'_, f64>,
+    num_envs: usize,
+    num_players: usize,
+) -> PyResult<Vec<Vec<Vec<Move>>>> {
+    let rows = actions_rows.as_array();
+    if rows.shape().get(1).copied() != Some(5) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "flat action array must have shape (n, 5)",
+        ));
+    }
+
+    let mut actions = vec![vec![Vec::new(); num_players]; num_envs];
+    for row in rows.outer_iter() {
+        let env_index = row[0] as isize;
+        let player_index = row[1] as isize;
+        if env_index < 0 || env_index as usize >= num_envs {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "flat action env index out of range",
+            ));
+        }
+        if player_index < 0 || player_index as usize >= num_players {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "flat action player index out of range",
+            ));
+        }
+        actions[env_index as usize][player_index as usize].push(Move {
+            from_planet_id: row[2] as i32,
+            angle: row[3],
+            ships: row[4] as i32,
+        });
     }
     Ok(actions)
 }
