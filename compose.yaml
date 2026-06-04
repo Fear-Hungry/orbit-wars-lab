@@ -1,3 +1,11 @@
+x-shared-caches:
+  pip: &shared-cache-pip ${HOME}/.cache/docker-shared/pip:/home/orbit/.cache/pip
+  uv: &shared-cache-uv ${HOME}/.cache/docker-shared/uv:/home/orbit/.cache/uv
+  torch: &shared-cache-torch ${HOME}/.cache/docker-shared/torch:/home/orbit/.cache/torch
+  huggingface: &shared-cache-huggingface ${HOME}/.cache/docker-shared/huggingface:/home/orbit/.cache/huggingface
+  cargo-registry: &shared-cache-cargo-registry ${HOME}/.cache/docker-shared/cargo-registry:/home/orbit/.cargo/registry
+  cargo-git: &shared-cache-cargo-git ${HOME}/.cache/docker-shared/cargo-git:/home/orbit/.cargo/git
+
 x-lab-common: &lab-common
   working_dir: /workspace
   tty: true
@@ -17,10 +25,12 @@ x-lab-common: &lab-common
     CODEX_HOME: /home/orbit/.codex
     VIRTUAL_ENV: /opt/venv
     PIP_CACHE_DIR: /home/orbit/.cache/pip
+    UV_CACHE_DIR: /home/orbit/.cache/uv
+    HF_HOME: /home/orbit/.cache/huggingface
+    TORCH_HOME: /home/orbit/.cache/torch
     CARGO_HOME: /home/orbit/.cargo
     CARGO_TARGET_DIR: /home/orbit/.cargo-target
     RUSTUP_HOME: /usr/local/rustup
-    TORCH_HOME: /home/orbit/.cache/torch
     PATH: /home/orbit/.local/bin:/opt/venv/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     PYTHONPATH: /workspace:/workspace/python
     OMP_NUM_THREADS: ${OMP_NUM_THREADS:-1}
@@ -47,6 +57,12 @@ services:
       - ${HOME:-/home/orbit}/.codex:/home/orbit/.codex
       - ${HOME:-/home/orbit}/.local/bin:/home/orbit/.local/bin:ro
       - ${HOME:-/home/orbit}/.local/lib/node_modules:/home/orbit/.local/lib/node_modules:ro
+      - *shared-cache-pip
+      - *shared-cache-uv
+      - *shared-cache-torch
+      - *shared-cache-huggingface
+      - *shared-cache-cargo-registry
+      - *shared-cache-cargo-git
 
   lab-gpu:
     <<: *lab-common
@@ -68,6 +84,12 @@ services:
       - ${HOME:-/home/orbit}/.codex:/home/orbit/.codex
       - ${HOME:-/home/orbit}/.local/bin:/home/orbit/.local/bin:ro
       - ${HOME:-/home/orbit}/.local/lib/node_modules:/home/orbit/.local/lib/node_modules:ro
+      - *shared-cache-pip
+      - *shared-cache-uv
+      - *shared-cache-torch
+      - *shared-cache-huggingface
+      - *shared-cache-cargo-registry
+      - *shared-cache-cargo-git
     deploy:
       resources:
         reservations:
