@@ -17,6 +17,11 @@ PROFILE_DECAY = 0.82
 PROFILE_RAY_MAX_ANGLE = 0.36
 PROFILE_CAPTURE_TTL = 18
 FSM_OPENING_TURNS = 55
+SAFE_OPENING_END_TURN = 10
+ORBITAL_OPENING_START_TURN = 10
+ORBITAL_OPENING_END_TURN = 13
+ADAPTIVE_OPENING_START_TURN = 15
+ADAPTIVE_OPENING_END_TURN = 80
 MAX_GAME_TURNS = 500
 FUTURE_FLEET_HORIZON = 90
 
@@ -762,13 +767,29 @@ def policy_forward(features):
     behind_on_econ = features["enemy_prod"] > features["own_prod"]
     neutrals_open = features["neutral_count"] > 0
     production_ratio = features["own_prod"] / max(1, features["enemy_prod"])
+    opening_stage = "NONE"
+    if neutrals_open and not ffa and features["step"] <= SAFE_OPENING_END_TURN:
+        opening_stage = "SAFE_NEUTRALS"
+    elif (
+        neutrals_open
+        and not ffa
+        and ORBITAL_OPENING_START_TURN <= features["step"] <= ORBITAL_OPENING_END_TURN
+    ):
+        opening_stage = "ORBITAL"
+    elif (
+        neutrals_open
+        and not ffa
+        and ADAPTIVE_OPENING_START_TURN <= features["step"] <= ADAPTIVE_OPENING_END_TURN
+        and production_ratio < 1.0
+    ):
+        opening_stage = "ADAPTIVE_PRODUCTION"
     adaptive_opening_expand = (
-        15 <= features["step"] <= 80
+        ADAPTIVE_OPENING_START_TURN <= features["step"] <= ADAPTIVE_OPENING_END_TURN
         and neutrals_open
         and not pressure
         and production_ratio < 1.0
     )
-    orbital_opening_window = 10 <= features["step"] <= 13 and neutrals_open and not pressure and not ffa
+    orbital_opening_window = opening_stage == "ORBITAL" and not pressure
     opportunistic_expand = (
         features["step"] >= 25
         and neutrals_open
@@ -818,6 +839,7 @@ def policy_forward(features):
         "neutral_count": int(features["neutral_count"]),
         "fsm_state": state,
         "strategy_phase": strategy_phase,
+        "opening_stage": opening_stage,
         "recent_enemy_captures": set(features.get("recent_enemy_captures", set())),
         "profile_total": float(features.get("profile_total", 0.0)),
         "production_ratio": float(production_ratio),
@@ -927,7 +949,7 @@ def _target_value(obs, source, target, committed, action, own, enemies):
         value += 8.0
         if ffa:
             value += 4.0
-        if not ffa and action.get("fsm_state") == "OPENING_EXPAND" and step <= 10:
+        if not ffa and action.get("opening_stage") == "SAFE_NEUTRALS":
             safe_opening_neutral = production >= 4 and distance <= 30.0 and enemy_proximity >= distance * 0.9
             if safe_opening_neutral:
                 value += 36.0 + 6.0 * production
@@ -1244,7 +1266,7 @@ def decode(action, obs):
         best = None
         source_xy = (_planet_x(source), _planet_y(source))
         opening_safe_neutrals = set()
-        if not action.get("ffa") and action.get("fsm_state") == "OPENING_EXPAND" and step <= 10:
+        if not action.get("ffa") and action.get("opening_stage") == "SAFE_NEUTRALS":
             opening_safe_neutrals = {
                 _planet_id(target)
                 for target in targets

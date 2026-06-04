@@ -511,6 +511,7 @@ def test_exported_submission_prefers_nearby_neutral_in_opening(tmp_path: Path):
     moves = module.decode(action, obs)
 
     assert action["fsm_state"] == "OPENING_EXPAND"
+    assert action["opening_stage"] == "SAFE_NEUTRALS"
     assert moves
     source_xy = (80.0, 50.0)
     near_angle = module._angle(source_xy, (70.0, 50.0))
@@ -569,6 +570,7 @@ def test_exported_submission_expands_when_behind_on_production_in_opening(tmp_pa
 
     assert features["own_count"] > 3
     assert action["behind_on_econ"]
+    assert action["opening_stage"] == "ADAPTIVE_PRODUCTION"
     assert not action["pressure"]
     assert action["adaptive_opening_expand"]
     assert action["expand"]
@@ -595,6 +597,7 @@ def test_exported_submission_explores_safe_orbital_neutral_during_opening_window
     moves = module.decode(action, obs)
 
     assert action["orbital_opening_window"]
+    assert action["opening_stage"] == "ORBITAL"
     assert moves
     source_xy = (20.0, 20.0)
     orbital_xy = module._predict_target_xy(obs, source_xy, obs["planets"][1], moves[0][2])
