@@ -38,7 +38,6 @@ from torch import Tensor
 
 from .constants import CENTER, ROT_RADIUS_LIMIT
 
-
 # ---------------------------------------------------------------------------
 # ParsedObs
 # ---------------------------------------------------------------------------
@@ -116,8 +115,9 @@ def parse_obs(obs_tensors: dict, player_id: int | None = None) -> ParsedObs:
     planets = obs_tensors["planets"]          # [P, 7]
     initial = obs_tensors["initial_planets"]  # [P, 7]
     fleets = obs_tensors["fleets"]            # [F, 7]
-    angvel = obs_tensors["angular_velocity"].float()  # scalar
-    step = obs_tensors["step"].float()        # scalar
+    dtype = planets.dtype
+    angvel = obs_tensors["angular_velocity"].to(dtype=dtype)  # scalar
+    step = obs_tensors["step"].to(dtype=dtype)        # scalar
 
     if player_id is None:
         player_id = int(obs_tensors["player"].flatten()[0].item())
