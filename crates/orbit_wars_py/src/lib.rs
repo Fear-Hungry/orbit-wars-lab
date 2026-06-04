@@ -1,7 +1,11 @@
-use orbit_wars_core::{BatchSimulator, Config, Move};
+use numpy::PyArray1;
+use orbit_wars_core::{BatchSimulator, Config, Fleet, GameState, Move, Planet};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pyo3::types::PyDict;
+
+const BOARD_SIZE: f64 = 100.0;
+const CENTER: f64 = 50.0;
 
 #[pyclass]
 #[derive(Clone)]
@@ -112,6 +116,39 @@ impl PyBatchSimulator {
         let encoded = rmp_serde::to_vec_named(&states)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         Ok(PyBytes::new(py, &encoded))
+    }
+
+    /// Fast training API: returns a flat float32 array with one encoded row per env.
+    ///
+    /// Shape is `(num_envs, 8 + max_planets * 14 + max_fleets * 10)` after
+    /// reshaping on the Python side. This avoids serializing GameState into
+    /// Python dicts when the learner only needs the PPO observation vector.
+    #[pyo3(signature = (player, max_planets=96, max_fleets=256, include_fleets=true))]
+    fn encoded_states<'py>(
+        &self,
+        py: Python<'py>,
+        player: i8,
+        max_planets: usize,
+        max_fleets: usize,
+        include_fleets: bool,
+    ) -> PyResult<Bound<'py, PyArray1<f32>>> {
+        let encoded = py.detach(|| {
+            let states = self.inner.states();
+            let dim = encoded_state_dim(max_planets, max_fleets);
+            let mut out = Vec::with_capacity(states.len() * dim);
+            for state in &states {
+                encode_state_into(
+                    state,
+                    player,
+                    max_planets,
+                    max_fleets,
+                    include_fleets,
+                    &mut out,
+                );
+            }
+            out
+        });
+        Ok(PyArray1::from_vec(py, encoded))
     }
 
     /// Debug-oriented API: actions[env][player][move] = [from_id, angle, ships].
@@ -259,6 +296,120 @@ fn parse_actions_binary(raw: &[u8]) -> PyResult<Vec<Vec<Vec<Move>>>> {
         ));
     }
     Ok(actions)
+}
+
+fn encoded_state_dim(max_planets: usize, max_fleets: usize) -> usize {
+    8 + max_planets * 14 + max_fleets * 10
+}
+
+fn owner_rel(owner: i8, player: i8) -> [f32; 4] {
+    if owner == -1 {
+        [0.0, 0.0, 1.0, 0.0]
+    } else if owner == player {
+        [1.0, 0.0, 0.0, 0.0]
+    } else {
+        [0.0, 1.0, 0.0, 0.0]
+    }
+}
+
+fn encode_state_into(
+    state: &GameState,
+    player: i8,
+    max_planets: usize,
+    max_fleets: usize,
+    include_fleets: bool,
+    out: &mut Vec<f32>,
+) {
+    let own_ships: i32 = state
+        .planets
+        .iter()
+        .filter(|p| p.owner == player)
+        .map(|p| p.ships)
+        .sum();
+    let enemy_ships: i32 = state
+        .planets
+        .iter()
+        .filter(|p| p.owner != -1 && p.owner != player)
+        .map(|p| p.ships)
+        .sum();
+    let own_prod: i32 = state
+        .planets
+        .iter()
+        .filter(|p| p.owner == player)
+        .map(|p| p.production)
+        .sum();
+    let enemy_prod: i32 = state
+        .planets
+        .iter()
+        .filter(|p| p.owner != -1 && p.owner != player)
+        .map(|p| p.production)
+        .sum();
+
+    out.extend_from_slice(&[
+        state.step as f32 / 500.0,
+        state.angular_velocity as f32,
+        state.planets.len() as f32 / max_planets.max(1) as f32,
+        state.fleets.len() as f32 / max_fleets.max(1) as f32,
+        ((own_ships.max(0) as f64).ln_1p() / 8.0) as f32,
+        ((enemy_ships.max(0) as f64).ln_1p() / 8.0) as f32,
+        own_prod as f32 / 64.0,
+        enemy_prod as f32 / 64.0,
+    ]);
+
+    let planet_limit = state.planets.len().min(max_planets);
+    for planet in state.planets.iter().take(planet_limit) {
+        encode_planet_into(planet, player, out);
+    }
+    out.resize(out.len() + (max_planets - planet_limit) * 14, 0.0);
+
+    let fleet_limit = if include_fleets {
+        state.fleets.len().min(max_fleets)
+    } else {
+        0
+    };
+    for fleet in state.fleets.iter().take(fleet_limit) {
+        encode_fleet_into(fleet, player, out);
+    }
+    out.resize(out.len() + (max_fleets - fleet_limit) * 10, 0.0);
+}
+
+fn encode_planet_into(planet: &Planet, player: i8, out: &mut Vec<f32>) {
+    let [owner_self, owner_enemy, owner_neutral, owner_other] = owner_rel(planet.owner, player);
+    let dx = (planet.x - CENTER) / CENTER;
+    let dy = (planet.y - CENTER) / CENTER;
+    let dist_center = (dx * dx + dy * dy).sqrt();
+    out.extend_from_slice(&[
+        1.0,
+        owner_self,
+        owner_enemy,
+        owner_neutral,
+        owner_other,
+        (planet.x / BOARD_SIZE) as f32,
+        (planet.y / BOARD_SIZE) as f32,
+        dx as f32,
+        dy as f32,
+        dist_center as f32,
+        (planet.radius / 10.0) as f32,
+        ((planet.ships.max(0) as f64).ln_1p() / 8.0) as f32,
+        planet.production as f32 / 5.0,
+        planet.id as f32 / 512.0,
+    ]);
+}
+
+fn encode_fleet_into(fleet: &Fleet, player: i8, out: &mut Vec<f32>) {
+    let [owner_self, owner_enemy, owner_neutral, _owner_other] = owner_rel(fleet.owner, player);
+    out.extend_from_slice(&[
+        1.0,
+        owner_self,
+        owner_enemy,
+        owner_neutral,
+        (fleet.x / BOARD_SIZE) as f32,
+        (fleet.y / BOARD_SIZE) as f32,
+        fleet.angle.cos() as f32,
+        fleet.angle.sin() as f32,
+        ((fleet.ships.max(0) as f64).ln_1p() / 8.0) as f32,
+        fleet.from_planet_id as f32 / 512.0,
+    ]);
 }
 
 #[pyfunction]

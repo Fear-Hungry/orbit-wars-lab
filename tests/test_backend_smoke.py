@@ -119,6 +119,23 @@ def test_backend_msgpack_entrypoints_match_json_payloads():
     assert step_fast == step_json
 
 
+def test_backend_encoded_states_match_python_encoder():
+    try:
+        sim = RustBatchBackend(num_envs=1, num_players=2, seed=0)
+    except BackendUnavailable as exc:
+        pytest.skip(str(exc))
+
+    state = sim.reset(123)[0]
+    encoded = sim.encoded_states(0)
+    assert encoded.shape == (1, observation_dim())
+    assert encoded[0].dtype.name == "float32"
+    assert encoded[0].tolist() == pytest.approx(encode_state(state, 0).tolist(), abs=1e-6)
+
+    _, states = sim.step_with_states([[[[0, 0.0, 5]], []]])
+    encoded_after_step = sim.encoded_states(0)
+    assert encoded_after_step[0].tolist() == pytest.approx(encode_state(states[0], 0).tolist(), abs=1e-6)
+
+
 def test_backend_rejects_invalid_player_count():
     with pytest.raises(ValueError, match="2 or 4 players"):
         RustBatchBackend(num_envs=1, num_players=3, seed=0)

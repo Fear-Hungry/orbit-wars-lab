@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import msgpack
+import numpy as np
 
 _U32 = struct.Struct("<I")
 _MOVE = struct.Struct("<idi")
@@ -82,6 +83,34 @@ class RustBatchBackend:
             return self.step(actions), self.states()
         payload = json.loads(self.sim.step_with_states_json(json.dumps(actions)))
         return payload[0], payload[1]
+
+    def encoded_states(
+        self,
+        player: int,
+        *,
+        max_planets: int = 96,
+        max_fleets: int = 256,
+        include_fleets: bool = True,
+    ) -> np.ndarray:
+        """Return PPO observations directly from Rust when available.
+
+        The fast path avoids `GameState -> MessagePack -> dict -> encode_state`
+        for loops that only need the flat observation tensor. Older extensions
+        fall back to the Python encoder with the same public shape.
+        """
+
+        dim = 8 + max_planets * 14 + max_fleets * 10
+        if hasattr(self.sim, "encoded_states"):
+            flat = np.asarray(
+                self.sim.encoded_states(int(player), int(max_planets), int(max_fleets), bool(include_fleets)),
+                dtype=np.float32,
+            )
+            return flat.reshape(self.num_envs, dim)
+
+        from .encoding import EncoderConfig, encode_state
+
+        cfg = EncoderConfig(max_planets=max_planets, max_fleets=max_fleets, include_fleets=include_fleets)
+        return np.stack([encode_state(state, player, cfg) for state in self.states()]).astype(np.float32, copy=False)
 
 
 def _pack_actions_binary(actions: list[list[list[list[float]]]]) -> bytes:
