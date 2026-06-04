@@ -11,4 +11,5 @@ crate-type = ["cdylib"]
 [dependencies]
 orbit_wars_core = { path = "../orbit_wars_core" }
 pyo3 = { version = "0.27", features = ["extension-module"] }
+rmp-serde = "1.3"
 serde_json = "1.0"

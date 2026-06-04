@@ -9,6 +9,7 @@ description = "Local Rust + Python lab for Kaggle Orbit Wars agents"
 requires-python = ">=3.10"
 readme = "README.md"
 dependencies = [
+    "msgpack>=1.0",
     "numpy>=1.26",
     "pyyaml>=6.0",
     "rich>=13.7",

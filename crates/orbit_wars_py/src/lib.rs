@@ -1,5 +1,6 @@
 use orbit_wars_core::{BatchSimulator, Config, Move};
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
 use pyo3::types::PyDict;
 
 #[pyclass]
@@ -154,6 +155,84 @@ impl PyBatchSimulator {
         serde_json::to_string(&payload)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
     }
+
+    /// Fast API: binary actions in, MessagePack `(outcomes, states)` out.
+    fn step_with_states_msgpack<'py>(
+        &mut self,
+        py: Python<'py>,
+        actions_bytes: &[u8],
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let actions = parse_actions_binary(actions_bytes)?;
+        let payload = py.detach(|| self.inner.step_with_states(actions));
+        let encoded = rmp_serde::to_vec_named(&payload)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(PyBytes::new(py, &encoded))
+    }
+}
+
+fn read_u32(raw: &[u8], offset: &mut usize) -> PyResult<u32> {
+    let end = *offset + 4;
+    let bytes = raw
+        .get(*offset..end)
+        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("truncated action buffer"))?;
+    *offset = end;
+    Ok(u32::from_le_bytes(
+        bytes.try_into().expect("slice length checked"),
+    ))
+}
+
+fn read_i32(raw: &[u8], offset: &mut usize) -> PyResult<i32> {
+    let end = *offset + 4;
+    let bytes = raw
+        .get(*offset..end)
+        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("truncated action buffer"))?;
+    *offset = end;
+    Ok(i32::from_le_bytes(
+        bytes.try_into().expect("slice length checked"),
+    ))
+}
+
+fn read_f64(raw: &[u8], offset: &mut usize) -> PyResult<f64> {
+    let end = *offset + 8;
+    let bytes = raw
+        .get(*offset..end)
+        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("truncated action buffer"))?;
+    *offset = end;
+    Ok(f64::from_le_bytes(
+        bytes.try_into().expect("slice length checked"),
+    ))
+}
+
+fn parse_actions_binary(raw: &[u8]) -> PyResult<Vec<Vec<Vec<Move>>>> {
+    let mut offset = 0usize;
+    let env_count = read_u32(raw, &mut offset)? as usize;
+    let mut actions = Vec::with_capacity(env_count);
+    for _ in 0..env_count {
+        let player_count = read_u32(raw, &mut offset)? as usize;
+        let mut env_actions = Vec::with_capacity(player_count);
+        for _ in 0..player_count {
+            let move_count = read_u32(raw, &mut offset)? as usize;
+            let mut player_actions = Vec::with_capacity(move_count);
+            for _ in 0..move_count {
+                let from_planet_id = read_i32(raw, &mut offset)?;
+                let angle = read_f64(raw, &mut offset)?;
+                let ships = read_i32(raw, &mut offset)?;
+                player_actions.push(Move {
+                    from_planet_id,
+                    angle,
+                    ships,
+                });
+            }
+            env_actions.push(player_actions);
+        }
+        actions.push(env_actions);
+    }
+    if offset != raw.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "action buffer has trailing bytes",
+        ));
+    }
+    Ok(actions)
 }
 
 #[pyfunction]

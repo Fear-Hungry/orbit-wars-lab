@@ -77,6 +77,25 @@ def test_backend_step_with_states_returns_outcomes_and_next_state():
     assert "planets" in states[0]
 
 
+def test_backend_fast_step_matches_json_step_and_states():
+    try:
+        fast = RustBatchBackend(num_envs=1, num_players=2, seed=0)
+        legacy = RustBatchBackend(num_envs=1, num_players=2, seed=0)
+    except BackendUnavailable as exc:
+        pytest.skip(str(exc))
+
+    fast.reset(123)
+    legacy.reset(123)
+    actions = [[[[0, 0.0, 5]], []]]
+
+    outcomes, states = fast.step_with_states(actions)
+    legacy_outcomes = legacy.step(actions)
+    legacy_states = legacy.states()
+
+    assert outcomes == legacy_outcomes
+    assert states == legacy_states
+
+
 def test_backend_rejects_invalid_player_count():
     with pytest.raises(ValueError, match="2 or 4 players"):
         RustBatchBackend(num_envs=1, num_players=3, seed=0)

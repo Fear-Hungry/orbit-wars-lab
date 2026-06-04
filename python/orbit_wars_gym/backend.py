@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import json
+import struct
 from dataclasses import dataclass
 from typing import Any
+
+import msgpack
+
+_U32 = struct.Struct("<I")
+_MOVE = struct.Struct("<idi")
 
 
 class BackendUnavailable(RuntimeError):
@@ -63,7 +69,23 @@ class RustBatchBackend:
         return json.loads(self.sim.step_json(json.dumps(actions)))
 
     def step_with_states(self, actions: list[list[list[list[float]]]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        if hasattr(self.sim, "step_with_states_msgpack"):
+            payload = self.sim.step_with_states_msgpack(_pack_actions_binary(actions))
+            outcomes, states = msgpack.unpackb(payload, raw=False, strict_map_key=False)
+            return outcomes, states
         if not hasattr(self.sim, "step_with_states_json"):
             return self.step(actions), self.states()
         payload = json.loads(self.sim.step_with_states_json(json.dumps(actions)))
         return payload[0], payload[1]
+
+
+def _pack_actions_binary(actions: list[list[list[list[float]]]]) -> bytes:
+    out = bytearray()
+    out.extend(_U32.pack(len(actions)))
+    for env_actions in actions:
+        out.extend(_U32.pack(len(env_actions)))
+        for player_actions in env_actions:
+            out.extend(_U32.pack(len(player_actions)))
+            for move in player_actions:
+                out.extend(_MOVE.pack(int(move[0]), float(move[1]), int(move[2])))
+    return bytes(out)
