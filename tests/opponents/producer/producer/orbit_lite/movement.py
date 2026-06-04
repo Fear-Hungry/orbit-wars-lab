@@ -13,10 +13,9 @@ import torch
 from torch import Tensor
 
 from .aiming import orbit_phase_index_from_obs_step
+from .constants import BOARD_SIZE, CENTER, SUN_RADIUS
 from .geometry import fleet_speed
 from .obs import parse_obs
-from .constants import BOARD_SIZE, CENTER, SUN_RADIUS
-
 
 DEFAULT_MOVEMENT_HORIZON = 20
 DEFAULT_DRIFT_EPSILON = 1e-4
@@ -161,7 +160,7 @@ class PlanetMovement:
         track_fleets: bool = False,
         player_count: int | None = None,
         max_tracked_fleets: int = DEFAULT_MAX_TRACKED_FLEETS,
-    ) -> "PlanetMovement":
+    ) -> PlanetMovement:
         """Build a fresh movement cache from batched observation tensors.
 
         The cache has movement parameters plus optional fleet tracking:
@@ -203,7 +202,7 @@ class PlanetMovement:
             movement._ingest_obs_fleets(obs_tensors)
         return movement
 
-    def update(self, obs_tensors: dict) -> "PlanetMovement":
+    def update(self, obs_tensors: dict) -> PlanetMovement:
         """Refresh this cache for a new observation (single game).
 
         If the current observation matches the cached prediction the trajectory
@@ -1552,7 +1551,7 @@ class PlanetMovement:
             raise IndexError(f"k must be in [0, {self.movement_horizon}], got {k}")
         return int(k)
 
-    def _copy_from(self, other: "PlanetMovement") -> None:
+    def _copy_from(self, other: PlanetMovement) -> None:
         self.x = other.x
         self.y = other.y
         self.alive_by_step = other.alive_by_step
@@ -1673,17 +1672,36 @@ def _estimate_new_fleet_arrivals(
     new_py = planet_y[:, 1:, :]
     alive_old = planet_alive[:, :-1, :]
     check_collision = alive_old & (old_px >= 0.0) & (old_py >= 0.0)
-    swept_collides = _swept_pair_hit_mask(
-        old_x.unsqueeze(2),
-        old_y.unsqueeze(2),
-        new_x.unsqueeze(2),
-        new_y.unsqueeze(2),
-        old_px,
-        old_py,
-        new_px,
-        new_py,
-        radii.view(N, 1, P),
+    # Engine ordering is discrete, not fully continuous relative motion:
+    # 1. fleets move and collide against pre-rotation planet positions;
+    # 2. out-of-bounds / sun kills remove non-colliding fleets;
+    # 3. rotated planets sweep over the surviving fleet endpoint.
+    direct_collides = (
+        _point_to_segment_distance_sq(
+            old_px,
+            old_py,
+            old_x.unsqueeze(2),
+            old_y.unsqueeze(2),
+            new_x.unsqueeze(2),
+            new_y.unsqueeze(2),
+        )
+        < radii.view(N, 1, P).pow(2)
     ) & check_collision
+    direct_step_has_hit = direct_collides.any(dim=2)
+
+    sweep_collides = (
+        _point_to_segment_distance_sq(
+            new_x.unsqueeze(2),
+            new_y.unsqueeze(2),
+            old_px,
+            old_py,
+            new_px,
+            new_py,
+        )
+        < radii.view(N, 1, P).pow(2)
+    ) & check_collision & ~direct_step_has_hit.unsqueeze(2) & ~env_kill.unsqueeze(2)
+
+    swept_collides = direct_collides | sweep_collides
     step_raw_has_hit = swept_collides.any(dim=2)
     hit_rank = swept_collides.to(torch.int32).cumsum(dim=2)
     first_hit = swept_collides & (hit_rank == 1)
@@ -1730,37 +1748,6 @@ def _point_to_segment_distance_sq(px: Tensor, py: Tensor, x1: Tensor, y1: Tensor
     proj_x = x1 + t * dx
     proj_y = y1 + t * dy
     return (px - proj_x) ** 2 + (py - proj_y) ** 2
-
-
-def _swept_pair_hit_mask(
-    ax: Tensor,
-    ay: Tensor,
-    bx: Tensor,
-    by: Tensor,
-    p0x: Tensor,
-    p0y: Tensor,
-    p1x: Tensor,
-    p1y: Tensor,
-    r: Tensor,
-) -> Tensor:
-    """Broadcasted swept-pair overlap check for moving fleet/planet pairs."""
-    d0x = ax - p0x
-    d0y = ay - p0y
-    dvx = (bx - ax) - (p1x - p0x)
-    dvy = (by - ay) - (p1y - p0y)
-    a = dvx * dvx + dvy * dvy
-    b = 2.0 * (d0x * dvx + d0y * dvy)
-    c = d0x * d0x + d0y * d0y - r * r
-    near_static = a < 1e-12
-    c_hit = c <= 0.0
-    disc = b * b - 4.0 * a * c
-    has_root = disc >= 0.0
-    safe_a = torch.where(near_static, torch.ones_like(a), a)
-    sq = torch.sqrt(torch.clamp(disc, min=0.0))
-    t1 = (-b - sq) / (2.0 * safe_a)
-    t2 = (-b + sq) / (2.0 * safe_a)
-    quad_hit = has_root & (t2 >= 0.0) & (t1 <= 1.0)
-    return torch.where(near_static, c_hit, quad_hit)
 
 
 def _build_future_from_obs(

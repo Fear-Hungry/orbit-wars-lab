@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import random
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -13,7 +14,14 @@ PRODUCER_DIR = Path(__file__).resolve().parent / "opponents/producer/producer"
 sys.path.insert(0, str(PRODUCER_DIR))
 
 from orbit_lite.adapter import single_obs_to_tensor  # noqa: E402
+from orbit_lite.garrison_launch import _run_exact_recurrence  # noqa: E402
 from orbit_lite.movement import MovementConfig, PlanetMovement  # noqa: E402
+from orbit_lite.movement_step import (  # noqa: E402
+    LaunchEntries,
+    apply_private_planned_launches,
+    infer_planned_launches_from_entries,
+)
+from orbit_lite.planner_core import entries_to_sparse_payload  # noqa: E402
 
 HORIZON = 18
 FIDELITY_SEEDS = 200
@@ -146,6 +154,52 @@ def _first_field_diff(seed: int, states: list[dict], movement: PlanetMovement) -
     return None
 
 
+def _compare_projected_garrison(
+    *,
+    tag: str,
+    seed: int,
+    states: list[dict],
+    movement: PlanetMovement,
+    owner_by_step: torch.Tensor,
+    ships_by_step: torch.Tensor,
+    start_step: int = 0,
+) -> str | None:
+    for step_idx, state in enumerate(states[start_step:], start=start_step):
+        truth_by_id = {int(p["id"]): p for p in state["planets"]}
+        for slot, planet_id in enumerate(movement.planet_ids.tolist()):
+            if int(planet_id) < 0:
+                continue
+            truth = truth_by_id.get(int(planet_id))
+            projected_alive = bool(movement.alive_by_step[step_idx, slot].item())
+            if truth is None:
+                if projected_alive:
+                    return (
+                        f"[{tag}] seed={seed} step={step_idx} planet={planet_id} "
+                        "field=alive expected=False projected=True"
+                    )
+                continue
+            if not projected_alive:
+                return (
+                    f"[{tag}] seed={seed} step={step_idx} planet={planet_id} "
+                    "field=alive expected=True projected=False"
+                )
+            expected_owner = int(truth["owner"])
+            projected_owner = int(owner_by_step[slot, step_idx].item())
+            if projected_owner != expected_owner:
+                return (
+                    f"[{tag}] seed={seed} step={step_idx} planet={planet_id} "
+                    f"field=owner expected={expected_owner} projected={projected_owner}"
+                )
+            expected_ships = int(truth["ships"])
+            projected_ships = int(ships_by_step[slot, step_idx].item())
+            if projected_ships != expected_ships:
+                return (
+                    f"[{tag}] seed={seed} step={step_idx} planet={planet_id} "
+                    f"field=ships expected={expected_ships} projected={projected_ships}"
+                )
+    return None
+
+
 def test_movement_l1_l2_matches_rust_do_nothing_rollout() -> None:
     for seed in range(FIDELITY_SEEDS):
         states = _rollout_truth(seed, HORIZON)
@@ -158,6 +212,175 @@ def test_movement_l1_l2_matches_rust_do_nothing_rollout() -> None:
             ),
         )
         diff = _first_field_diff(seed, states, movement)
+        assert diff is None, diff
+
+
+def _make_random_launch_entries(state: dict, movement: PlanetMovement, *, seed: int) -> LaunchEntries:
+    rng = random.Random(104_729 + seed)
+    owned_slots = [
+        slot
+        for slot, planet_id in enumerate(movement.planet_ids.tolist())
+        if int(planet_id) >= 0
+        and any(int(p["id"]) == int(planet_id) and int(p["owner"]) == 0 and int(p["ships"]) >= 4 for p in state["planets"])
+    ]
+    target_slots = [
+        slot for slot, planet_id in enumerate(movement.planet_ids.tolist()) if int(planet_id) >= 0
+    ]
+    if not owned_slots or len(target_slots) < 2:
+        return LaunchEntries(
+            source_slots=torch.zeros(0, dtype=torch.long),
+            target_slots=torch.zeros(0, dtype=torch.long),
+            ships=torch.zeros(0, dtype=torch.float64),
+            angle=torch.zeros(0, dtype=torch.float64),
+            eta=torch.zeros(0, dtype=torch.float64),
+            valid=torch.zeros(0, dtype=torch.bool),
+        )
+
+    ships_by_slot = {
+        slot: int(p["ships"])
+        for slot, planet_id in enumerate(movement.planet_ids.tolist())
+        for p in state["planets"]
+        if int(p["id"]) == int(planet_id)
+    }
+    rng.shuffle(owned_slots)
+    launch_count = min(rng.randint(1, 3), len(owned_slots))
+    src_rows: list[int] = []
+    tgt_rows: list[int] = []
+    ship_rows: list[float] = []
+    angle_rows: list[float] = []
+    for source_slot in owned_slots[:launch_count]:
+        budget = ships_by_slot[source_slot]
+        ships = max(1, min(budget - 1, rng.randint(1, max(1, budget // 2))))
+        candidates = [slot for slot in target_slots if slot != source_slot]
+        target_slot = rng.choice(candidates)
+        sx = float(movement.x[0, source_slot].item())
+        sy = float(movement.y[0, source_slot].item())
+        tx = float(movement.x[0, target_slot].item())
+        ty = float(movement.y[0, target_slot].item())
+        src_rows.append(source_slot)
+        tgt_rows.append(target_slot)
+        ship_rows.append(float(ships))
+        angle_rows.append(math.atan2(ty - sy, tx - sx))
+        ships_by_slot[source_slot] -= ships
+
+    return LaunchEntries(
+        source_slots=torch.tensor(src_rows, dtype=torch.long),
+        target_slots=torch.tensor(tgt_rows, dtype=torch.long),
+        ships=torch.tensor(ship_rows, dtype=torch.float64),
+        angle=torch.tensor(angle_rows, dtype=torch.float64),
+        eta=torch.ones(len(src_rows), dtype=torch.float64),
+        valid=torch.ones(len(src_rows), dtype=torch.bool),
+    )
+
+
+def _payload_to_moves(payload: dict[str, torch.Tensor]) -> list[list[float]]:
+    count = int(payload["counts"].item())
+    return [
+        [
+            int(payload["from_planet_id"][idx].item()),
+            float(payload["angle"][idx].item()),
+            int(payload["num_ships"][idx].item()),
+        ]
+        for idx in range(count)
+    ]
+
+
+def _rollout_truth_with_initial_moves(
+    *,
+    seed: int,
+    horizon: int,
+    moves: list[list[float]],
+) -> list[dict]:
+    backend = RustBatchBackend(
+        num_envs=1,
+        num_players=2,
+        seed=seed,
+        config=RustConfig(episode_steps=500, enable_comets=False),
+    )
+    state0 = backend.reset(seed)[0]
+    states = [state0]
+    _, next_states = backend.step_with_states([[moves, []]])
+    states.append(next_states[0])
+    for _ in range(horizon - 1):
+        _, next_states = backend.step_with_states([[[], []]])
+        states.append(next_states[0])
+    return states
+
+
+def _project_with_private_launches(
+    *,
+    movement: PlanetMovement,
+    obs_tensors: dict,
+    entries: LaunchEntries,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    launches = infer_planned_launches_from_entries(
+        obs_tensors=obs_tensors,
+        movement=movement,
+        entries=entries,
+        player_id=0,
+    )
+    apply_private_planned_launches(
+        movement=movement,
+        launches=launches,
+        owner_id=0,
+        obs_tensors=obs_tensors,
+    )
+    status = movement.garrison_status(max_horizon=HORIZON)
+    assert status.arrivals_by_owner is not None
+
+    debit = torch.zeros(movement.P, dtype=movement.dtype, device=movement.device)
+    if int(entries.valid.numel()) > 0:
+        source_slots = entries.source_slots.to(device=movement.device, dtype=torch.long)
+        ships = entries.ships.to(device=movement.device, dtype=movement.dtype)
+        valid = entries.valid.to(device=movement.device, dtype=torch.bool)
+        debit.index_put_((source_slots[valid],), ships[valid], accumulate=True)
+
+    owner, ships, _, _ = _run_exact_recurrence(
+        init_owner=status.owner[:, 0].unsqueeze(0),
+        init_ships=(status.ships[:, 0] - debit).clamp(min=0.0).unsqueeze(0),
+        prod=movement.planet_prod.unsqueeze(0),
+        alive=movement.alive_by_step[: HORIZON + 1].transpose(0, 1).unsqueeze(0),
+        arrivals=status.arrivals_by_owner[:, 1:, :].unsqueeze(0),
+    )
+    return owner.squeeze(0), ships.squeeze(0)
+
+
+def test_movement_l3_matches_rust_with_random_valid_launches() -> None:
+    for seed in range(FIDELITY_SEEDS):
+        backend = RustBatchBackend(
+            num_envs=1,
+            num_players=2,
+            seed=seed,
+            config=RustConfig(episode_steps=500, enable_comets=False),
+        )
+        state0 = backend.reset(seed)[0]
+        obs_tensors = _state_to_obs_tensors(state0, player_id=0)
+        movement = PlanetMovement.from_obs_tensors(
+            obs_tensors,
+            config=MovementConfig(
+                movement_horizon=HORIZON,
+                track_fleets=True,
+                player_count=2,
+            ),
+        )
+        entries = _make_random_launch_entries(state0, movement, seed=seed)
+        payload = entries_to_sparse_payload(entries, planet_ids=movement.planet_ids)
+        moves = _payload_to_moves(payload)
+        states = _rollout_truth_with_initial_moves(seed=seed, horizon=HORIZON, moves=moves)
+        owner, ships = _project_with_private_launches(
+            movement=movement,
+            obs_tensors=obs_tensors,
+            entries=entries,
+        )
+        diff = _compare_projected_garrison(
+            tag="FIDELITY-L3",
+            seed=seed,
+            states=states,
+            movement=movement,
+            owner_by_step=owner,
+            ships_by_step=ships,
+            start_step=1,
+        )
         assert diff is None, diff
 
 
