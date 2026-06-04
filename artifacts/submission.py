@@ -763,7 +763,7 @@ def policy_forward(features):
     )
     orbital_opening_window = 10 <= features["step"] <= 13 and neutrals_open and not pressure and not ffa
     opportunistic_expand = (
-        25 <= features["step"] <= 160
+        features["step"] >= 25
         and neutrals_open
         and not pressure
         and features.get("enemy_fleet_ratio", 0.0) < 0.20
