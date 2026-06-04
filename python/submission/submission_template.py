@@ -533,6 +533,16 @@ def _reserve_for_source(source, own_count, enemies, action, obs=None, player=Non
     step = int((obs or {}).get("step", (obs or {}).get("turn", 0)))
     if step >= 30 and action.get("fsm_state") == "OPENING_EXPAND" and incoming_threat <= 0 and _planet_production(source) <= 1:
         reserve = min(reserve, RESERVE_HOME_SHIPS)
+    if (
+        not action.get("ffa")
+        and 120 <= step < 350
+        and own_count >= 5
+        and _planet_production(source) >= 4
+        and not action.get("expand")
+        and not action.get("pressure")
+        and not action.get("total_war")
+    ):
+        reserve = max(reserve, 15)
     if not action.get("ffa") and step >= 350 and not action.get("expand") and not action.get("total_war"):
         reserve = max(reserve, 30)
     if not action.get("ffa") and action.get("total_war") and incoming_threat <= 0:
