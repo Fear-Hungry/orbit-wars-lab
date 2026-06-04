@@ -1066,8 +1066,12 @@ def _select_hammer_target(obs, sources, targets, action, own, enemies, launched_
                 coordination_value += 6.0 * nearby_support + 0.04 * support_ships
             if owner not in (-1, player):
                 coordination_value += 14.0 + 4.0 * _planet_production(target)
+                if action.get("enemy_overextended"):
+                    coordination_value += 18.0 + 3.0 * _planet_production(target) - 0.08 * _planet_ships(target)
             elif action.get("expand"):
                 coordination_value += 6.0 + 3.0 * _planet_production(target)
+                if action.get("enemy_overextended"):
+                    coordination_value -= 6.0
             else:
                 coordination_value -= 8.0
             if best is None or coordination_value > best[0]:
