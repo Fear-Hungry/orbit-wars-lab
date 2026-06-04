@@ -22,8 +22,7 @@ def main():
         actions = []
         for state in states:
             actions.append([greedy_moves(state, pid) for pid in range(args.num_players)])
-        sim.step(actions)
-        states = sim.states()
+        _, states = sim.step_with_states(actions)
         turns += args.num_envs
     dt = time.perf_counter() - t0
     print({"envs": args.num_envs, "steps": args.steps, "turns": turns, "seconds": dt, "turns_per_second": turns / max(dt, 1e-9)})

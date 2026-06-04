@@ -95,9 +95,23 @@ impl PyBatchSimulator {
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
     }
 
+    fn reset_msgpack<'py>(&mut self, py: Python<'py>, seed: u64) -> PyResult<Bound<'py, PyBytes>> {
+        let states = py.detach(|| self.inner.reset(seed));
+        let encoded = rmp_serde::to_vec_named(&states)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(PyBytes::new(py, &encoded))
+    }
+
     fn states_json(&self) -> PyResult<String> {
         serde_json::to_string(&self.inner.states())
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
+    fn states_msgpack<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let states = py.detach(|| self.inner.states());
+        let encoded = rmp_serde::to_vec_named(&states)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(PyBytes::new(py, &encoded))
     }
 
     /// Debug-oriented API: actions[env][player][move] = [from_id, angle, ships].
@@ -127,6 +141,18 @@ impl PyBatchSimulator {
         let outcomes = py.detach(|| self.inner.step(actions));
         serde_json::to_string(&outcomes)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
+    fn step_msgpack<'py>(
+        &mut self,
+        py: Python<'py>,
+        actions_bytes: &[u8],
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let actions = parse_actions_binary(actions_bytes)?;
+        let outcomes = py.detach(|| self.inner.step(actions));
+        let encoded = rmp_serde::to_vec_named(&outcomes)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(PyBytes::new(py, &encoded))
     }
 
     /// Debug-oriented API returning outcomes and post-step states in one JSON payload.

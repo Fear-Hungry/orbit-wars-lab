@@ -291,11 +291,17 @@ mod tests {
     }
 
     fn static_group_count(planets: &[Planet]) -> usize {
-        planets.chunks_exact(4).filter(|group| !is_rotating(&group[0])).count()
+        planets
+            .chunks_exact(4)
+            .filter(|group| !is_rotating(&group[0]))
+            .count()
     }
 
     fn orbiting_group_count(planets: &[Planet]) -> usize {
-        planets.chunks_exact(4).filter(|group| is_rotating(&group[0])).count()
+        planets
+            .chunks_exact(4)
+            .filter(|group| is_rotating(&group[0]))
+            .count()
     }
 
     fn has_diagonal_orbiting_group(planets: &[Planet]) -> bool {

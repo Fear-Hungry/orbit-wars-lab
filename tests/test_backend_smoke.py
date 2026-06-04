@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 from python.agents.submission_adapter import safe_submission_agent
 
@@ -94,6 +96,27 @@ def test_backend_fast_step_matches_json_step_and_states():
 
     assert outcomes == legacy_outcomes
     assert states == legacy_states
+
+
+def test_backend_msgpack_entrypoints_match_json_payloads():
+    try:
+        sim = RustBatchBackend(num_envs=1, num_players=2, seed=0)
+    except BackendUnavailable as exc:
+        pytest.skip(str(exc))
+    if not all(hasattr(sim.sim, name) for name in ("reset_msgpack", "states_msgpack", "step_msgpack")):
+        pytest.skip("local Rust extension does not expose MessagePack entrypoints")
+
+    reset_fast = sim.reset(123)
+    reset_json = json.loads(sim.sim.reset_json(123))
+    assert reset_fast == reset_json
+    assert sim.states() == json.loads(sim.sim.states_json())
+
+    actions = [[[[0, 0.0, 5]], []]]
+    sim.reset(123)
+    step_fast = sim.step(actions)
+    sim.reset(123)
+    step_json = json.loads(sim.sim.step_json(json.dumps(actions)))
+    assert step_fast == step_json
 
 
 def test_backend_rejects_invalid_player_count():

@@ -29,9 +29,8 @@ class RustConfig:
 class RustBatchBackend:
     """Thin debug wrapper around the PyO3 module.
 
-    The current binding uses JSON for simplicity. This is acceptable for smoke
-    tests and parity probes. For serious training, replace step_json/states_json
-    with ndarray zero-copy buffers.
+    The public wrapper prefers binary actions plus MessagePack payloads and
+    keeps JSON fallbacks for older local extensions.
     """
 
     def __init__(self, num_envs: int, num_players: int = 2, seed: int = 0, config: RustConfig | None = None):
@@ -60,12 +59,18 @@ class RustBatchBackend:
         self.num_players = num_players
 
     def reset(self, seed: int) -> list[dict[str, Any]]:
+        if hasattr(self.sim, "reset_msgpack"):
+            return msgpack.unpackb(self.sim.reset_msgpack(seed), raw=False, strict_map_key=False)
         return json.loads(self.sim.reset_json(seed))
 
     def states(self) -> list[dict[str, Any]]:
+        if hasattr(self.sim, "states_msgpack"):
+            return msgpack.unpackb(self.sim.states_msgpack(), raw=False, strict_map_key=False)
         return json.loads(self.sim.states_json())
 
     def step(self, actions: list[list[list[list[float]]]]) -> list[dict[str, Any]]:
+        if hasattr(self.sim, "step_msgpack"):
+            return msgpack.unpackb(self.sim.step_msgpack(_pack_actions_binary(actions)), raw=False, strict_map_key=False)
         return json.loads(self.sim.step_json(json.dumps(actions)))
 
     def step_with_states(self, actions: list[list[list[list[float]]]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
