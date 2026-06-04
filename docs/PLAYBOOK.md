@@ -69,6 +69,18 @@ rtk .venv/bin/python -m scripts.benchmark_submission \
   --out artifacts/candidate_sanity_8seed.json
 ```
 
+Para usar o Producer público como oponente externo local:
+
+```bash
+rtk .venv/bin/python -m scripts.prepare_producer_opponent
+
+rtk .venv/bin/python -m scripts.benchmark_submission \
+  --submission artifacts/submission.py \
+  --opponents artifacts/submission_v_old.py artifacts/opponents/producer_agent.py \
+  --seeds 16 --episode-steps 500 --jobs 4 --skip-4p \
+  --out artifacts/champion_vs_old_producer_16seed.json
+```
+
 Regra operacional:
 
 - `16` seeds: smoke, legalidade e regressão grosseira;
