@@ -94,8 +94,8 @@ class OrbitWarsGymEnv(gym.Env):
         actions[0][0] = decode_discrete_action(self.state, 0, action, self.decoder_cfg)
         for pid in range(1, self.num_players):
             actions[0][pid] = self.opponent_policy(self.state, pid)
-        outcomes = self.backend.step(actions)
-        next_state = self.backend.states()[0]
+        outcomes, states = self.backend.step_with_states(actions)
+        next_state = states[0]
         self.state = next_state
         obs = encode_state(self.state, player=0, cfg=self.encoder_cfg)
         base_shaping_reward = self._base_shaping_reward(previous_state, next_state, player=0, player_moves=actions[0][0])

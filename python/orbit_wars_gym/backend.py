@@ -61,3 +61,9 @@ class RustBatchBackend:
 
     def step(self, actions: list[list[list[list[float]]]]) -> list[dict[str, Any]]:
         return json.loads(self.sim.step_json(json.dumps(actions)))
+
+    def step_with_states(self, actions: list[list[list[list[float]]]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        if not hasattr(self.sim, "step_with_states_json"):
+            return self.step(actions), self.states()
+        payload = json.loads(self.sim.step_with_states_json(json.dumps(actions)))
+        return payload[0], payload[1]

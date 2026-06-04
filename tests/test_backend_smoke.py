@@ -61,6 +61,22 @@ def test_backend_step_accepts_official_move_triplets():
     assert "rewards" in outcomes[0]
 
 
+def test_backend_step_with_states_returns_outcomes_and_next_state():
+    try:
+        sim = RustBatchBackend(num_envs=1, num_players=2, seed=0)
+    except BackendUnavailable as exc:
+        pytest.skip(str(exc))
+
+    sim.reset(123)
+    outcomes, states = sim.step_with_states([[[[0, 0.0, 5]], []]])
+
+    assert isinstance(outcomes, list)
+    assert isinstance(states, list)
+    assert len(outcomes) == len(states) == 1
+    assert "rewards" in outcomes[0]
+    assert "planets" in states[0]
+
+
 def test_backend_rejects_invalid_player_count():
     with pytest.raises(ValueError, match="2 or 4 players"):
         RustBatchBackend(num_envs=1, num_players=3, seed=0)

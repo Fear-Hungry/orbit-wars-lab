@@ -113,8 +113,9 @@ def _export_runtime_validation(
                     moves = []
                 actions[player] = moves
 
-            outcome = backend.step([actions])[0]
-            state = backend.states()[0]
+            outcomes, states = backend.step_with_states([actions])
+            outcome = outcomes[0]
+            state = states[0]
             if outcome["done"]:
                 break
         all_done = all_done and bool(outcome["done"])

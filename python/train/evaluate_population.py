@@ -314,8 +314,9 @@ def _run_match(players: list[AgentSpec], seed: int, cfg: EvaluationConfig) -> tu
             actions[idx] = moves
 
         previous_state = state
-        outcome = backend.step([actions])[0]
-        state = backend.states()[0]
+        outcomes, states = backend.step_with_states([actions])
+        outcome = outcomes[0]
+        state = states[0]
         for idx, spec in enumerate(players):
             neutral_captures, enemy_captures = _capture_counts(previous_state, state, idx)
             per_player[spec.id]["neutral_captures"] += float(neutral_captures)

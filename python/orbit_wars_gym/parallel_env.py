@@ -43,8 +43,8 @@ class OrbitWarsParallelEnv(ParallelEnv):
         for i, agent in enumerate(self.possible_agents):
             if agent in actions:
                 packed[0][i] = decode_discrete_action(self.state, i, actions[agent])
-        outcomes = self.backend.step(packed)
-        self.state = self.backend.states()[0]
+        outcomes, states = self.backend.step_with_states(packed)
+        self.state = states[0]
         done = bool(outcomes[0]["done"])
         rewards = {agent: float(outcomes[0]["rewards"][i]) if done else 0.0 for i, agent in enumerate(self.possible_agents)}
         terminations = {agent: done for agent in self.possible_agents}

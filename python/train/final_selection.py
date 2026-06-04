@@ -101,8 +101,9 @@ def _run_match_with_trace(players: list[AgentSpec], seed: int, cfg: FinalSelecti
                 moves = []
             actions[idx] = moves
 
-        outcome = backend.step([actions])[0]
-        state = backend.states()[0]
+        outcomes, states = backend.step_with_states([actions])
+        outcome = outcomes[0]
+        state = states[0]
         trace.append(
             {
                 "turn": len(trace),

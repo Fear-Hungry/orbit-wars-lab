@@ -315,8 +315,9 @@ def diagnose_match(
                 }
             )
 
-        outcome = backend.step([actions])[0]
-        state = backend.states()[0]
+        outcomes, states = backend.step_with_states([actions])
+        outcome = outcomes[0]
+        state = states[0]
         captures.extend(_capture_events(state_before, state, turn + 1))
         if outcome["done"]:
             if not should_sample:

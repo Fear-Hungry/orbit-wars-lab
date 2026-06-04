@@ -43,8 +43,8 @@ def test_phase0_env_can_run_with_comets_past_official_spawn_step():
     env.reset(seed=123)
 
     for _ in range(60):
-        env.backend.step([[[], []]])
-        state = env.backend.states()[0]
+        _, states = env.backend.step_with_states([[[], []]])
+        state = states[0]
     assert state["comets"] != []
     assert state["comet_planet_ids"] != []
 

@@ -52,4 +52,21 @@ impl BatchSimulator {
             })
             .collect()
     }
+
+    pub fn step_with_states(
+        &mut self,
+        actions: Vec<Vec<Vec<Move>>>,
+    ) -> (Vec<StepOutcome>, Vec<GameState>) {
+        self.games
+            .par_iter_mut()
+            .enumerate()
+            .map(|(i, game)| {
+                let empty: Vec<Vec<Move>> = vec![Vec::new(); self.num_players];
+                let a = actions.get(i).unwrap_or(&empty);
+                let outcome = game.step(a);
+                let state = game.state.clone();
+                (outcome, state)
+            })
+            .unzip()
+    }
 }

@@ -48,7 +48,15 @@ impl PyConfig {
         max_planets: usize,
         max_fleets: usize,
     ) -> Self {
-        Self { episode_steps, act_timeout, ship_speed, comet_speed, enable_comets, max_planets, max_fleets }
+        Self {
+            episode_steps,
+            act_timeout,
+            ship_speed,
+            comet_speed,
+            enable_comets,
+            max_planets,
+            max_fleets,
+        }
     }
 }
 
@@ -61,21 +69,34 @@ struct PyBatchSimulator {
 impl PyBatchSimulator {
     #[new]
     #[pyo3(signature = (num_envs, num_players=2, seed=0, config=None))]
-    fn new(num_envs: usize, num_players: usize, seed: u64, config: Option<PyConfig>) -> PyResult<Self> {
+    fn new(
+        num_envs: usize,
+        num_players: usize,
+        seed: u64,
+        config: Option<PyConfig>,
+    ) -> PyResult<Self> {
         if num_players != 2 && num_players != 4 {
-            return Err(pyo3::exceptions::PyValueError::new_err("Orbit Wars supports only 2 or 4 players"));
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Orbit Wars supports only 2 or 4 players",
+            ));
         }
-        let cfg: Config = config.unwrap_or_else(|| PyConfig::new(500, 1.0, 6.0, 4.0, true, 96, 4096)).into();
-        Ok(Self { inner: BatchSimulator::new(num_envs, num_players, cfg, seed) })
+        let cfg: Config = config
+            .unwrap_or_else(|| PyConfig::new(500, 1.0, 6.0, 4.0, true, 96, 4096))
+            .into();
+        Ok(Self {
+            inner: BatchSimulator::new(num_envs, num_players, cfg, seed),
+        })
     }
 
     fn reset_json(&mut self, seed: u64) -> PyResult<String> {
         let states = self.inner.reset(seed);
-        serde_json::to_string(&states).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+        serde_json::to_string(&states)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
     }
 
     fn states_json(&self) -> PyResult<String> {
-        serde_json::to_string(&self.inner.states()).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+        serde_json::to_string(&self.inner.states())
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
     }
 
     /// Debug-oriented API: actions[env][player][move] = [from_id, angle, ships].
@@ -92,14 +113,46 @@ impl PyBatchSimulator {
                     .map(|player_actions| {
                         player_actions
                             .into_iter()
-                            .map(|m| Move { from_planet_id: m[0] as i32, angle: m[1], ships: m[2] as i32 })
+                            .map(|m| Move {
+                                from_planet_id: m[0] as i32,
+                                angle: m[1],
+                                ships: m[2] as i32,
+                            })
                             .collect()
                     })
                     .collect()
             })
             .collect();
         let outcomes = py.detach(|| self.inner.step(actions));
-        serde_json::to_string(&outcomes).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+        serde_json::to_string(&outcomes)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
+    /// Debug-oriented API returning outcomes and post-step states in one JSON payload.
+    fn step_with_states_json(&mut self, py: Python<'_>, actions_json: &str) -> PyResult<String> {
+        let raw: Vec<Vec<Vec<[f64; 3]>>> = serde_json::from_str(actions_json)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let actions: Vec<Vec<Vec<Move>>> = raw
+            .into_iter()
+            .map(|env_actions| {
+                env_actions
+                    .into_iter()
+                    .map(|player_actions| {
+                        player_actions
+                            .into_iter()
+                            .map(|m| Move {
+                                from_planet_id: m[0] as i32,
+                                angle: m[1],
+                                ships: m[2] as i32,
+                            })
+                            .collect()
+                    })
+                    .collect()
+            })
+            .collect();
+        let payload = py.detach(|| self.inner.step_with_states(actions));
+        serde_json::to_string(&payload)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
     }
 }
 
