@@ -913,6 +913,11 @@ def _target_value(obs, source, target, committed, action, own, enemies):
             safe_orbital_neutral = production >= 4 and distance <= 35.0 and enemy_proximity >= distance * 1.1
             if safe_orbital_neutral:
                 value += 14.0 + 3.0 * production
+        if action.get("adaptive_opening_expand"):
+            production_gap = max(0.0, 1.0 - float(action.get("production_ratio", 1.0)))
+            safe_adaptive_neutral = production >= 3 and distance <= 42.0 and enemy_proximity >= distance * 0.85
+            if safe_adaptive_neutral:
+                value += 10.0 + 5.0 * production + 18.0 * production_gap
         if action.get("fsm_state") == "OPENING_EXPAND" and own_incoming > 0 and ships >= 12:
             value += min(48.0, 1.4 * own_incoming + 8.0 * production)
             overcommit = own_incoming - 2.2 * max(1, ships + MIN_CAPTURE_MARGIN)
