@@ -1021,7 +1021,12 @@ def _target_recapture_penalty(obs, source, target, ships, target_xy, action, ene
     player = int(obs.get("player", 0))
     if action.get("ffa") or action.get("total_war"):
         return 0.0
-    if _planet_owner(target) in (-1, player):
+    owner = _planet_owner(target)
+    production = _planet_production(target)
+    step = int(obs.get("step", obs.get("turn", 0)))
+    if owner == player:
+        return 0.0
+    if owner == -1 and (step < 80 or production < 3 or action.get("adaptive_opening_expand")):
         return 0.0
 
     source_xy = (_planet_x(source), _planet_y(source))
@@ -1037,7 +1042,6 @@ def _target_recapture_penalty(obs, source, target, ships, target_xy, action, ene
     if after_owner != player:
         return 0.0
 
-    production = _planet_production(target)
     best_penalty = 0.0
     for enemy in enemies:
         enemy_id = _planet_id(enemy)
