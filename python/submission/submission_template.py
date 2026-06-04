@@ -998,6 +998,21 @@ def _opponent_response_penalty(obs, source, target, ships, target_xy, action, en
     return best_penalty
 
 
+def _safe_opening_neutral(source, target, enemies):
+    if _planet_owner(target) != -1 or _planet_production(target) < 4:
+        return False
+    source_xy = (_planet_x(source), _planet_y(source))
+    target_xy = (_planet_x(target), _planet_y(target))
+    distance = _distance(source_xy, target_xy)
+    if distance > 30.0:
+        return False
+    enemy_proximity = min(
+        (_distance((_planet_x(enemy), _planet_y(enemy)), target_xy) for enemy in enemies),
+        default=distance,
+    )
+    return enemy_proximity >= distance * 0.9
+
+
 def _select_hammer_target(obs, sources, targets, action, own, enemies, launched_by_source):
     if len(sources) < 2 or not targets:
         return None
@@ -1100,8 +1115,17 @@ def decode(action, obs):
 
         best = None
         source_xy = (_planet_x(source), _planet_y(source))
+        opening_safe_neutrals = set()
+        if not action.get("ffa") and action.get("fsm_state") == "OPENING_EXPAND" and step <= 10:
+            opening_safe_neutrals = {
+                _planet_id(target)
+                for target in targets
+                if _safe_opening_neutral(source, target, enemies)
+            }
         for target in targets:
             target_id = _planet_id(target)
+            if opening_safe_neutrals and _planet_owner(target) == -1 and target_id not in opening_safe_neutrals:
+                continue
             committed = committed_by_target.get(target_id, 0)
             score, required, target_xy = _target_value(obs, source, target, committed, action, own, enemies)
             ships = min(available, required)
