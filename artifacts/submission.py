@@ -1188,6 +1188,24 @@ def _safe_opening_neutral(source, target, enemies):
     return True
 
 
+def _opening_neutral_snipable(source, target, enemies):
+    if _planet_owner(target) != -1:
+        return False
+    source_xy = (_planet_x(source), _planet_y(source))
+    target_xy = (_planet_x(target), _planet_y(target))
+    required = max(MIN_SHIPS_TO_LAUNCH, _planet_ships(target) + MIN_CAPTURE_MARGIN)
+    my_eta = max(1, ceil(_distance(source_xy, target_xy) / _fleet_speed(required)))
+    for enemy in enemies:
+        enemy_attack = max(0, _planet_ships(enemy) - RESERVE_HOME_SHIPS)
+        if enemy_attack < required:
+            continue
+        enemy_xy = (_planet_x(enemy), _planet_y(enemy))
+        enemy_eta = max(1, ceil(_distance(enemy_xy, target_xy) / _fleet_speed(enemy_attack)))
+        if enemy_eta <= my_eta + 2:
+            return True
+    return False
+
+
 def _select_hammer_target(obs, sources, targets, action, own, enemies, launched_by_source):
     if len(sources) < 2 or not targets:
         return None
@@ -1304,6 +1322,13 @@ def decode(action, obs):
         for target in targets:
             target_id = _planet_id(target)
             if opening_safe_neutrals and _planet_owner(target) == -1 and target_id not in opening_safe_neutrals:
+                continue
+            if (
+                not opening_safe_neutrals
+                and not action.get("ffa")
+                and action.get("opening_stage") == "SAFE_NEUTRALS"
+                and _opening_neutral_snipable(source, target, enemies)
+            ):
                 continue
             committed = committed_by_target.get(target_id, 0)
             score, required, target_xy = _target_value(obs, source, target, committed, action, own, enemies)

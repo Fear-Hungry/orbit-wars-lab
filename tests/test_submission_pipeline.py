@@ -554,6 +554,34 @@ def test_exported_submission_rejects_opening_neutral_with_enemy_snipe_eta(tmp_pa
     enemy = [2, 1, 66.0, 20.0, 2.0, 70, 4]
 
     assert not module._safe_opening_neutral(source, target, [enemy])
+    assert module._opening_neutral_snipable(source, target, [enemy])
+
+
+def test_exported_submission_skips_snipable_opening_neutral_when_no_safe_neutral(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_opening_skip_snipable")
+    module._PROFILE_STATE.clear()
+    obs = {
+        "player": 0,
+        "step": 6,
+        "angular_velocity": 0.0,
+        "planets": [
+            [0, 0, 20.0, 20.0, 2.0, 50, 3],
+            [1, -1, 42.0, 20.0, 2.0, 8, 5],
+            [2, -1, 20.0, 34.0, 2.0, 7, 3],
+            [3, 1, 52.0, 20.0, 2.0, 70, 4],
+        ],
+        "fleets": [],
+    }
+
+    action = module.policy_forward(module.encode(obs))
+    moves = module.decode(action, obs)
+
+    assert action["opening_stage"] == "SAFE_NEUTRALS"
+    assert moves
+    source_xy = (20.0, 20.0)
+    snipable_angle = module._angle(source_xy, (42.0, 20.0))
+    fallback_angle = module._angle(source_xy, (20.0, 34.0))
+    assert module._angle_delta(moves[0][1], fallback_angle) < module._angle_delta(moves[0][1], snipable_angle)
 
 
 def test_exported_submission_expands_when_behind_on_production_in_opening(tmp_path: Path):
