@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import random
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
@@ -11,12 +12,20 @@ from statistics import fmean
 from time import perf_counter
 from typing import Any
 
-from python.agents.registry import Policy, get_heuristic_policies
+from python.agents.registry import (
+    PRODUCER_AGENT_PATH,
+    PRODUCER_SETUP_COMMAND,
+    Policy,
+    get_heuristic_policies,
+)
 from python.orbit_wars_gym.backend import RustBatchBackend, RustConfig
 from python.orbit_wars_gym.observation import to_official_observation
 from python.orbit_wars_gym.rules import moves_are_legal, normalized_margin
 
 HEURISTIC_POLICIES = get_heuristic_policies()
+DEFAULT_OPPONENTS = ["producer"]
+DEFAULT_SEEDS = 16
+DEFAULT_JOBS = max(1, os.cpu_count() or 1)
 _POLICY_CACHE: dict[str, Policy] = {}
 
 
@@ -46,6 +55,10 @@ def _submission_runtime(agent: Callable[[dict[str, Any]], list[list[float]]]) ->
 
 
 def _resolve_opponent(spec: str) -> tuple[str, Policy]:
+    if spec == "producer" and not PRODUCER_AGENT_PATH.exists():
+        raise RuntimeError(
+            f"Producer opponent artifact is missing. Run `{PRODUCER_SETUP_COMMAND}` first."
+        )
     if spec in HEURISTIC_POLICIES:
         return spec, HEURISTIC_POLICIES[spec]
     path = Path(spec)
@@ -100,7 +113,9 @@ def _run_match(
         num_envs=1,
         num_players=len(players),
         seed=seed,
-        config=RustConfig(episode_steps=episode_steps, enable_comets=enable_comets, act_timeout=act_timeout),
+        config=RustConfig(
+            episode_steps=episode_steps, enable_comets=enable_comets, act_timeout=act_timeout
+        ),
     )
     state = backend.reset(seed)[0]
     runtime_stats = [_empty_runtime_stats() for _ in players]
@@ -215,7 +230,8 @@ def _summary_from_records(records: list[dict[str, float]]) -> dict[str, float]:
         "mean_score_margin": fmean(record["normalized_margin"] for record in records),
         "crash_rate": sum(record["crashes"] for record in records) / max(decisions, 1.0),
         "timeout_rate": sum(record["timeouts"] for record in records) / max(decisions, 1.0),
-        "invalid_action_rate": sum(record["invalid_actions"] for record in records) / max(decisions, 1.0),
+        "invalid_action_rate": sum(record["invalid_actions"] for record in records)
+        / max(decisions, 1.0),
         "mean_decision_ms": 1000.0 * elapsed / max(decisions, 1.0),
     }
 
@@ -386,11 +402,11 @@ def benchmark_four_player_spec(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--submission", default="submission.py")
-    parser.add_argument("--seeds", type=int, default=8)
+    parser.add_argument("--seeds", type=int, default=DEFAULT_SEEDS)
     parser.add_argument("--episode-steps", type=int, default=500)
     parser.add_argument("--act-timeout", type=float, default=1.0)
-    parser.add_argument("--opponents", nargs="+", default=list(HEURISTIC_POLICIES))
-    parser.add_argument("--jobs", type=int, default=1)
+    parser.add_argument("--opponents", nargs="+", default=DEFAULT_OPPONENTS)
+    parser.add_argument("--jobs", type=int, default=DEFAULT_JOBS)
     parser.add_argument("--skip-2p", action="store_true")
     parser.add_argument("--skip-4p", action="store_true")
     parser.add_argument("--disable-comets", action="store_true")
@@ -404,7 +420,7 @@ def main() -> None:
     try:
         for spec in args.opponents:
             _resolve_opponent(spec)
-    except ValueError as exc:
+    except (RuntimeError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
 
     report: dict[str, Any] = {

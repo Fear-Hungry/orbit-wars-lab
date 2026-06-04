@@ -5,7 +5,8 @@ Registro curto para comparar ideias de heurística, decoder, modelo e liga.
 ## Como registrar
 
 Use uma linha por hipótese testada. Mudanças no agente só podem ser commitadas depois de registrar
-o antes/depois contra a régua honesta: `submission_v_old.py` + heurísticos principais.
+a margem normalizada antes/depois contra a régua decisora: Producer nomeado/local. `submission_v_old.py`,
+`greedy` e `rush` entram só como sanity de crash/legalidade.
 
 ```text
 YYYY-MM-DD | ideia | comando | antes | depois | resultado | decisão
@@ -23,20 +24,21 @@ Métricas úteis:
 
 ## Baseline atual
 
-Artefato: `artifacts/submission.py`
+Artefato decisor: `artifacts/submission_producer.tar.gz`
 
-Régua honesta: `artifacts/baseline_96seed.json`
+Régua honesta: Producer local em `artifacts/opponents/producer_agent.py`
 
 Resumo da régua honesta conhecida:
 
-- 2p vs `submission_v_old`: `0.58333`, margem `0.16244` em `192` jogos;
-- sanity 8 seeds vs `greedy`: `1.00000`, margem `1.00000`;
-- sanity 8 seeds vs `rush`: `1.00000`, margem `1.00000`;
-- sanity 8 seeds 4p misto: `1.00000`, margem `1.00000`;
+- mirror Producer vs Producer: `0.50000`, margem `0.00000`, `mean_ms=83.99`;
+- Producer vs `artifacts/submission.py`: `1.00000`, margem `1.00000`, `mean_ms=102.24`;
+- `artifacts/submission.py` vs Producer: `0.03125`, margem `-0.96326`;
+- `submission_v_old.py`, `greedy`, `rush` e 4p: sanity técnico de crash/legalidade;
 - crashes/timeouts/ações inválidas: `0.0`.
 
-Régua decisora: `submission_v_old`, `96` seeds, `jobs=4`, `--skip-4p`; use
-`scripts.compare_benchmark_significance` e priorize os vereditos `margin_*`/`paired_*`.
+Régua decisora: margem normalizada contra Producer, `96` seeds, `jobs=4`, `--skip-4p`.
+Promova apenas candidato com margem média `>= 0.0` contra Producer e sem regressão significativa;
+use `scripts.compare_benchmark_significance` e priorize os vereditos `margin_*`/`paired_*`.
 
 Regra Kaggle: não julgar submissão pelo score imediato. Aguardar cerca de 1 hora para o score
 estabilizar antes de concluir se uma mudança melhorou ou piorou.
@@ -45,7 +47,7 @@ estabilizar antes de concluir se uma mudança melhorou ou piorou.
 
 ```text
 2026-06-04 | baseline decisor + âncora Kaggle | rtk .venv/bin/python -m scripts.benchmark_submission --submission artifacts/submission.py --opponents artifacts/submission_v_old.py --seeds 96 --episode-steps 500 --jobs 4 --skip-4p --out artifacts/baseline_96seed.json; rtk kaggle competitions submit -c orbit-wars -f artifacts/submission.py -m "honest champion: 0.583 vs old @192 games, margin 0.162" | régua antiga 16 seeds saturada/ruidosa | vs old=0.58333, margin=0.16244, games=192, mean_ms=11.89, crash/timeout/invalid=0; Kaggle ref=53364997 COMPLETE publicScore=579.3 | cria ponto de correlação local↔leaderboard com amostra decisora | manter como primeira âncora local↔LB, mas aguardar estabilização antes de inferir ranking final
-2026-06-04 | Producer como oponente externo local | rtk .venv/bin/python -m scripts.prepare_producer_opponent; rtk .venv/bin/python -m scripts.benchmark_submission --submission artifacts/submission.py --opponents artifacts/submission_v_old.py artifacts/opponents/producer_agent.py --seeds 16 --episode-steps 500 --jobs 4 --skip-4p --out artifacts/champion_vs_old_producer_16seed.json | sem oponente externo; primeira tentativa inválida porque Producer crashava com observação dict/list mista | validado sem crash nos seeds 0-3/lados; vs old=0.65625, margin=0.28712; vs producer=0.03125, margin=-0.96326; crash/timeout/invalid do champion=0 | gap real aparece: campeão atual praticamente não vence Producer | tornar {old, producer} a régua de candidato 2p; próximo agente precisa planner completo de produção/orçamento global/redistribuição
+2026-06-04 | Producer como oponente externo local | rtk .venv/bin/python -m scripts.prepare_producer_opponent; rtk .venv/bin/python -m scripts.benchmark_submission --submission artifacts/submission.py --opponents artifacts/submission_v_old.py artifacts/opponents/producer_agent.py --seeds 16 --episode-steps 500 --jobs 4 --skip-4p --out artifacts/champion_vs_old_producer_16seed.json | sem oponente externo; primeira tentativa inválida porque Producer crashava com observação dict/list mista | validado sem crash nos seeds 0-3/lados; vs old=0.65625, margin=0.28712; vs producer=0.03125, margin=-0.96326; crash/timeout/invalid do champion=0 | gap real aparece: campeão atual praticamente não vence Producer | usar Producer como régua decisora de candidato 2p; old fica sanity técnico; próximo agente precisa planner completo de produção/orçamento global/redistribuição
 2026-06-04 | comparar pico LB 2200186 contra old+Producer | rtk git show 2200186:artifacts/submission.py > artifacts/submission_2200186_frontier.py; rtk .venv/bin/python -m scripts.benchmark_submission --submission artifacts/submission_2200186_frontier.py --opponents artifacts/submission_v_old.py artifacts/opponents/producer_agent.py --seeds 16 --episode-steps 500 --jobs 4 --skip-4p --out artifacts/frontier_2200186_vs_old_producer_16seed.json | atual: old=0.65625 margin=0.28712; producer=0.03125 margin=-0.96326; LB oscilou 449.4->512.0 na ref 53364997 | 2200186: old=0.56250 margin=0.09962; producer=0.03125 margin=-0.96680; crash/timeout/invalid=0 | pico LB não mostra superioridade local contra Producer; ambos são esmagados pelo Producer | não voltar cegamente para 2200186; usar Producer como alvo de planner completo
 2026-06-04 | empacotar Producer fiel como submissão autocontida | rtk .venv/bin/python -m scripts.prepare_producer_opponent; rtk .venv/bin/python -m scripts.package_producer_submission --out artifacts/submission_producer.tar.gz; rtk .venv/bin/python -m scripts.benchmark_submission --submission artifacts/opponents/producer_agent.py --opponents artifacts/opponents/producer_agent.py --seeds 4 --episode-steps 500 --jobs 4 --skip-4p --out artifacts/producer_mirror_4seed.json; rtk .venv/bin/python -m scripts.benchmark_submission --submission artifacts/opponents/producer_agent.py --opponents artifacts/submission.py --seeds 4 --episode-steps 500 --jobs 4 --skip-4p --out artifacts/producer_as_submission_vs_champion_4seed.json | champion vs Producer=0.03125, margin=-0.96326 | mirror Producer=0.50000 margin=0.00000 mean_ms=83.99; Producer vs champion=1.00000 margin=1.00000 mean_ms=102.24; crash/timeout/invalid=0; tar=53.1KB | port fiel validado; trabalho é empacotamento, não rederivação | submeter tar.gz como novo piso/meta baseline
 2026-06-04 | planner 2p simplificado por produção projetada + orçamento global | rtk .venv/bin/python -m scripts.export_submission --out artifacts/submission_candidate_producer_objective.py; rtk .venv/bin/python -m scripts.benchmark_submission --submission artifacts/submission_candidate_producer_objective.py --opponents artifacts/submission_v_old.py artifacts/opponents/producer_agent.py --seeds 4 --episode-steps 500 --jobs 4 --skip-4p --out artifacts/producer_objective_4seed.json | champion_16: old=0.65625 margin=0.28712; producer=0.03125 margin=-0.96326 | smoke 4 seeds: old=0.50000 margin=0.00000; producer=0.00000 margin=-1.00000; crash/timeout/invalid=0 | objetivo simplificado não reproduz Producer e piora old sem ganhar Producer | rejeitar e reverter; precisa planner fiel com shortlist/estado futuro/redistribuição integrada, não score escalar simples

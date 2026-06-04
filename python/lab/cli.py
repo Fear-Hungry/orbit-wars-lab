@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -16,6 +17,9 @@ DEFAULT_BENCHMARK = ARTIFACTS / "submission_benchmark.json"
 DEFAULT_EVALUATION = ARTIFACTS / "evaluation_report.json"
 DEFAULT_HOF_STATE = ARTIFACTS / "hall_of_fame.json"
 DEFAULT_MAP_ELITES_STATE = ARTIFACTS / "map_elites.json"
+DEFAULT_BENCHMARK_OPPONENTS = ["producer"]
+DEFAULT_BENCHMARK_SEEDS = 16
+DEFAULT_JOBS = max(1, os.cpu_count() or 1)
 
 
 def _repo_path(value: str | Path) -> Path:
@@ -65,6 +69,8 @@ def _benchmark_command(args: argparse.Namespace) -> list[str]:
         str(args.episode_steps),
         "--act-timeout",
         str(args.act_timeout),
+        "--jobs",
+        str(args.jobs),
         "--out",
         _display_path(args.out),
     )
@@ -117,6 +123,7 @@ def _cmd_quick(args: argparse.Namespace) -> int:
         seeds=args.seeds,
         episode_steps=args.episode_steps,
         act_timeout=args.act_timeout,
+        jobs=args.jobs,
         out=args.out,
         opponents=args.opponents,
         skip_2p=False,
@@ -204,14 +211,13 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--dry-run", action="store_true")
     export.set_defaults(func=_cmd_export)
 
-    bench = sub.add_parser(
-        "bench-submission", help="benchmark a submission against local heuristics"
-    )
+    bench = sub.add_parser("bench-submission", help="benchmark a submission against Producer")
     bench.add_argument("--submission", default=str(DEFAULT_SUBMISSION))
-    bench.add_argument("--seeds", type=int, default=3)
+    bench.add_argument("--seeds", type=int, default=DEFAULT_BENCHMARK_SEEDS)
     bench.add_argument("--episode-steps", type=int, default=500)
     bench.add_argument("--act-timeout", type=float, default=1.0)
-    bench.add_argument("--opponents", nargs="+", default=list(HEURISTIC_NAMES))
+    bench.add_argument("--jobs", type=int, default=DEFAULT_JOBS)
+    bench.add_argument("--opponents", nargs="+", default=DEFAULT_BENCHMARK_OPPONENTS)
     bench.add_argument("--skip-2p", action="store_true")
     bench.add_argument("--skip-4p", action="store_true")
     bench.add_argument("--disable-comets", action="store_true")
@@ -219,13 +225,17 @@ def build_parser() -> argparse.ArgumentParser:
     bench.add_argument("--dry-run", action="store_true")
     bench.set_defaults(func=_cmd_benchmark)
 
-    quick = sub.add_parser("quick", help="export and run a short submission benchmark")
+    quick = sub.add_parser(
+        "quick",
+        help="export and run a short Producer smoke benchmark; not a promotion gate",
+    )
     quick.add_argument("--checkpoint")
     quick.add_argument("--submission", default=str(DEFAULT_SUBMISSION))
     quick.add_argument("--seeds", type=int, default=2)
     quick.add_argument("--episode-steps", type=int, default=128)
     quick.add_argument("--act-timeout", type=float, default=1.0)
-    quick.add_argument("--opponents", nargs="+", default=list(HEURISTIC_NAMES))
+    quick.add_argument("--jobs", type=int, default=DEFAULT_JOBS)
+    quick.add_argument("--opponents", nargs="+", default=DEFAULT_BENCHMARK_OPPONENTS)
     quick.add_argument("--disable-comets", action="store_true")
     quick.add_argument("--out", default=str(DEFAULT_BENCHMARK))
     quick.add_argument("--dry-run", action="store_true")
