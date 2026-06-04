@@ -1197,7 +1197,11 @@ def decode(action, obs):
             ships = min(available, required)
             if action.get("orbital_opening_window") and _planet_owner(target) == -1 and _is_rotating_planet(target):
                 ships = min(available, max(ships, int(available * 0.55)))
-            if target_id in used_targets and required <= MIN_SHIPS_TO_LAUNCH:
+            if (
+                target_id in used_targets
+                and not (target_id == action.get("hammer_target_id") and action.get("enemy_overextended"))
+                and required <= MIN_SHIPS_TO_LAUNCH
+            ):
                 continue
             if required > available:
                 score -= 6.0 + 0.35 * (required - available)
