@@ -81,6 +81,14 @@ rtk .venv/bin/python -m scripts.benchmark_submission \
   --out artifacts/champion_vs_old_producer_16seed.json
 ```
 
+Para empacotar o Producer fiel como submissão Kaggle:
+
+```bash
+rtk .venv/bin/python -m scripts.prepare_producer_opponent
+rtk .venv/bin/python -m scripts.package_producer_submission \
+  --out artifacts/submission_producer.tar.gz
+```
+
 Regra operacional:
 
 - `16` seeds: smoke, legalidade e regressão grosseira;
