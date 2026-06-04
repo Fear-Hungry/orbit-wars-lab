@@ -15,6 +15,7 @@ def _cfg() -> GateConfig:
         enable_comets=True,
         act_timeout=1.0,
         benchmark_seeds=8,
+        jobs=1,
         technical_seeds=[0, 1, 2, 3],
         holdout_seeds=[17, 53],
         final_seed_start=100,
@@ -70,6 +71,7 @@ def test_gate_floors_checks_hall_of_fame_group(tmp_path):
         enable_comets=True,
         act_timeout=1.0,
         benchmark_seeds=8,
+        jobs=1,
         technical_seeds=[0, 1, 2, 3],
         holdout_seeds=[17, 53],
         final_seed_start=100,
@@ -143,4 +145,5 @@ def test_default_gate_uses_tight_general_floors_without_seed_specific_matchups()
         "four_player": 0.70,
     }
     assert cfg.hall_of_fame_opponents == ["artifacts/hof/submission_v_old.py"]
+    assert cfg.jobs == 8
     assert cfg.min_holdout_worst_decile == 0.10

@@ -3,6 +3,7 @@ submission_gate:
   enable_comets: true
   act_timeout: 1.0
   benchmark_seeds: 8
+  jobs: 8
   technical_seeds: [0, 1, 2, 3]
   holdout_seeds: [17, 53, 101, 149, 233, 317, 401, 463]
   final_seed_start: 100

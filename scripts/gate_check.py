@@ -16,8 +16,8 @@ from scripts.benchmark_submission import (
     _load_submission_agent,
     _resolve_opponent,
     _submission_runtime,
-    benchmark_four_player,
-    benchmark_two_player,
+    benchmark_four_player_spec,
+    benchmark_two_player_spec,
 )
 from scripts.export_submission import render_submission
 
@@ -31,6 +31,7 @@ class GateConfig:
     enable_comets: bool
     act_timeout: float
     benchmark_seeds: int
+    jobs: int
     technical_seeds: list[int]
     holdout_seeds: list[int]
     final_seed_start: int
@@ -50,6 +51,7 @@ def _load_config(path: Path) -> GateConfig:
         enable_comets=bool(cfg.get("enable_comets", True)),
         act_timeout=float(cfg.get("act_timeout", 1.0)),
         benchmark_seeds=int(cfg.get("benchmark_seeds", 8)),
+        jobs=max(1, int(cfg.get("jobs", 1))),
         technical_seeds=[int(seed) for seed in cfg.get("technical_seeds", [0, 1, 2, 3])],
         holdout_seeds=[int(seed) for seed in cfg.get("holdout_seeds", [])],
         final_seed_start=int(cfg.get("final_seed_start", 100)),
@@ -59,6 +61,27 @@ def _load_config(path: Path) -> GateConfig:
         floors={str(key): float(value) for key, value in cfg.get("floors", {}).items()},
         regression={str(key): float(value) for key, value in cfg.get("regression", {}).items()},
         min_holdout_worst_decile=float(cfg.get("holdout", {}).get("min_worst_decile_score_margin", 0.10)),
+    )
+
+
+def _with_jobs(cfg: GateConfig, jobs: int | None) -> GateConfig:
+    if jobs is None:
+        return cfg
+    return GateConfig(
+        episode_steps=cfg.episode_steps,
+        enable_comets=cfg.enable_comets,
+        act_timeout=cfg.act_timeout,
+        benchmark_seeds=cfg.benchmark_seeds,
+        jobs=max(1, int(jobs)),
+        technical_seeds=cfg.technical_seeds,
+        holdout_seeds=cfg.holdout_seeds,
+        final_seed_start=cfg.final_seed_start,
+        final_seeds=cfg.final_seeds,
+        opponents=cfg.opponents,
+        hall_of_fame_opponents=cfg.hall_of_fame_opponents,
+        floors=cfg.floors,
+        regression=cfg.regression,
+        min_holdout_worst_decile=cfg.min_holdout_worst_decile,
     )
 
 
@@ -103,32 +126,30 @@ def _load_runtime(path: Path):
 
 
 def _run_benchmark(path: Path, cfg: GateConfig, seeds: list[int], *, include_4p: bool = True) -> dict[str, Any]:
-    runtime = _load_runtime(path)
-    anchor_opponents = [_resolve_opponent(spec) for spec in cfg.opponents]
     hall_of_fame_opponents = [_resolve_opponent(spec) for spec in cfg.hall_of_fame_opponents]
-    all_opponents = anchor_opponents + hall_of_fame_opponents
     two_player = [
-        benchmark_two_player(
-            runtime,
-            name,
-            opponent,
+        benchmark_two_player_spec(
+            path,
+            spec,
             seeds=seeds,
             episode_steps=cfg.episode_steps,
             enable_comets=cfg.enable_comets,
             act_timeout=cfg.act_timeout,
+            jobs=cfg.jobs,
         )
-        for name, opponent in all_opponents
+        for spec in [*cfg.opponents, *cfg.hall_of_fame_opponents]
     ]
     formats: list[dict[str, Any]] = [{"format": "2p", "opponents": two_player}]
     if include_4p:
         formats.append(
-            benchmark_four_player(
-                runtime,
-                all_opponents,
+            benchmark_four_player_spec(
+                path,
+                [*cfg.opponents, *cfg.hall_of_fame_opponents],
                 seeds=seeds,
                 episode_steps=cfg.episode_steps,
                 enable_comets=cfg.enable_comets,
                 act_timeout=cfg.act_timeout,
+                jobs=cfg.jobs,
             )
         )
     return {
@@ -136,6 +157,7 @@ def _run_benchmark(path: Path, cfg: GateConfig, seeds: list[int], *, include_4p:
         "seeds": seeds,
         "episode_steps": cfg.episode_steps,
         "enable_comets": cfg.enable_comets,
+        "jobs": cfg.jobs,
         "hall_of_fame_opponents": [name for name, _ in hall_of_fame_opponents],
         "formats": formats,
     }
@@ -297,9 +319,10 @@ def main() -> None:
     parser.add_argument("--skip-pytest", action="store_true")
     parser.add_argument("--skip-holdout", action="store_true")
     parser.add_argument("--include-final", action="store_true")
+    parser.add_argument("--jobs", type=int, default=None)
     args = parser.parse_args()
 
-    cfg = _load_config(Path(args.config))
+    cfg = _with_jobs(_load_config(Path(args.config)), args.jobs)
     out_dir = Path(args.out_dir)
     submission_path = Path(args.submission_out) if args.submission_out else out_dir / "current_submission.py"
     submission_path = _export_current_template(submission_path)

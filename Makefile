@@ -12,6 +12,7 @@ PPO_DECODER_MAX_MOVES ?= 4
 PPO_DECODER_MIN_SHIPS ?= 2
 PPO_DECODER_RESERVE ?= 8
 PPO_EXPORT_BENCH_SEEDS ?= 1
+BENCH_JOBS ?= 8
 UV_DEV ?= $(shell command -v uv >/dev/null 2>&1 && printf 'uv run --extra dev')
 
 install:
@@ -50,10 +51,10 @@ lab-submission:
 	python -m python.lab.cli bench-submission
 
 gate-check:
-	uv run --extra dev python -m scripts.gate_check
+	uv run --extra dev python -m scripts.gate_check --jobs $(BENCH_JOBS)
 
 gate-check-final:
-	uv run --extra dev python -m scripts.gate_check --include-final
+	uv run --extra dev python -m scripts.gate_check --include-final --jobs $(BENCH_JOBS)
 
 ppo-train-targeted:
 	uv run --extra dev python -m python.train.train_ppo --seed $(PPO_SEED) --training-track phase0_2p --num-players 2 --opponents $(PPO_TARGETED_OPPONENTS) --total-timesteps $(PPO_TIMESTEPS) --rollout-steps 256 --update-epochs 4 --minibatch-size 256 --learning-rate $(PPO_LEARNING_RATE) --ship-margin-scale $(PPO_SHIP_MARGIN_SCALE) --checkpoint-in $(PPO_CHECKPOINT_IN) --checkpoint-out $(PPO_CHECKPOINT_OUT) --decoder-max-moves-per-turn $(PPO_DECODER_MAX_MOVES) --decoder-min-ships-to-launch $(PPO_DECODER_MIN_SHIPS) --decoder-reserve-home-ships $(PPO_DECODER_RESERVE)
@@ -65,7 +66,7 @@ ppo-select-targeted:
 	uv run --extra dev python -m scripts.select_ppo_checkpoint $(PPO_CHECKPOINT_IN) $(PPO_CHECKPOINT_OUT) --config configs/eval_quick.yaml --output artifacts/ppo/$(PPO_RUN_NAME)_selection.json
 
 ppo-bench-exported:
-	uv run --extra dev python -m scripts.benchmark_ppo_submission --checkpoint $(PPO_CHECKPOINT_IN) --submission-out artifacts/ppo/$(PPO_RUN_NAME)_submission.py --out artifacts/ppo/$(PPO_RUN_NAME)_submission_benchmark.json --seeds $(PPO_EXPORT_BENCH_SEEDS) --opponents $(PPO_TARGETED_OPPONENTS)
+	uv run --extra dev python -m scripts.benchmark_ppo_submission --checkpoint $(PPO_CHECKPOINT_IN) --submission-out artifacts/ppo/$(PPO_RUN_NAME)_submission.py --out artifacts/ppo/$(PPO_RUN_NAME)_submission_benchmark.json --seeds $(PPO_EXPORT_BENCH_SEEDS) --jobs $(BENCH_JOBS) --opponents $(PPO_TARGETED_OPPONENTS)
 
 ppo-select-exported:
 	uv run --extra dev python -m scripts.select_ppo_submission $(PPO_CHECKPOINT_IN) $(PPO_CHECKPOINT_OUT) --out-dir artifacts/ppo/$(PPO_RUN_NAME)_exported_selection --output artifacts/ppo/$(PPO_RUN_NAME)_exported_selection.json --seeds $(PPO_EXPORT_BENCH_SEEDS) --opponents $(PPO_TARGETED_OPPONENTS) --skip-4p

@@ -5,6 +5,7 @@ import importlib.util
 import json
 import random
 from collections.abc import Callable
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from statistics import fmean
 from time import perf_counter
@@ -16,6 +17,7 @@ from python.orbit_wars_gym.observation import to_official_observation
 from python.orbit_wars_gym.rules import moves_are_legal, normalized_margin
 
 HEURISTIC_POLICIES = get_heuristic_policies()
+_POLICY_CACHE: dict[str, Policy] = {}
 
 
 def _opponent_label(path: Path) -> str:
@@ -50,6 +52,24 @@ def _resolve_opponent(spec: str) -> tuple[str, Policy]:
     if path.exists() and path.is_file():
         return _opponent_label(path), _submission_runtime(_load_submission_agent(path))
     raise ValueError(f"unknown opponent: {spec}")
+
+
+def _cached_submission_runtime(path: str) -> Policy:
+    key = f"submission:{Path(path).resolve()}"
+    if key not in _POLICY_CACHE:
+        _POLICY_CACHE[key] = _submission_runtime(_load_submission_agent(Path(path)))
+    return _POLICY_CACHE[key]
+
+
+def _cached_opponent_runtime(spec: str) -> tuple[str, Policy]:
+    path = Path(spec)
+    key = f"opponent:{path.resolve()}" if path.exists() else f"opponent:{spec}"
+    if key not in _POLICY_CACHE:
+        name, policy = _resolve_opponent(spec)
+        _POLICY_CACHE[key] = policy
+        return name, policy
+    name = _opponent_label(path) if path.exists() and path.is_file() else spec
+    return name, _POLICY_CACHE[key]
 
 
 def _win_points(scores: list[float], player: int) -> float:
@@ -113,6 +133,66 @@ def _run_match(
             break
 
     return [float(score) for score in outcome["scores"]], runtime_stats
+
+
+def _parallel_map(fn, tasks: list[dict[str, Any]], jobs: int) -> list[dict[str, Any]]:
+    if jobs <= 1 or len(tasks) <= 1:
+        return [fn(task) for task in tasks]
+    workers = min(int(jobs), len(tasks))
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        return list(executor.map(fn, tasks))
+
+
+def _two_player_task(task: dict[str, Any]) -> dict[str, Any]:
+    submission = _cached_submission_runtime(str(task["submission"]))
+    opponent_name, opponent = _cached_opponent_runtime(str(task["opponent"]))
+    submission_first = bool(task["submission_first"])
+    players = [submission, opponent] if submission_first else [opponent, submission]
+    submission_idx = 0 if submission_first else 1
+    scores, runtime_stats = _run_match(
+        players,
+        seed=int(task["seed"]),
+        episode_steps=int(task["episode_steps"]),
+        enable_comets=bool(task["enable_comets"]),
+        act_timeout=float(task["act_timeout"]),
+    )
+    stats = runtime_stats[submission_idx]
+    return {
+        "seed": float(task["seed"]),
+        "submission_player": float(submission_idx),
+        "win_points": _win_points(scores, submission_idx),
+        "normalized_margin": normalized_margin(scores, submission_idx),
+        "opponent": opponent_name,
+        **stats,
+    }
+
+
+def _four_player_task(task: dict[str, Any]) -> dict[str, Any]:
+    submission = _cached_submission_runtime(str(task["submission"]))
+    opponent_specs = [str(spec) for spec in task["opponents"]]
+    opponents = [_cached_opponent_runtime(spec) for spec in opponent_specs]
+    seed = int(task["seed"])
+    rng = random.Random(7_919 * (seed + 1))
+    picks = [rng.choice(opponents) for _ in range(3)]
+    players: list[Policy] = [submission] + [policy for _, policy in picks]
+    scores, runtime_stats = _run_match(
+        players,
+        seed=seed,
+        episode_steps=int(task["episode_steps"]),
+        enable_comets=bool(task["enable_comets"]),
+        act_timeout=float(task["act_timeout"]),
+    )
+    return {
+        "seed": float(seed),
+        "win_points": _win_points(scores, 0),
+        "normalized_margin": normalized_margin(scores, 0),
+        "crashes": runtime_stats[0]["crashes"],
+        "timeouts": runtime_stats[0]["timeouts"],
+        "invalid_actions": runtime_stats[0]["invalid_actions"],
+        "decision_turns": runtime_stats[0]["decision_turns"],
+        "elapsed_seconds": runtime_stats[0]["elapsed_seconds"],
+        "lineup": [name for name, _ in picks],
+    }
 
 
 def _summary_from_records(records: list[dict[str, float]]) -> dict[str, float]:
@@ -179,6 +259,41 @@ def benchmark_two_player(
     }
 
 
+def benchmark_two_player_spec(
+    submission_path: Path,
+    opponent_spec: str,
+    *,
+    seeds: list[int],
+    episode_steps: int,
+    enable_comets: bool,
+    act_timeout: float,
+    jobs: int = 1,
+) -> dict[str, Any]:
+    opponent_name, _ = _resolve_opponent(opponent_spec)
+    tasks = [
+        {
+            "submission": str(submission_path),
+            "opponent": opponent_spec,
+            "seed": seed,
+            "submission_first": submission_first,
+            "episode_steps": episode_steps,
+            "enable_comets": enable_comets,
+            "act_timeout": act_timeout,
+        }
+        for seed in seeds
+        for submission_first in (True, False)
+    ]
+    records = _parallel_map(_two_player_task, tasks, jobs)
+    for record in records:
+        record.pop("opponent", None)
+    return {
+        "format": "2p",
+        "opponent": opponent_name,
+        "summary": _summary_from_records(records),
+        "records": records,
+    }
+
+
 def benchmark_four_player(
     submission: Policy,
     opponents: list[tuple[str, Policy]],
@@ -229,6 +344,44 @@ def benchmark_four_player(
     }
 
 
+def benchmark_four_player_spec(
+    submission_path: Path,
+    opponent_specs: list[str],
+    *,
+    seeds: list[int],
+    episode_steps: int,
+    enable_comets: bool,
+    act_timeout: float,
+    jobs: int = 1,
+) -> dict[str, Any]:
+    opponents = [_resolve_opponent(spec) for spec in opponent_specs]
+    if not opponents:
+        return {
+            "format": "4p",
+            "opponents": [],
+            "summary": _summary_from_records([]),
+            "records": [],
+        }
+    tasks = [
+        {
+            "submission": str(submission_path),
+            "opponents": opponent_specs,
+            "seed": seed,
+            "episode_steps": episode_steps,
+            "enable_comets": enable_comets,
+            "act_timeout": act_timeout,
+        }
+        for seed in seeds
+    ]
+    records = _parallel_map(_four_player_task, tasks, jobs)
+    return {
+        "format": "4p",
+        "opponents": [name for name, _ in opponents],
+        "summary": _summary_from_records(records),
+        "records": records,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--submission", default="submission.py")
@@ -236,6 +389,7 @@ def main() -> None:
     parser.add_argument("--episode-steps", type=int, default=500)
     parser.add_argument("--act-timeout", type=float, default=1.0)
     parser.add_argument("--opponents", nargs="+", default=list(HEURISTIC_POLICIES))
+    parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--skip-2p", action="store_true")
     parser.add_argument("--skip-4p", action="store_true")
     parser.add_argument("--disable-comets", action="store_true")
@@ -243,12 +397,12 @@ def main() -> None:
     args = parser.parse_args()
 
     submission_path = Path(args.submission)
-    submission_agent = _load_submission_agent(submission_path)
-    submission_runtime = _submission_runtime(submission_agent)
     seeds = list(range(max(1, int(args.seeds))))
+    jobs = max(1, int(args.jobs))
 
     try:
-        opponents = [_resolve_opponent(spec) for spec in args.opponents]
+        for spec in args.opponents:
+            _resolve_opponent(spec)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
@@ -257,6 +411,7 @@ def main() -> None:
         "seeds": seeds,
         "episode_steps": int(args.episode_steps),
         "enable_comets": not bool(args.disable_comets),
+        "jobs": jobs,
         "formats": [],
     }
 
@@ -265,29 +420,30 @@ def main() -> None:
             {
                 "format": "2p",
                 "opponents": [
-                    benchmark_two_player(
-                        submission_runtime,
-                        name,
-                        opponent,
+                    benchmark_two_player_spec(
+                        submission_path,
+                        spec,
                         seeds=seeds,
                         episode_steps=int(args.episode_steps),
                         enable_comets=not bool(args.disable_comets),
                         act_timeout=float(args.act_timeout),
+                        jobs=jobs,
                     )
-                    for name, opponent in opponents
+                    for spec in args.opponents
                 ],
             }
         )
 
     if not args.skip_4p:
         report["formats"].append(
-            benchmark_four_player(
-                submission_runtime,
-                opponents,
+            benchmark_four_player_spec(
+                submission_path,
+                list(args.opponents),
                 seeds=seeds,
                 episode_steps=int(args.episode_steps),
                 enable_comets=not bool(args.disable_comets),
                 act_timeout=float(args.act_timeout),
+                jobs=jobs,
             )
         )
 

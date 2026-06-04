@@ -8,11 +8,9 @@ from typing import Any
 
 from scripts.benchmark_submission import (
     HEURISTIC_POLICIES,
-    _load_submission_agent,
     _resolve_opponent,
-    _submission_runtime,
-    benchmark_four_player,
-    benchmark_two_player,
+    benchmark_four_player_spec,
+    benchmark_two_player_spec,
 )
 from scripts.export_submission import render_submission
 
@@ -70,32 +68,34 @@ def benchmark_exported_checkpoint(
     enable_comets: bool,
     act_timeout: float,
     include_4p: bool,
+    jobs: int = 1,
 ) -> dict[str, Any]:
-    resolved_opponents = [_resolve_opponent(name) for name in opponents]
+    for name in opponents:
+        _resolve_opponent(name)
     exported = _write_exported_submission(checkpoint, submission_out)
-    runtime = _submission_runtime(_load_submission_agent(exported))
     two_player = [
-        benchmark_two_player(
-            runtime,
-            name,
-            opponent,
+        benchmark_two_player_spec(
+            exported,
+            spec,
             seeds=seeds,
             episode_steps=episode_steps,
             enable_comets=enable_comets,
             act_timeout=act_timeout,
+            jobs=jobs,
         )
-        for name, opponent in resolved_opponents
+        for spec in opponents
     ]
     formats: list[dict[str, Any]] = [{"format": "2p", "opponents": two_player}]
     if include_4p:
         formats.append(
-            benchmark_four_player(
-                runtime,
-                resolved_opponents,
+            benchmark_four_player_spec(
+                exported,
+                opponents,
                 seeds=seeds,
                 episode_steps=episode_steps,
                 enable_comets=enable_comets,
                 act_timeout=act_timeout,
+                jobs=jobs,
             )
         )
     report = {
@@ -105,6 +105,7 @@ def benchmark_exported_checkpoint(
         "seeds": seeds,
         "episode_steps": episode_steps,
         "enable_comets": enable_comets,
+        "jobs": jobs,
         "formats": formats,
     }
     report["summary"] = _summary(report)
@@ -120,6 +121,7 @@ def main() -> None:
     parser.add_argument("--episode-steps", type=int, default=500)
     parser.add_argument("--act-timeout", type=float, default=1.0)
     parser.add_argument("--opponents", nargs="+", default=list(HEURISTIC_POLICIES))
+    parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--skip-4p", action="store_true")
     parser.add_argument("--disable-comets", action="store_true")
     args = parser.parse_args()
@@ -133,6 +135,7 @@ def main() -> None:
         enable_comets=not args.disable_comets,
         act_timeout=float(args.act_timeout),
         include_4p=not args.skip_4p,
+        jobs=max(1, int(args.jobs)),
     )
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
