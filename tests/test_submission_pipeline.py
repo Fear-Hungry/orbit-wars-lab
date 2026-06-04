@@ -584,6 +584,48 @@ def test_exported_submission_skips_snipable_opening_neutral_when_no_safe_neutral
     assert module._angle_delta(moves[0][1], fallback_angle) < module._angle_delta(moves[0][1], snipable_angle)
 
 
+def test_exported_submission_scores_opening_safety_with_snipe_eta(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_opening_safety_score")
+    source = [0, 0, 20.0, 20.0, 2.0, 50, 3]
+    target = [1, -1, 42.0, 20.0, 2.0, 8, 5]
+    far_enemy = [2, 1, 85.0, 85.0, 2.0, 70, 4]
+    close_enemy = [2, 1, 52.0, 20.0, 2.0, 70, 4]
+    base_obs = {"player": 0, "step": 6, "angular_velocity": 0.0, "fleets": []}
+    action = {
+        "ffa": False,
+        "expand": True,
+        "opening_stage": "SAFE_NEUTRALS",
+        "orbital_opening_window": False,
+        "adaptive_opening_expand": False,
+        "fsm_state": "OPENING_EXPAND",
+        "leader_owner": 1,
+        "neutral_count": 1,
+    }
+
+    safe_score, _, _ = module._target_value(
+        {**base_obs, "planets": [source, target, far_enemy]},
+        source,
+        target,
+        0,
+        dict(action),
+        [source],
+        [far_enemy],
+    )
+    snipable_score, _, _ = module._target_value(
+        {**base_obs, "planets": [source, target, close_enemy]},
+        source,
+        target,
+        0,
+        dict(action),
+        [source],
+        [close_enemy],
+    )
+
+    assert module._safe_opening_neutral(source, target, [far_enemy])
+    assert not module._safe_opening_neutral(source, target, [close_enemy])
+    assert safe_score > snipable_score + 50.0
+
+
 def test_exported_submission_expands_when_behind_on_production_in_opening(tmp_path: Path):
     module = _load_rendered_submission(tmp_path, "submission_adaptive_opening_expand")
     module._PROFILE_STATE.clear()

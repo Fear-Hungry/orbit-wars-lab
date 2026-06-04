@@ -967,8 +967,7 @@ def _target_value(obs, source, target, committed, action, own, enemies):
         if ffa:
             value += 4.0
         if not ffa and action.get("opening_stage") == "SAFE_NEUTRALS":
-            safe_opening_neutral = production >= 4 and distance <= 30.0 and enemy_proximity >= distance * 0.9
-            if safe_opening_neutral:
+            if _safe_opening_neutral(source, target, enemies):
                 value += 36.0 + 6.0 * production
         if action.get("orbital_opening_window") and _is_rotating_planet(target):
             safe_orbital_neutral = production >= 4 and distance <= 35.0 and enemy_proximity >= distance * 1.1
