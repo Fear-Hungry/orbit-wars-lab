@@ -4,10 +4,11 @@ Registro curto para comparar ideias de heurística, decoder, modelo e liga.
 
 ## Como registrar
 
-Use uma linha por hipótese testada:
+Use uma linha por hipótese testada. Mudanças no agente só podem ser commitadas depois de registrar
+o antes/depois contra a régua honesta: `submission_v_old.py` + heurísticos principais.
 
 ```text
-YYYY-MM-DD | ideia | comando | métrica principal | resultado | decisão
+YYYY-MM-DD | ideia | comando | antes | depois | resultado | decisão
 ```
 
 Métricas úteis:
@@ -24,21 +25,29 @@ Métricas úteis:
 
 Artefato: `artifacts/submission.py`
 
-Benchmark salvo: `artifacts/submission_benchmark.json`
+Régua honesta: `artifacts/honest_benchmark.json`
 
-Resumo do benchmark local conhecido:
+Resumo da régua honesta conhecida:
 
-- 2p vs `greedy`: `1.0`;
-- 2p vs `defensive`: `1.0`;
-- 2p vs `anti_meta`: `1.0`;
-- 2p vs `rush`: `0.6667`;
-- 2p vs `weak_random`: `0.6667`;
-- 4p: `0.6667`;
+- 2p vs `submission_v_old`: `0.46875`, margem `-0.08788`;
+- 2p vs `greedy`: `0.90625`, margem `0.83750`;
+- 2p vs `rush`: `0.93750`, margem `0.91085`;
+- 4p misto: `0.68750`, margem `0.37500`;
 - crashes/timeouts/ações inválidas: `0.0`.
+
+Regra Kaggle: não julgar submissão pelo score imediato. Aguardar cerca de 1 hora para o score
+estabilizar antes de concluir se uma mudança melhorou ou piorou.
+
+## Resultados recentes
+
+```text
+2026-06-03 | régua honesta da heurística atual | uv run --extra dev python -m scripts.benchmark_submission --submission artifacts/submission.py --opponents artifacts/submission_v_old.py greedy rush --seeds 16 --episode-steps 500 --out artifacts/honest_benchmark.json | baseline anterior não registrado nessa régua | vs old=0.46875, greedy=0.90625, rush=0.93750, 4p=0.68750 | atual não supera a versão antiga no self-play histórico | usar como bloqueio antes de novos commits de agente
+2026-06-03 | PPO cand1 exportado | uv run --extra dev python -m scripts.benchmark_ppo_submission --checkpoint artifacts/ppo/phase0_targeted_seed21_lr1e4_16384.pt --submission-out artifacts/ppo/cand1_phase3_submission.py --out artifacts/ppo/cand1_phase3_4seed_benchmark.json --seeds 4 --opponents artifacts/submission_v_old.py greedy rush | heurística: old=0.46875, greedy=0.90625, rush=0.93750 | PPO: old=0.125, greedy=0.125, rush=0.500, 4p=0.000 | PPO exportado pior e mais lento | não submeter
+```
 
 ## Próximas hipóteses
 
 ```text
-2026-05-31 | reduzir perdas contra rush | python -m python.lab.cli quick | win_rate vs rush | pendente | testar
-2026-05-31 | melhorar decisão 4p quando anti_meta+defensive aparecem juntos | python -m python.lab.cli bench-submission --seeds 8 --episode-steps 500 | 4p_win_rate | pendente | testar
+2026-05-31 | reduzir perdas contra rush | python -m python.lab.cli quick | n/a | win_rate vs rush | pendente | testar
+2026-05-31 | melhorar decisão 4p quando anti_meta+defensive aparecem juntos | python -m python.lab.cli bench-submission --seeds 8 --episode-steps 500 | n/a | 4p_win_rate | pendente | testar
 ```
