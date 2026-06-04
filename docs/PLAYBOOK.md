@@ -32,6 +32,27 @@ Para uma comparação um pouco mais estável:
 python -m python.lab.cli bench-submission --seeds 8 --episode-steps 500
 ```
 
+## Re-adjudicar ideia estrutural
+
+Benchmarks de 16 seeds (`32` partidas 2p por oponente) servem para smoke e regressão grosseira. Eles não têm potência estatística para matar ideias estruturais com queda aparente perto de `0.05` de win rate.
+
+Antes de rejeitar mudanças de abertura, hammer, reserva, lookahead ou fase, rode uma amostra maior:
+
+```bash
+rtk .venv/bin/python -m scripts.benchmark_submission \
+  --submission artifacts/submission_candidate.py \
+  --opponents artifacts/submission_v_old.py greedy rush \
+  --seeds 256 --episode-steps 500 --jobs 8 \
+  --out artifacts/candidate_256seed.json
+
+rtk .venv/bin/python -m scripts.compare_benchmark_significance \
+  --baseline artifacts/baseline_256seed.json \
+  --candidate artifacts/candidate_256seed.json \
+  --min-games 128 --min-effect 0.05
+```
+
+Interprete `underpowered` como "amostra insuficiente", não como regressão real. Só trate como regressão quando o comparador marcar `significant_regression` e o resultado fizer sentido no breakdown por oponente.
+
 ## Avaliar população de candidatos
 
 Para iteração rápida:
