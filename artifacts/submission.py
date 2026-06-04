@@ -1017,6 +1017,49 @@ def _opponent_response_penalty(obs, source, target, ships, target_xy, action, en
     return best_penalty
 
 
+def _target_recapture_penalty(obs, source, target, ships, target_xy, action, enemies):
+    player = int(obs.get("player", 0))
+    if action.get("ffa") or action.get("total_war"):
+        return 0.0
+    if _planet_owner(target) in (-1, player):
+        return 0.0
+
+    source_xy = (_planet_x(source), _planet_y(source))
+    arrival_eta = max(1, ceil(_distance(source_xy, target_xy) / _fleet_speed(ships)))
+    projection_cache = action.setdefault("_projection_cache", {})
+    after_owner, after_ships = _project_planet_state(
+        obs,
+        target,
+        arrival_eta,
+        extra_arrivals=[(arrival_eta, player, int(ships))],
+        cache=projection_cache,
+    )
+    if after_owner != player:
+        return 0.0
+
+    production = _planet_production(target)
+    best_penalty = 0.0
+    for enemy in enemies:
+        enemy_id = _planet_id(enemy)
+        if enemy_id == _planet_id(target):
+            continue
+        enemy_ships = _planet_ships(enemy)
+        enemy_attack = max(0, enemy_ships - RESERVE_HOME_SHIPS)
+        if enemy_attack < MIN_SHIPS_TO_LAUNCH:
+            continue
+        enemy_xy = (_planet_x(enemy), _planet_y(enemy))
+        response_eta = max(1, ceil(_distance(enemy_xy, target_xy) / _fleet_speed(enemy_attack)))
+        if response_eta > 18:
+            continue
+        target_defense = after_ships + production * min(response_eta, 18)
+        exposure = enemy_attack - target_defense - MIN_CAPTURE_MARGIN
+        if exposure <= 0:
+            continue
+        penalty = 6.0 + 2.0 * production + 0.35 * exposure + 0.35 * max(0, 18 - response_eta)
+        best_penalty = max(best_penalty, penalty)
+    return best_penalty
+
+
 def _safe_opening_neutral(source, target, enemies):
     if _planet_owner(target) != -1 or _planet_production(target) < 4:
         return False
@@ -1162,6 +1205,7 @@ def decode(action, obs):
                 continue
             remaining_after_launch = _planet_ships(source) - launched_by_source.get(source_id, 0) - ships
             score -= _opponent_response_penalty(obs, source, target, ships, target_xy, action, enemies, remaining_after_launch)
+            score -= _target_recapture_penalty(obs, source, target, ships, target_xy, action, enemies)
             if best is None or score > best["score"]:
                 best = {
                     "target_id": target_id,
