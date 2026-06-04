@@ -11,6 +11,8 @@ RESERVE_HOME_SHIPS = 8
 MIN_SHIPS_TO_LAUNCH = 2
 MAX_MOVES_PER_TURN = 6
 MIN_CAPTURE_MARGIN = 2
+HAMMER_BONUS = 28.0
+HAMMER_SPLIT_PENALTY = 4.0
 PROFILE_DECAY = 0.82
 PROFILE_RAY_MAX_ANGLE = 0.36
 PROFILE_CAPTURE_TTL = 18
@@ -928,6 +930,15 @@ def _target_value(obs, source, target, committed, action, own, enemies):
         value += min(12.0, 4.0 + 0.25 * committed + 1.5 * production)
     if action.get("total_war") and owner not in (-1, player):
         value += 8.0 + 3.0 * production
+    hammer_target_id = action.get("hammer_target_id")
+    if hammer_target_id is not None:
+        if _planet_id(target) == hammer_target_id:
+            if owner not in (-1, player):
+                value += HAMMER_BONUS + 3.0 * production
+            elif owner == -1 and action.get("expand"):
+                value += 0.65 * HAMMER_BONUS + 2.0 * production
+        elif owner not in (-1, player) and not action.get("pressure"):
+            value -= HAMMER_SPLIT_PENALTY
     if action.get("pressure") and owner not in (-1, int(obs.get("player", 0))):
         value += 3.0
     if ffa and action.get("fsm_state") == "DEFEND_UNDER_PRESSURE" and owner == -1:
@@ -987,6 +998,58 @@ def _opponent_response_penalty(obs, source, target, ships, target_xy, action, en
     return best_penalty
 
 
+def _select_hammer_target(obs, sources, targets, action, own, enemies, launched_by_source):
+    if not action.get("ffa") or len(sources) < 2 or not targets:
+        return None
+    player = int(obs.get("player", 0))
+    candidate_sources = sources[: min(3, len(sources))]
+    best = None
+    for source in candidate_sources:
+        source_id = _planet_id(source)
+        reserve = _reserve_for_source(source, len(own), enemies, action, obs, player)
+        available = _planet_ships(source) - reserve - launched_by_source.get(source_id, 0)
+        if available < MIN_SHIPS_TO_LAUNCH:
+            continue
+        for target in targets:
+            owner = _planet_owner(target)
+            if owner == player:
+                continue
+            target_id = _planet_id(target)
+            score, required, target_xy = _target_value(obs, source, target, 0, action, own, enemies)
+            source_xy = (_planet_x(source), _planet_y(source))
+            distance = _distance(source_xy, target_xy)
+            nearby_support = 0
+            support_ships = 0
+            for other in sources:
+                other_id = _planet_id(other)
+                other_reserve = _reserve_for_source(other, len(own), enemies, action, obs, player)
+                other_available = _planet_ships(other) - other_reserve - launched_by_source.get(other_id, 0)
+                if other_available < MIN_SHIPS_TO_LAUNCH:
+                    continue
+                other_xy = (_planet_x(other), _planet_y(other))
+                other_eta = max(1, ceil(_distance(other_xy, target_xy) / _fleet_speed(other_available)))
+                source_eta = max(1, ceil(distance / _fleet_speed(max(MIN_SHIPS_TO_LAUNCH, min(available, required)))))
+                if abs(other_eta - source_eta) <= 8:
+                    nearby_support += 1
+                    support_ships += other_available
+            if nearby_support < 2:
+                continue
+            if support_ships < max(required, _planet_ships(target) + MIN_CAPTURE_MARGIN):
+                continue
+            coordination_value = score + 8.0 * nearby_support + 0.08 * support_ships - 0.10 * distance
+            if owner not in (-1, player):
+                coordination_value += 14.0 + 4.0 * _planet_production(target)
+            elif action.get("expand"):
+                coordination_value += 6.0 + 3.0 * _planet_production(target)
+            else:
+                coordination_value -= 8.0
+            if best is None or coordination_value > best[0]:
+                best = (coordination_value, target_id)
+    if best is None:
+        return None
+    return best[1] if best[0] > -10.0 else None
+
+
 def decode(action, obs):
     player = int(obs.get("player", 0))
     planets = obs.get("planets", [])
@@ -1009,6 +1072,7 @@ def decode(action, obs):
         key=lambda planet: _source_priority(planet, len(own), enemies, action, obs, player),
         reverse=True,
     )
+    action["hammer_target_id"] = _select_hammer_target(obs, sources, targets, action, own, enemies, launched_by_source)
 
     for source in sources:
         if len(moves) >= max_moves:
