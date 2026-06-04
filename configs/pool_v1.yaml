@@ -1,0 +1,35 @@
+population:
+  - id: greedy_candidate
+    kind: heuristic
+    policy: greedy
+    role: league
+  - id: defensive_candidate
+    kind: heuristic
+    policy: defensive
+    role: league
+  - id: rush_candidate
+    kind: heuristic
+    policy: rush
+    role: league
+  - id: anti_meta_candidate
+    kind: heuristic
+    policy: anti_meta
+    role: league
+hall_of_fame:
+  - id: submission_v_old
+    kind: submission
+    checkpoint: artifacts/hof/submission_v_old.py
+    role: hall_of_fame
+  - id: ppo_targeted_seed21
+    kind: ppo
+    checkpoint: artifacts/ppo/phase0_targeted_seed21_lr1e4_16384.pt
+    role: hall_of_fame
+  - id: ppo_resume_seed4
+    kind: ppo
+    checkpoint: artifacts/ppo/phase0_seed1_65536_resume_seed4_65536.pt
+    role: hall_of_fame
+  - id: ppo_seed1
+    kind: ppo
+    checkpoint: artifacts/ppo/phase0_seed1_65536.pt
+    role: hall_of_fame
+heuristics: []

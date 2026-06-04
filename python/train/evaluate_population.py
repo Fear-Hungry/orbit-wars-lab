@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import random
 from dataclasses import dataclass, field
@@ -20,6 +21,7 @@ from python.orbit_wars_gym.action_decoder import DecoderConfig, decode_discrete_
 from python.orbit_wars_gym.backend import RustBatchBackend, RustConfig
 from python.orbit_wars_gym.encoding import encode_state, observation_dim
 from python.orbit_wars_gym.entities import planet_id, planet_owner
+from python.orbit_wars_gym.observation import to_official_observation
 from python.orbit_wars_gym.rules import moves_are_legal, normalized_margin
 from rich import print
 
@@ -146,12 +148,39 @@ def _moves_are_legal(state: dict[str, Any], player: int, moves: list[list[float]
     return moves_are_legal(state, player, moves)
 
 
+def _load_submission_agent(path: Path):
+    spec = importlib.util.spec_from_file_location(f"league_submission_{path.stem}", path)
+    if spec is None or spec.loader is None:
+        raise ValueError(f"unable to load submission module from {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    agent = getattr(module, "agent", None)
+    if not callable(agent):
+        raise ValueError(f"submission module at {path} does not define callable agent(obs)")
+    return agent
+
+
+def _submission_runtime(path: Path):
+    agent = _load_submission_agent(path)
+
+    def act(state: dict[str, Any], player: int) -> list[list[float]]:
+        obs = to_official_observation(state, player=player)
+        moves = agent(obs)
+        return list(moves) if isinstance(moves, list) else []
+
+    return act
+
+
 def _policy_runtime(spec: AgentSpec, cfg: EvaluationConfig, *, seed: int, player_index: int) -> Any:
     if spec.kind == "heuristic":
         try:
             return HEURISTIC_POLICIES[spec.policy or ""]
         except KeyError as exc:
             raise ValueError(f"unknown heuristic policy: {spec.policy}") from exc
+    if spec.kind == "submission":
+        return _submission_runtime(Path(spec.checkpoint or ""))
+    if spec.kind != "ppo":
+        raise ValueError(f"unknown agent kind: {spec.kind}")
     if cfg.ppo_action_selection not in {"argmax", "sample"}:
         raise ValueError(f"unknown ppo_action_selection: {cfg.ppo_action_selection}")
 

@@ -244,3 +244,14 @@ def test_ppo_policy_runtime_rejects_unknown_action_selection(tmp_path: Path):
         assert "ppo_action_selection" in str(exc)
     else:
         raise AssertionError("expected invalid action selection to fail")
+
+
+def test_submission_policy_runtime_loads_python_agent(tmp_path: Path):
+    submission_path = tmp_path / "submission.py"
+    submission_path.write_text("def agent(obs):\n    return []\n", encoding="utf-8")
+    spec = AgentSpec(id="old_submission", kind="submission", role="hall_of_fame", checkpoint=str(submission_path))
+    cfg = EvaluationConfig(seeds=[0], games_per_pair=1, include_2p=True, include_4p=False)
+
+    runtime = _policy_runtime(spec, cfg, seed=0, player_index=0)
+
+    assert runtime({"planets": [], "fleets": []}, 0) == []

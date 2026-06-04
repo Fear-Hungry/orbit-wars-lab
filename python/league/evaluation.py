@@ -71,6 +71,8 @@ def _coerce_spec(record: Any, *, default_role: str) -> AgentSpec:
         raise ValueError(f"ppo agent {spec.id!r} requires checkpoint")
     if spec.kind == "heuristic" and not spec.policy:
         raise ValueError(f"heuristic agent {spec.id!r} requires policy")
+    if spec.kind == "submission" and spec.checkpoint is None:
+        raise ValueError(f"submission agent {spec.id!r} requires checkpoint")
     return spec
 
 

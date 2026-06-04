@@ -13,8 +13,8 @@ from typing import Any
 import yaml
 from python.train.objective_validation import _export_runtime_validation
 from scripts.benchmark_submission import (
-    HEURISTIC_POLICIES,
     _load_submission_agent,
+    _resolve_opponent,
     _submission_runtime,
     benchmark_four_player,
     benchmark_two_player,
@@ -36,6 +36,7 @@ class GateConfig:
     final_seed_start: int
     final_seeds: int
     opponents: list[str]
+    hall_of_fame_opponents: list[str]
     floors: dict[str, float]
     regression: dict[str, float]
     min_holdout_worst_decile: float
@@ -53,7 +54,8 @@ def _load_config(path: Path) -> GateConfig:
         holdout_seeds=[int(seed) for seed in cfg.get("holdout_seeds", [])],
         final_seed_start=int(cfg.get("final_seed_start", 100)),
         final_seeds=int(cfg.get("final_seeds", 20)),
-        opponents=[str(name) for name in cfg.get("opponents", list(HEURISTIC_POLICIES))],
+        opponents=[str(name) for name in cfg.get("opponents", [])],
+        hall_of_fame_opponents=[str(name) for name in cfg.get("hall_of_fame_opponents", [])],
         floors={str(key): float(value) for key, value in cfg.get("floors", {}).items()},
         regression={str(key): float(value) for key, value in cfg.get("regression", {}).items()},
         min_holdout_worst_decile=float(cfg.get("holdout", {}).get("min_worst_decile_score_margin", 0.10)),
@@ -102,27 +104,27 @@ def _load_runtime(path: Path):
 
 def _run_benchmark(path: Path, cfg: GateConfig, seeds: list[int], *, include_4p: bool = True) -> dict[str, Any]:
     runtime = _load_runtime(path)
-    unknown = [name for name in cfg.opponents if name not in HEURISTIC_POLICIES]
-    if unknown:
-        raise ValueError(f"unknown opponents: {unknown}")
+    anchor_opponents = [_resolve_opponent(spec) for spec in cfg.opponents]
+    hall_of_fame_opponents = [_resolve_opponent(spec) for spec in cfg.hall_of_fame_opponents]
+    all_opponents = anchor_opponents + hall_of_fame_opponents
     two_player = [
         benchmark_two_player(
             runtime,
             name,
-            HEURISTIC_POLICIES[name],
+            opponent,
             seeds=seeds,
             episode_steps=cfg.episode_steps,
             enable_comets=cfg.enable_comets,
             act_timeout=cfg.act_timeout,
         )
-        for name in cfg.opponents
+        for name, opponent in all_opponents
     ]
     formats: list[dict[str, Any]] = [{"format": "2p", "opponents": two_player}]
     if include_4p:
         formats.append(
             benchmark_four_player(
                 runtime,
-                cfg.opponents,
+                all_opponents,
                 seeds=seeds,
                 episode_steps=cfg.episode_steps,
                 enable_comets=cfg.enable_comets,
@@ -134,6 +136,7 @@ def _run_benchmark(path: Path, cfg: GateConfig, seeds: list[int], *, include_4p:
         "seeds": seeds,
         "episode_steps": cfg.episode_steps,
         "enable_comets": cfg.enable_comets,
+        "hall_of_fame_opponents": [name for name, _ in hall_of_fame_opponents],
         "formats": formats,
     }
 
@@ -204,20 +207,39 @@ def _gate_technical(path: Path, cfg: GateConfig) -> dict[str, Any]:
 
 def _gate_floors(report: dict[str, Any], cfg: GateConfig) -> dict[str, Any]:
     checks = []
+    hall_of_fame_names = {
+        _resolve_opponent(spec)[0]
+        for spec in cfg.hall_of_fame_opponents
+    }
+    hall_of_fame_rates = []
     for item in report.get("formats", []):
         if item.get("format") == "2p":
             for opponent in item.get("opponents", []):
                 name = str(opponent["opponent"])
+                win_rate = float(opponent["summary"]["win_rate"])
+                if name in hall_of_fame_names:
+                    hall_of_fame_rates.append(win_rate)
                 floor = cfg.floors.get(name)
                 if floor is None:
                     continue
-                win_rate = float(opponent["summary"]["win_rate"])
                 checks.append({"opponent": name, "win_rate": win_rate, "floor": floor, "passed": win_rate >= floor})
         elif item.get("format") == "4p":
             floor = cfg.floors.get("four_player")
             if floor is not None:
                 win_rate = float(item["summary"]["win_rate"])
                 checks.append({"opponent": "four_player", "win_rate": win_rate, "floor": floor, "passed": win_rate >= floor})
+    hall_of_fame_floor = cfg.floors.get("hall_of_fame")
+    if hall_of_fame_floor is not None and hall_of_fame_rates:
+        win_rate = float(fmean(hall_of_fame_rates))
+        checks.append(
+            {
+                "opponent": "hall_of_fame",
+                "win_rate": win_rate,
+                "floor": hall_of_fame_floor,
+                "passed": win_rate >= hall_of_fame_floor,
+                "members": sorted(hall_of_fame_names),
+            }
+        )
     return {"name": "gate_2_per_opponent_floors", "passed": all(check["passed"] for check in checks), "checks": checks}
 
 

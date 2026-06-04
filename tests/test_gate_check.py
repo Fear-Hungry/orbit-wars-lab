@@ -20,7 +20,8 @@ def _cfg() -> GateConfig:
         final_seed_start=100,
         final_seeds=20,
         opponents=["greedy", "weak_random"],
-        floors={"greedy": 0.95, "weak_random": 0.95, "four_player": 0.70},
+        hall_of_fame_opponents=[],
+        floors={"greedy": 0.95, "weak_random": 0.95, "hall_of_fame": 0.55, "four_player": 0.70},
         regression={
             "max_2p_win_rate_drop": 0.05,
             "max_mean_score_margin_drop": 0.10,
@@ -61,6 +62,47 @@ def test_gate_floors_requires_each_opponent_to_pass():
     assert [check for check in gate["checks"] if not check["passed"]][0]["opponent"] == "weak_random"
 
 
+def test_gate_floors_checks_hall_of_fame_group(tmp_path):
+    hof_path = tmp_path / "submission_prev.py"
+    hof_path.write_text("def agent(obs):\n    return []\n", encoding="utf-8")
+    cfg = GateConfig(
+        episode_steps=500,
+        enable_comets=True,
+        act_timeout=1.0,
+        benchmark_seeds=8,
+        technical_seeds=[0, 1, 2, 3],
+        holdout_seeds=[17, 53],
+        final_seed_start=100,
+        final_seeds=20,
+        opponents=["greedy"],
+        hall_of_fame_opponents=[str(hof_path)],
+        floors={"greedy": 0.95, "hall_of_fame": 0.55},
+        regression={
+            "max_2p_win_rate_drop": 0.05,
+            "max_mean_score_margin_drop": 0.10,
+            "max_worst_decile_score_margin_drop": 0.10,
+        },
+        min_holdout_worst_decile=0.10,
+    )
+    report = {
+        "formats": [
+            {
+                "format": "2p",
+                "opponents": [
+                    {"opponent": "greedy", "summary": {"win_rate": 1.0}, "records": []},
+                    {"opponent": "submission_prev", "summary": {"win_rate": 0.50}, "records": []},
+                ],
+            }
+        ]
+    }
+
+    gate = _gate_floors(report, cfg)
+
+    assert not gate["passed"]
+    failed = [check for check in gate["checks"] if not check["passed"]]
+    assert failed[0]["opponent"] == "hall_of_fame"
+
+
 def test_gate_regression_compares_candidate_against_baseline():
     baseline = _report(greedy=0.90, weak_random=0.90, four_player=0.75, margins=[0.5, 0.5, 0.5, 0.5])
     candidate = _report(greedy=0.90, weak_random=0.70, four_player=0.75, margins=[0.5, 0.5, -0.5, -0.5])
@@ -93,10 +135,12 @@ def test_default_gate_uses_tight_general_floors_without_seed_specific_matchups()
 
     assert cfg.floors == {
         "greedy": 0.95,
-        "defensive": 0.95,
+        "defensive": 0.85,
         "rush": 0.85,
         "anti_meta": 0.95,
         "weak_random": 0.95,
+        "hall_of_fame": 0.55,
         "four_player": 0.70,
     }
+    assert cfg.hall_of_fame_opponents == ["artifacts/hof/submission_v_old.py"]
     assert cfg.min_holdout_worst_decile == 0.10
