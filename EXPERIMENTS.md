@@ -25,15 +25,18 @@ Métricas úteis:
 
 Artefato: `artifacts/submission.py`
 
-Régua honesta: `artifacts/honest_benchmark.json`
+Régua honesta: `artifacts/baseline_96seed.json`
 
 Resumo da régua honesta conhecida:
 
-- 2p vs `submission_v_old`: `0.46875`, margem `-0.08788`;
-- 2p vs `greedy`: `0.90625`, margem `0.83750`;
-- 2p vs `rush`: `0.93750`, margem `0.91085`;
-- 4p misto: `0.68750`, margem `0.37500`;
+- 2p vs `submission_v_old`: `0.58333`, margem `0.16244` em `192` jogos;
+- sanity 8 seeds vs `greedy`: `1.00000`, margem `1.00000`;
+- sanity 8 seeds vs `rush`: `1.00000`, margem `1.00000`;
+- sanity 8 seeds 4p misto: `1.00000`, margem `1.00000`;
 - crashes/timeouts/ações inválidas: `0.0`.
+
+Régua decisora: `submission_v_old`, `96` seeds, `jobs=4`, `--skip-4p`; use
+`scripts.compare_benchmark_significance` e priorize os vereditos `margin_*`/`paired_*`.
 
 Regra Kaggle: não julgar submissão pelo score imediato. Aguardar cerca de 1 hora para o score
 estabilizar antes de concluir se uma mudança melhorou ou piorou.
@@ -41,6 +44,7 @@ estabilizar antes de concluir se uma mudança melhorou ou piorou.
 ## Resultados recentes
 
 ```text
+2026-06-04 | baseline decisor + âncora Kaggle | rtk .venv/bin/python -m scripts.benchmark_submission --submission artifacts/submission.py --opponents artifacts/submission_v_old.py --seeds 96 --episode-steps 500 --jobs 4 --skip-4p --out artifacts/baseline_96seed.json; rtk kaggle competitions submit -c orbit-wars -f artifacts/submission.py -m "honest champion: 0.583 vs old @192 games, margin 0.162" | régua antiga 16 seeds saturada/ruidosa | vs old=0.58333, margin=0.16244, games=192, mean_ms=11.89, crash/timeout/invalid=0; Kaggle ref=53364997 PENDING | cria ponto de correlação local↔leaderboard com amostra decisora | aguardar estabilização do public score antes de concluir
 2026-06-03 | régua honesta da heurística atual | uv run --extra dev python -m scripts.benchmark_submission --submission artifacts/submission.py --opponents artifacts/submission_v_old.py greedy rush --seeds 16 --episode-steps 500 --out artifacts/honest_benchmark.json | baseline anterior não registrado nessa régua | vs old=0.46875, greedy=0.90625, rush=0.93750, 4p=0.68750 | atual não supera a versão antiga no self-play histórico | usar como bloqueio antes de novos commits de agente
 2026-06-03 | PPO cand1 exportado | uv run --extra dev python -m scripts.benchmark_ppo_submission --checkpoint artifacts/ppo/phase0_targeted_seed21_lr1e4_16384.pt --submission-out artifacts/ppo/cand1_phase3_submission.py --out artifacts/ppo/cand1_phase3_4seed_benchmark.json --seeds 4 --opponents artifacts/submission_v_old.py greedy rush | heurística: old=0.46875, greedy=0.90625, rush=0.93750 | PPO: old=0.125, greedy=0.125, rush=0.500, 4p=0.000 | PPO exportado pior e mais lento | não submeter
 2026-06-03 | habilitar hammer plans também em 2p | rtk .venv/bin/python -m scripts.benchmark_submission --submission artifacts/submission_candidate_2p_hammer.py --opponents artifacts/submission_v_old.py greedy rush --seeds 16 --episode-steps 500 --jobs 8 --out artifacts/hammer_2p_honest_16seed.json | old=0.46875, greedy=0.90625, rush=0.93750, 4p=0.68750 | old=0.56250, greedy=0.93750, rush=0.93750, 4p=0.75000; crash/timeout/invalid=0 | melhora coordenação sem regressão na régua honesta | aceitar e exportar submissão
@@ -84,6 +88,7 @@ estabilizar antes de concluir se uma mudança melhorou ou piorou.
 ## Próximas hipóteses
 
 ```text
+2026-06-04 | fórum Kaggle como alvo externo | rtk kaggle competitions topics list orbit-wars; rtk kaggle forums topics show 704095 704113 704252 696214 704200 | alvo local circular | tópicos: 704095 benchmark comunitário 109 agentes; 704113 Producer ~1200 com produção projetada + redistribuição, 100-200ms/step; 704252 variância de LB; 696214 agentes LLM usam self-play/ablações; 704200 torneio local com Elo | oponentes reais e estilo Producer são melhor alvo que greedy/rush; leaderboard precisa estabilização | minerar notebooks públicos fortes e implementar lookahead/produção projetada
 2026-05-31 | reduzir perdas contra rush | python -m python.lab.cli quick | n/a | win_rate vs rush | pendente | testar
 2026-05-31 | melhorar decisão 4p quando anti_meta+defensive aparecem juntos | python -m python.lab.cli bench-submission --seeds 8 --episode-steps 500 | n/a | 4p_win_rate | pendente | testar
 ```
