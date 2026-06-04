@@ -727,6 +727,7 @@ def encode(obs):
     enemy_planet_ships = sum(_planet_ships(planet) for planet in enemies)
     enemy_fleet_ships = sum(owner_fleet_ships.get(owner, 0) for owner in enemy_owners)
     enemy_total_ships = enemy_planet_ships + enemy_fleet_ships
+    aggression_ratio = enemy_fleet_ships / max(1, enemy_total_ships)
 
     return {
         "player": player,
@@ -739,7 +740,8 @@ def encode(obs):
         "enemy_ships": enemy_planet_ships,
         "own_fleet_ships": owner_fleet_ships.get(player, 0),
         "enemy_fleet_ships": enemy_fleet_ships,
-        "enemy_fleet_ratio": enemy_fleet_ships / max(1, enemy_total_ships),
+        "enemy_fleet_ratio": aggression_ratio,
+        "aggression_ratio": aggression_ratio,
         "own_prod": sum(_planet_production(planet) for planet in own),
         "enemy_prod": sum(_planet_production(planet) for planet in enemies),
         "leader_owner": leader_owner,
@@ -751,8 +753,9 @@ def encode(obs):
 def policy_forward(features):
     ffa = features["enemy_players"] >= 2
     pressure = features["enemy_ships"] >= max(features["own_ships"] - 4, 1)
-    ratio_pressure = features.get("enemy_fleet_ratio", 0.0) >= 0.60 and features.get("to_me_ratio", 0.0) >= 0.80
-    fleet_pressure = features.get("enemy_fleet_ratio", 0.0) >= 0.70 and (
+    aggression_ratio = float(features.get("aggression_ratio", features.get("enemy_fleet_ratio", 0.0)))
+    ratio_pressure = aggression_ratio >= 0.60 and features.get("to_me_ratio", 0.0) >= 0.80
+    fleet_pressure = aggression_ratio >= 0.70 and (
         features.get("to_me_ratio", 0.0) >= 0.95 and features.get("enemy_fleet_ships", 0) >= 0.85 * max(1, features["own_ships"])
     )
     pressure = pressure or ratio_pressure or fleet_pressure
@@ -770,7 +773,7 @@ def policy_forward(features):
         features["step"] >= 25
         and neutrals_open
         and not pressure
-        and features.get("enemy_fleet_ratio", 0.0) < 0.20
+        and aggression_ratio < 0.20
         and production_ratio >= 0.85
         and features["own_count"] >= 3
     )
@@ -823,6 +826,7 @@ def policy_forward(features):
         "opportunistic_expand": bool(opportunistic_expand),
         "total_war": bool(total_war),
         "enemy_fleet_ratio": float(features.get("enemy_fleet_ratio", 0.0)),
+        "aggression_ratio": float(aggression_ratio),
         "ratio_pressure": bool(ratio_pressure),
         "fleet_pressure": bool(fleet_pressure),
         "to_neutral_ratio": float(features.get("to_neutral_ratio", 0.0)),

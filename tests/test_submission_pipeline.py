@@ -229,8 +229,10 @@ def test_exported_submission_detects_fleet_pressure_ratio(tmp_path: Path):
     action = module.policy_forward(features)
 
     assert features["enemy_fleet_ratio"] > 0.60
+    assert features["aggression_ratio"] == features["enemy_fleet_ratio"]
     assert features["to_me_ratio"] > 0.95
     assert features["enemy_fleet_ships"] >= 0.85 * features["own_ships"]
+    assert action["aggression_ratio"] == features["aggression_ratio"]
     assert action["fleet_pressure"]
     assert action["pressure"]
 
@@ -796,6 +798,7 @@ def test_exported_submission_detects_ratio_pressure_before_extreme_fleet_pressur
         "own_fleet_ships": 8,
         "enemy_fleet_ships": 90,
         "enemy_fleet_ratio": 0.62,
+        "aggression_ratio": 0.62,
         "own_prod": 20,
         "enemy_prod": 18,
         "leader_owner": 1,
@@ -810,6 +813,7 @@ def test_exported_submission_detects_ratio_pressure_before_extreme_fleet_pressur
     action = module.policy_forward(features)
 
     assert action["ratio_pressure"]
+    assert action["aggression_ratio"] == 0.62
     assert not action["fleet_pressure"]
     assert action["pressure"]
     assert not action["opportunistic_expand"]
