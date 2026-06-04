@@ -12,13 +12,14 @@ PPO_DECODER_MAX_MOVES ?= 4
 PPO_DECODER_MIN_SHIPS ?= 2
 PPO_DECODER_RESERVE ?= 8
 PPO_EXPORT_BENCH_SEEDS ?= 1
+UV_DEV ?= $(shell command -v uv >/dev/null 2>&1 && printf 'uv run --extra dev')
 
 install:
 	pip install -U pip
 	pip install -r requirements.txt
 
 build:
-	maturin develop --release -m crates/orbit_wars_py/Cargo.toml
+	$(UV_DEV) maturin develop --release -m crates/orbit_wars_py/Cargo.toml
 
 smoke:
 	python -m scripts.smoke_test
@@ -30,7 +31,7 @@ bench:
 	python -m scripts.benchmark_sim --num-envs 1024 --steps 500
 
 lab-doctor:
-	python -m python.lab.cli doctor
+	$(UV_DEV) python -m python.lab.cli doctor
 
 lab-heuristics:
 	python -m python.lab.cli heuristics

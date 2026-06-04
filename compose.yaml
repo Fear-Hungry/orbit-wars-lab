@@ -13,7 +13,15 @@ x-lab-common: &lab-common
   tmpfs:
     - /tmp:size=${TRAIN_TMPFS:-536870912},mode=1777
   environment: &lab-env
+    HOME: /home/orbit
     CODEX_HOME: /home/orbit/.codex
+    VIRTUAL_ENV: /opt/venv
+    PIP_CACHE_DIR: /home/orbit/.cache/pip
+    CARGO_HOME: /home/orbit/.cargo
+    CARGO_TARGET_DIR: /home/orbit/.cargo-target
+    RUSTUP_HOME: /usr/local/rustup
+    TORCH_HOME: /home/orbit/.cache/torch
+    PATH: /home/orbit/.local/bin:/opt/venv/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     PYTHONPATH: /workspace:/workspace/python
     OMP_NUM_THREADS: ${OMP_NUM_THREADS:-1}
     OPENBLAS_NUM_THREADS: ${OPENBLAS_NUM_THREADS:-1}
@@ -36,10 +44,9 @@ services:
     image: orbit-wars-lab:cpu
     volumes:
       - .:/workspace
-      - orbit-wars-venv-cpu:/opt/venv
-      - ${HOME}/.codex:/home/orbit/.codex
-      - ${HOME}/.local/bin:/home/orbit/.local/bin:ro
-      - ${HOME}/.local/lib/node_modules:/home/orbit/.local/lib/node_modules:ro
+      - ${HOME:-/home/orbit}/.codex:/home/orbit/.codex
+      - ${HOME:-/home/orbit}/.local/bin:/home/orbit/.local/bin:ro
+      - ${HOME:-/home/orbit}/.local/lib/node_modules:/home/orbit/.local/lib/node_modules:ro
 
   lab-gpu:
     <<: *lab-common
@@ -58,10 +65,9 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
     volumes:
       - .:/workspace
-      - orbit-wars-venv-gpu:/opt/venv
-      - ${HOME}/.codex:/home/orbit/.codex
-      - ${HOME}/.local/bin:/home/orbit/.local/bin:ro
-      - ${HOME}/.local/lib/node_modules:/home/orbit/.local/lib/node_modules:ro
+      - ${HOME:-/home/orbit}/.codex:/home/orbit/.codex
+      - ${HOME:-/home/orbit}/.local/bin:/home/orbit/.local/bin:ro
+      - ${HOME:-/home/orbit}/.local/lib/node_modules:/home/orbit/.local/lib/node_modules:ro
     deploy:
       resources:
         reservations:
@@ -69,7 +75,3 @@ services:
             - driver: nvidia
               count: ${GPU_COUNT:-1}
               capabilities: [gpu]
-
-volumes:
-  orbit-wars-venv-cpu:
-  orbit-wars-venv-gpu:
