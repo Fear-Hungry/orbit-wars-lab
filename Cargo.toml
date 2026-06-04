@@ -10,3 +10,7 @@ edition = "2021"
 version = "0.1.0"
 authors = ["Orbit Wars Lab"]
 license = "MIT"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
