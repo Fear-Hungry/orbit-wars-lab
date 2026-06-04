@@ -431,6 +431,10 @@ def _fsm_state(features):
     if features.get("enemy_players", 0) >= 2 and features.get("to_me_ratio", 0.0) >= 0.58:
         return "DEFEND_UNDER_PRESSURE"
     if step <= FSM_OPENING_TURNS and features.get("neutral_count", 0) > 0 and features.get("own_count", 0) <= 4:
+        production_ratio = features.get("own_prod", 0) / max(1, features.get("enemy_prod", 0))
+        enemy_fleet_ratio = features.get("enemy_fleet_ratio", 0.0)
+        if step > 15 and features.get("own_count", 0) >= 3 and production_ratio >= 1.05 and enemy_fleet_ratio < 0.20:
+            return "BASELINE"
         return "OPENING_EXPAND"
     if (
         features.get("recent_enemy_captures")

@@ -750,6 +750,38 @@ def test_exported_submission_uses_low_enemy_fleet_ratio_for_opportunism(tmp_path
     assert action["strategy_phase"] == "OPPORTUNISTIC"
 
 
+def test_exported_submission_exits_opening_by_ratios_before_turn_limit(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_ratio_phase_exit")
+    features = {
+        "player": 0,
+        "step": 40,
+        "own_count": 4,
+        "enemy_count": 3,
+        "enemy_players": 1,
+        "neutral_count": 5,
+        "own_ships": 80,
+        "enemy_ships": 70,
+        "own_fleet_ships": 8,
+        "enemy_fleet_ships": 4,
+        "enemy_fleet_ratio": 0.08,
+        "own_prod": 22,
+        "enemy_prod": 20,
+        "leader_owner": 1,
+        "angular_velocity": 0.0,
+        "profile_total": 20.0,
+        "to_neutral_ratio": 0.1,
+        "to_me_ratio": 0.0,
+        "to_leader_ratio": 0.0,
+        "recent_enemy_captures": set(),
+    }
+
+    action = module.policy_forward(features)
+
+    assert action["fsm_state"] == "BASELINE"
+    assert action["opportunistic_expand"]
+    assert action["strategy_phase"] == "OPPORTUNISTIC"
+
+
 def test_exported_submission_detects_ratio_pressure_before_extreme_fleet_pressure(tmp_path: Path):
     module = _load_rendered_submission(tmp_path, "submission_ratio_pressure")
     features = {
