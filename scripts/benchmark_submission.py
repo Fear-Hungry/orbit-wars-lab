@@ -18,6 +18,10 @@ from python.orbit_wars_gym.rules import moves_are_legal, normalized_margin
 HEURISTIC_POLICIES = get_heuristic_policies()
 
 
+def _opponent_label(path: Path) -> str:
+    return path.stem
+
+
 def _load_submission_agent(path: Path) -> Callable[[dict[str, Any]], list[list[float]]]:
     spec = importlib.util.spec_from_file_location(f"submission_{path.stem}", path)
     if spec is None or spec.loader is None:
@@ -37,6 +41,15 @@ def _submission_runtime(agent: Callable[[dict[str, Any]], list[list[float]]]) ->
         return list(moves) if isinstance(moves, list) else []
 
     return act
+
+
+def _resolve_opponent(spec: str) -> tuple[str, Policy]:
+    if spec in HEURISTIC_POLICIES:
+        return spec, HEURISTIC_POLICIES[spec]
+    path = Path(spec)
+    if path.exists() and path.is_file():
+        return _opponent_label(path), _submission_runtime(_load_submission_agent(path))
+    raise ValueError(f"unknown opponent: {spec}")
 
 
 def _win_points(scores: list[float], player: int) -> float:
@@ -168,14 +181,14 @@ def benchmark_two_player(
 
 def benchmark_four_player(
     submission: Policy,
-    opponent_names: list[str],
+    opponents: list[tuple[str, Policy]],
     *,
     seeds: list[int],
     episode_steps: int,
     enable_comets: bool,
     act_timeout: float,
 ) -> dict[str, Any]:
-    if not opponent_names:
+    if not opponents:
         return {
             "format": "4p",
             "opponents": [],
@@ -186,8 +199,8 @@ def benchmark_four_player(
     records: list[dict[str, float]] = []
     for seed in seeds:
         rng = random.Random(7_919 * (seed + 1))
-        picks = [rng.choice(opponent_names) for _ in range(3)]
-        players: list[Policy] = [submission] + [HEURISTIC_POLICIES[name] for name in picks]
+        picks = [rng.choice(opponents) for _ in range(3)]
+        players: list[Policy] = [submission] + [policy for _, policy in picks]
         scores, runtime_stats = _run_match(
             players,
             seed=seed,
@@ -205,12 +218,12 @@ def benchmark_four_player(
                 "invalid_actions": runtime_stats[0]["invalid_actions"],
                 "decision_turns": runtime_stats[0]["decision_turns"],
                 "elapsed_seconds": runtime_stats[0]["elapsed_seconds"],
-                "lineup": picks,
+                "lineup": [name for name, _ in picks],
             }
         )
     return {
         "format": "4p",
-        "opponents": opponent_names,
+        "opponents": [name for name, _ in opponents],
         "summary": _summary_from_records(records),
         "records": records,
     }
@@ -234,9 +247,10 @@ def main() -> None:
     submission_runtime = _submission_runtime(submission_agent)
     seeds = list(range(max(1, int(args.seeds))))
 
-    unknown = [name for name in args.opponents if name not in HEURISTIC_POLICIES]
-    if unknown:
-        raise SystemExit(f"unknown opponents: {unknown}")
+    try:
+        opponents = [_resolve_opponent(spec) for spec in args.opponents]
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
     report: dict[str, Any] = {
         "submission": str(submission_path),
@@ -254,13 +268,13 @@ def main() -> None:
                     benchmark_two_player(
                         submission_runtime,
                         name,
-                        HEURISTIC_POLICIES[name],
+                        opponent,
                         seeds=seeds,
                         episode_steps=int(args.episode_steps),
                         enable_comets=not bool(args.disable_comets),
                         act_timeout=float(args.act_timeout),
                     )
-                    for name in args.opponents
+                    for name, opponent in opponents
                 ],
             }
         )
@@ -269,7 +283,7 @@ def main() -> None:
         report["formats"].append(
             benchmark_four_player(
                 submission_runtime,
-                list(args.opponents),
+                opponents,
                 seeds=seeds,
                 episode_steps=int(args.episode_steps),
                 enable_comets=not bool(args.disable_comets),
