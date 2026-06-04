@@ -999,7 +999,10 @@ def _opponent_response_penalty(obs, source, target, ships, target_xy, action, en
 
 
 def _select_hammer_target(obs, sources, targets, action, own, enemies, launched_by_source):
-    if not action.get("ffa") or len(sources) < 2 or not targets:
+    if len(sources) < 2 or not targets:
+        return None
+    step = int(obs.get("step", obs.get("turn", 0)))
+    if not action.get("ffa") and action.get("strategy_phase") == "OPENING" and step < 15:
         return None
     player = int(obs.get("player", 0))
     candidate_sources = sources[: min(3, len(sources))]
@@ -1013,6 +1016,8 @@ def _select_hammer_target(obs, sources, targets, action, own, enemies, launched_
         for target in targets:
             owner = _planet_owner(target)
             if owner == player:
+                continue
+            if not action.get("ffa") and owner == -1 and _planet_production(target) < 3:
                 continue
             target_id = _planet_id(target)
             score, required, target_xy = _target_value(obs, source, target, 0, action, own, enemies)
@@ -1037,6 +1042,8 @@ def _select_hammer_target(obs, sources, targets, action, own, enemies, launched_
             if support_ships < max(required, _planet_ships(target) + MIN_CAPTURE_MARGIN):
                 continue
             coordination_value = score + 8.0 * nearby_support + 0.08 * support_ships - 0.10 * distance
+            if not action.get("ffa"):
+                coordination_value += 6.0 * nearby_support + 0.04 * support_ships
             if owner not in (-1, player):
                 coordination_value += 14.0 + 4.0 * _planet_production(target)
             elif action.get("expand"):
