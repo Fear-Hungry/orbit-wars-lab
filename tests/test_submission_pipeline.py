@@ -721,6 +721,28 @@ def test_exported_submission_enters_total_war_when_far_behind_without_neutrals(t
     assert action["strategy_phase"] == "TOTAL_WAR"
 
 
+def test_exported_submission_classifies_adaptive_reserve_phases(tmp_path: Path):
+    module = _load_rendered_submission(tmp_path, "submission_reserve_phases")
+    module._PROFILE_STATE.clear()
+    source = [0, 0, 20.0, 20.0, 2.0, 80, 5]
+    enemies = [[1, 1, 82.0, 82.0, 2.0, 60, 5]]
+
+    mid_obs = {"player": 0, "step": 160, "planets": [source, *enemies], "fleets": []}
+    mid_action = {"ffa": False, "expand": False, "pressure": False, "total_war": False, "fsm_state": "BASELINE"}
+    assert module._reserve_phase_for_source(source, 5, mid_action, mid_obs, 0) == "MID"
+    assert module._reserve_for_source(source, 5, enemies, mid_action, mid_obs, 0) >= 15
+
+    late_obs = {"player": 0, "step": 370, "planets": [source, *enemies], "fleets": []}
+    late_action = {"ffa": False, "expand": False, "pressure": False, "total_war": False, "fsm_state": "BASELINE"}
+    assert module._reserve_phase_for_source(source, 5, late_action, late_obs, 0) == "LATE"
+    assert module._reserve_for_source(source, 5, enemies, late_action, late_obs, 0) >= 30
+
+    war_obs = {"player": 0, "step": 260, "planets": [source, *enemies], "fleets": []}
+    war_action = {"ffa": False, "expand": False, "pressure": False, "total_war": True, "fsm_state": "BASELINE"}
+    assert module._reserve_phase_for_source(source, 5, war_action, war_obs, 0) == "TOTAL_WAR"
+    assert module._reserve_for_source(source, 5, enemies, war_action, war_obs, 0) == 0
+
+
 def test_exported_submission_uses_low_enemy_fleet_ratio_for_opportunism(tmp_path: Path):
     module = _load_rendered_submission(tmp_path, "submission_low_fleet_ratio_opportunism")
     features = {

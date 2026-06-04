@@ -8,6 +8,10 @@ CENTER = 50.0
 ROTATION_RADIUS_LIMIT = 50.0
 SHIP_SPEED = 6.0
 RESERVE_HOME_SHIPS = 8
+OPENING_BASE_RESERVE = 8
+MID_GAME_RESERVE = 15
+LATE_GAME_RESERVE = 30
+TOTAL_WAR_RESERVE = 0
 MIN_SHIPS_TO_LAUNCH = 2
 MAX_MOVES_PER_TURN = 6
 MIN_CAPTURE_MARGIN = 2
@@ -518,6 +522,27 @@ def _incoming_threat_before(obs, source, player, horizon, cache=None):
     return _incoming_threats_by_target(obs, player, horizon, cache).get(_planet_id(source), 0)
 
 
+def _reserve_phase_for_source(source, own_count, action, obs=None, incoming_threat=0):
+    step = int((obs or {}).get("step", (obs or {}).get("turn", 0)))
+    if not action.get("ffa") and action.get("total_war") and incoming_threat <= 0:
+        return "TOTAL_WAR"
+    if not action.get("ffa") and step >= 350 and not action.get("expand") and not action.get("total_war"):
+        return "LATE"
+    if (
+        not action.get("ffa")
+        and 120 <= step < 350
+        and own_count >= 5
+        and _planet_production(source) >= 4
+        and not action.get("expand")
+        and not action.get("pressure")
+        and not action.get("total_war")
+    ):
+        return "MID"
+    if step >= 30 and action.get("fsm_state") == "OPENING_EXPAND" and incoming_threat <= 0 and _planet_production(source) <= 1:
+        return "OPENING_BASE"
+    return "BASE"
+
+
 def _reserve_for_source(source, own_count, enemies, action, obs=None, player=None):
     reserve = RESERVE_HOME_SHIPS
     if own_count <= 2:
@@ -539,23 +564,15 @@ def _reserve_for_source(source, own_count, enemies, action, obs=None, player=Non
             reserve += 2
     cache = None if action is None else action.setdefault("_projection_cache", {})
     incoming_threat = _incoming_threat_before(obs, source, player, 40, cache)
-    step = int((obs or {}).get("step", (obs or {}).get("turn", 0)))
-    if step >= 30 and action.get("fsm_state") == "OPENING_EXPAND" and incoming_threat <= 0 and _planet_production(source) <= 1:
-        reserve = min(reserve, RESERVE_HOME_SHIPS)
-    if (
-        not action.get("ffa")
-        and 120 <= step < 350
-        and own_count >= 5
-        and _planet_production(source) >= 4
-        and not action.get("expand")
-        and not action.get("pressure")
-        and not action.get("total_war")
-    ):
-        reserve = max(reserve, 15)
-    if not action.get("ffa") and step >= 350 and not action.get("expand") and not action.get("total_war"):
-        reserve = max(reserve, 30)
-    if not action.get("ffa") and action.get("total_war") and incoming_threat <= 0:
-        reserve = 0
+    reserve_phase = _reserve_phase_for_source(source, own_count, action, obs, incoming_threat)
+    if reserve_phase == "OPENING_BASE":
+        reserve = min(reserve, OPENING_BASE_RESERVE)
+    elif reserve_phase == "MID":
+        reserve = max(reserve, MID_GAME_RESERVE)
+    elif reserve_phase == "LATE":
+        reserve = max(reserve, LATE_GAME_RESERVE)
+    elif reserve_phase == "TOTAL_WAR":
+        return TOTAL_WAR_RESERVE
     if incoming_threat >= _planet_ships(source) and incoming_threat > 0:
         reserve = min(reserve, max(MIN_CAPTURE_MARGIN, _planet_ships(source) // 3))
     else:
