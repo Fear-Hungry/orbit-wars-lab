@@ -9,6 +9,7 @@ from typing import Any
 from scripts.benchmark_submission import (
     HEURISTIC_POLICIES,
     _load_submission_agent,
+    _resolve_opponent,
     _submission_runtime,
     benchmark_four_player,
     benchmark_two_player,
@@ -70,29 +71,27 @@ def benchmark_exported_checkpoint(
     act_timeout: float,
     include_4p: bool,
 ) -> dict[str, Any]:
-    unknown = [name for name in opponents if name not in HEURISTIC_POLICIES]
-    if unknown:
-        raise ValueError(f"unknown opponents: {unknown}")
+    resolved_opponents = [_resolve_opponent(name) for name in opponents]
     exported = _write_exported_submission(checkpoint, submission_out)
     runtime = _submission_runtime(_load_submission_agent(exported))
     two_player = [
         benchmark_two_player(
             runtime,
             name,
-            HEURISTIC_POLICIES[name],
+            opponent,
             seeds=seeds,
             episode_steps=episode_steps,
             enable_comets=enable_comets,
             act_timeout=act_timeout,
         )
-        for name in opponents
+        for name, opponent in resolved_opponents
     ]
     formats: list[dict[str, Any]] = [{"format": "2p", "opponents": two_player}]
     if include_4p:
         formats.append(
             benchmark_four_player(
                 runtime,
-                opponents,
+                resolved_opponents,
                 seeds=seeds,
                 episode_steps=episode_steps,
                 enable_comets=enable_comets,
