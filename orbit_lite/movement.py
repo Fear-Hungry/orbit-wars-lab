@@ -872,6 +872,7 @@ class PlanetMovement:
             return
 
         p_idx = p_idx[needs_refresh]
+        dirty = dirty[needs_refresh].clamp(min=0, max=horizon + 1)
         owner = self.planet_owner[p_idx].clone()
         ships = self.planet_ships[p_idx].clone()
         self.garrison_owner_cache[p_idx, 0] = owner
@@ -880,19 +881,27 @@ class PlanetMovement:
         assert self.garrison_pre_combat_ships_cache is not None
         self.garrison_pre_combat_owner_cache[p_idx, 0] = owner
         self.garrison_pre_combat_ships_cache[p_idx, 0] = ships
-        prod = self.planet_prod[p_idx]
 
         if horizon == 0:
             self.garrison_dirty_from[p_idx] = horizon + 1
             return
 
-        self._fill_garrison_trajectory(
-            p_idx=p_idx,
-            init_owner=owner,
-            init_ships=ships,
-            prod=prod,
-            horizon=horizon,
-        )
+        for start in torch.unique(dirty).tolist():
+            start_step = int(start)
+            if start_step > horizon:
+                continue
+            group = p_idx[dirty == start_step]
+            if int(group.numel()) == 0:
+                continue
+            init_col = max(0, start_step - 1)
+            self._fill_garrison_trajectory(
+                p_idx=group,
+                init_owner=self.garrison_owner_cache[group, init_col].clone(),
+                init_ships=self.garrison_ships_cache[group, init_col].clone(),
+                prod=self.planet_prod[group],
+                horizon=horizon,
+                start_step=max(1, start_step),
+            )
 
         self.garrison_dirty_from[p_idx] = horizon + 1
 
@@ -904,8 +913,9 @@ class PlanetMovement:
         init_ships: Tensor,
         prod: Tensor,
         horizon: int,
+        start_step: int = 1,
     ) -> None:
-        """Fill ``garrison_{owner,ships}_cache`` for steps ``1..horizon``.
+        """Fill ``garrison_{owner,ships}_cache`` for steps ``start_step..horizon``.
 
         Decomposes the per-pair recurrence into two halves so the GPU does very
         little sequential work:
@@ -935,18 +945,19 @@ class PlanetMovement:
         assert self.garrison_pre_combat_ships_cache is not None
 
         H = int(horizon)
+        start = max(1, min(int(start_step), H + 1))
+        steps = H - start + 1
         N = int(p_idx.numel())
-        if N == 0 or H == 0:
+        if N == 0 or H == 0 or steps <= 0:
             return
 
-        # ``alive_by_step[k, p]`` is the alive mask AT END of step ``k`` (= the
-        # position frame for the k-th lookahead). For step k's transition we need
-        # alive at the start (``alive_step[k-1]``) and at the end (``alive_step[k]``).
-        alive_step = self.alive_by_step[:, p_idx].transpose(0, 1)  # [N, H+1]
-        alive_before = alive_step[:, :H]                          # [N, H]
-        alive_now = alive_step[:, 1:]                             # [N, H]
+        # ``alive_by_step[k, p]`` is the alive mask AT END of step ``k``. For
+        # each filled step we need alive at the start (``k-1``) and end (``k``).
+        alive_step = self.alive_by_step[start - 1 : H + 1, p_idx].transpose(0, 1)  # [N, steps+1]
+        alive_before = alive_step[:, :steps]                                      # [N, steps]
+        alive_now = alive_step[:, 1:]                                             # [N, steps]
         # ``fleet_buckets[p, k, a]`` = ships from owner ``a`` arriving at step ``k+1``.
-        arrivals = self.fleet_buckets[p_idx, :H, :]               # [N, H, A]
+        arrivals = self.fleet_buckets[p_idx, start - 1 : H, :]                    # [N, steps, A]
 
         # A pair is "simple" if no fleets ever arrive at this planet over the
         # horizon AND the planet stays alive throughout. For such pairs the
@@ -974,21 +985,21 @@ class PlanetMovement:
             # Production accrues only for owned planets; the ``(owner >= 0)`` factor
             # collapses neutral and dead planets to zero growth.
             owner_alive_factor = (simple_owner >= 0).to(dtype=simple_ships.dtype)
-            k_range = torch.arange(1, H + 1, device=self.device, dtype=simple_ships.dtype)
+            k_range = torch.arange(1, steps + 1, device=self.device, dtype=simple_ships.dtype)
             ships_traj = (
                 simple_ships.unsqueeze(1)
                 + simple_prod.unsqueeze(1)
                 * owner_alive_factor.unsqueeze(1)
                 * k_range.unsqueeze(0)
-            )                                                         # [N_simple, H]
-            owner_traj = simple_owner.unsqueeze(1).expand(-1, H)
-            # One fused write per cache, covers every step 1..H simultaneously.
-            self.garrison_owner_cache[simple_p, 1 : H + 1] = owner_traj
-            self.garrison_ships_cache[simple_p, 1 : H + 1] = ships_traj
+            )                                                         # [N_simple, steps]
+            owner_traj = simple_owner.unsqueeze(1).expand(-1, steps)
+            # One fused write per cache, covers every requested step simultaneously.
+            self.garrison_owner_cache[simple_p, start : H + 1] = owner_traj
+            self.garrison_ships_cache[simple_p, start : H + 1] = ships_traj
             # Simple-path pairs have no arrivals across the horizon, so
             # pre-combat state at every step equals the post-combat state.
-            self.garrison_pre_combat_owner_cache[simple_p, 1 : H + 1] = owner_traj
-            self.garrison_pre_combat_ships_cache[simple_p, 1 : H + 1] = ships_traj
+            self.garrison_pre_combat_owner_cache[simple_p, start : H + 1] = owner_traj
+            self.garrison_pre_combat_ships_cache[simple_p, start : H + 1] = ships_traj
 
         if n_complex == 0:
             return
@@ -1047,7 +1058,7 @@ class PlanetMovement:
         any_event_per_step = (combat_event_per_step | alive_change_per_step).any(dim=0)  # [H]
         # Map each step k ∈ [1, H] to itself if there's an event there, else 0.
         # The max collapses to the largest ``k`` with any event, or 0 if none.
-        arange_h = torch.arange(1, H + 1, device=self.device, dtype=torch.long)
+        arange_h = torch.arange(1, steps + 1, device=self.device, dtype=torch.long)
         k_last_tensor = torch.where(
             any_event_per_step,
             arange_h,
@@ -1058,7 +1069,7 @@ class PlanetMovement:
         k_last = int(k_last_tensor.item())
 
         loop_iters = max(0, k_last)
-        tail_steps = H - loop_iters
+        tail_steps = steps - loop_iters
 
         if loop_iters > 0:
             # Half B: branchless H-step recurrence. The ``(state_owner, state_ships)``
@@ -1068,6 +1079,7 @@ class PlanetMovement:
             # sync, no boolean indexing, no ``topk``. Just element-wise ``where``s
             # over ``[N_c]``.
             for k in range(1, loop_iters + 1):
+                col = start + k - 1
                 a_before = alive_before_c[:, k - 1]
                 a_now = alive_now_c[:, k - 1]
                 s_owner = survivor_owner_traj[:, k - 1]
@@ -1084,8 +1096,8 @@ class PlanetMovement:
                 # using the engine's combat rule.
                 pre_owner = torch.where(a_now, state_owner, neg_one_owner_scalar)
                 pre_ships = torch.where(a_now, state_ships, zero_ships_scalar)
-                self.garrison_pre_combat_owner_cache[cp, k] = pre_owner
-                self.garrison_pre_combat_ships_cache[cp, k] = pre_ships
+                self.garrison_pre_combat_owner_cache[cp, col] = pre_owner
+                self.garrison_pre_combat_ships_cache[cp, col] = pre_ships
 
                 # Combat against the precomputed step-k survivor. Three cases collapse
                 # into two ``where`` chains masked by ``has_combat``:
@@ -1106,8 +1118,8 @@ class PlanetMovement:
                 state_owner = torch.where(a_now, state_owner, neg_one_owner_scalar)
                 state_ships = torch.where(a_now, state_ships, zero_ships_scalar)
 
-                self.garrison_owner_cache[cp, k] = state_owner
-                self.garrison_ships_cache[cp, k] = state_ships
+                self.garrison_owner_cache[cp, col] = state_owner
+                self.garrison_ships_cache[cp, col] = state_ships
 
         if tail_steps > 0:
             # By construction of ``k_last``, no complex pair has a structural event
@@ -1139,13 +1151,14 @@ class PlanetMovement:
                 * dk_range.unsqueeze(0)
             )                                                          # [N_c, tail_steps]
             owner_traj_tail = state_owner.unsqueeze(1).expand(-1, tail_steps)
-            self.garrison_owner_cache[cp, k_last + 1 : H + 1] = owner_traj_tail
-            self.garrison_ships_cache[cp, k_last + 1 : H + 1] = ships_traj_tail
+            tail_start = start + k_last
+            self.garrison_owner_cache[cp, tail_start : H + 1] = owner_traj_tail
+            self.garrison_ships_cache[cp, tail_start : H + 1] = ships_traj_tail
             # Tail has no structural events (no combat, no death), so the
             # pre-combat state at every tail step equals the post-combat
             # state — production only.
-            self.garrison_pre_combat_owner_cache[cp, k_last + 1 : H + 1] = owner_traj_tail
-            self.garrison_pre_combat_ships_cache[cp, k_last + 1 : H + 1] = ships_traj_tail
+            self.garrison_pre_combat_owner_cache[cp, tail_start : H + 1] = owner_traj_tail
+            self.garrison_pre_combat_ships_cache[cp, tail_start : H + 1] = ships_traj_tail
 
     def _roll_garrison_projection(self) -> None:
         if (
@@ -1408,10 +1421,12 @@ class PlanetMovement:
 
         rolled_once = (not reset) and bool(delta == 1)
         if rolled_once and horizon > 0:
+            had_bucket_effect = bool((self.fleet_buckets != 0.0).any())
             self.fleet_buckets[:, :-1, :] = self.fleet_buckets[:, 1:, :].clone()
             self.fleet_buckets[:, -1, :] = 0.0
             self._ledger_decrement_and_expire()
-            self._mark_garrison_dirty_all(1)
+            if had_bucket_effect:
+                self._mark_garrison_dirty_all(1)
 
         delta_bad = (not reset) and bool(delta > 1)
         if delta_bad:

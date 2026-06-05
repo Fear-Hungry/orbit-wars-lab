@@ -128,12 +128,19 @@ fase perf = MEDIR antes de consertar. Os candidatos abaixo são suspeitas a conf
         seeds reduziu `mean_ms` 273.99→184.33, mas regrediu margem 0.00000→-0.50000
         e win 0.50000→0.25000. Rejeitado como default; provável causa: não reproduz
         a memória/runtime completo do Producer ao longo do episódio.
-- [ ] 2c. (suspeito #2) `_fill_garrison_trajectory` (L899): loop Python `for k in range(...)`
+- [x] 2c. (suspeito #2) `_fill_garrison_trajectory` (L899): loop Python `for k in range(...)`
       (L1070) sobre o horizonte. Confirmar se a projeção é reconstruída do zero a cada step ou
       se o cache incremental (`_roll_garrison_projection` L1150, `_mark_garrison_dirty` L1210)
       está sendo de fato aproveitado; vetorizar a recorrência se o profile apontar custo aqui.
-  - [ ] verificar: custo da projeção cai (microbench) E gates L1–L5a verdes
+  - [x] verificar: custo da projeção cai (microbench) E gates L1–L5a verdes
         (tests/test_movement_fidelity.py sem regressão — fidelidade é inegociável)
+        RESULTADO: `scripts/benchmark_garrison_cache.py` separa update/status e confirma que o
+        cache incremental era invalidado desde o passo 1 pelo roll vazio de `fleet_buckets`.
+        Após só marcar dirty global quando havia buckets de frota não-zero e preencher a
+        trajetória a partir de `dirty_from`, 2 seeds × 128 steps × H=18: sem cometas
+        fresh=3.315ms, cached=2.085ms, speedup=1.59×, `dirty_from_before=18.0`;
+        com cometas fresh=3.974ms, cached=3.437ms, speedup=1.16×. Fidelity L1–L5a:
+        `tests/test_movement_fidelity.py` 9 passed.
 - [x] NOTA (prioridade): se 2a confirmar que os 2 Producers dominam o tempo, 2b pode ser o item
       de MAIOR alavancagem do plano inteiro — derruba a média o bastante para 1b/1c caberem no
       orçamento. Nesse caso, fazer 2a+2b ANTES de 1c (talvez até antes de 1a).
