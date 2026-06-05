@@ -1,3 +1,7 @@
+> **Instruções para o executor de IA (harness Codex) — não é documentação do
+> projeto.** A documentação curada está em [`docs/`](docs/README.md). Mantido na
+> raiz porque o Codex concatena `AGENTS.md` por diretório.
+
 # RTK - Rust Token Killer (Codex CLI)
 
 Sempre prefixe comandos de shell com `rtk` (proxy que reduz tokens; se nao houver filtro, passa o comando sem alterar). Ex: `rtk git status`, `rtk cargo test`, `rtk npm run build`, `rtk pytest -q`. Meta: `rtk gain` (analytics), `rtk proxy <cmd>` (sem filtro). Verificar: `rtk --version`, `which rtk`.

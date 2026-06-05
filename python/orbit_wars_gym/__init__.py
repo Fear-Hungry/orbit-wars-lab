@@ -1,6 +1,12 @@
-"""Orbit Wars training package.
+"""Orbit Wars gym — Rust-backed simulator for TRAINING and evaluation only.
 
-Heavy optional dependencies such as gymnasium and pettingzoo are imported lazily.
+This is the fast path: it drives the Rust core (``orbit_wars_core`` via PyO3) to
+run thousands of games per generation. It is NOT submitted to Kaggle — the
+submission cannot depend on Rust (see DECISIONS.md D10/D11). For the pure-Python
+engine that ships in the submission, see the separate ``orbit_lite`` package.
+
+Reached from the repo root as ``orbit_wars_gym`` via the import shim at the repo
+root. Heavy optional deps (gymnasium, pettingzoo) are imported lazily.
 """
 
 __all__ = ["OrbitWarsGymEnv", "OrbitWarsParallelEnv"]

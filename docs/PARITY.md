@@ -1,8 +1,21 @@
 # Plano de paridade com Kaggle
 
+Este documento é a **fonte de verdade** das constantes e regras do ambiente
+oficial. Outros docs (ex.: o `README`) referenciam estes valores em vez de
+repeti-los.
+
 ## Alvo oficial
 
-A compatibilidade deve mirar o `kaggle-environments` oficial para Orbit Wars.
+A compatibilidade deve mirar o `kaggle-environments` oficial para Orbit Wars,
+definido por dois arquivos da fonte oficial:
+
+- `orbit_wars.json` (v1.0.9) — schema de observação/ação e parâmetros do episódio.
+- `orbit_wars.py` — constantes físicas, geração de planetas/cometas, lançamento, produção, movimento, colisão contínua, rotação planetária, sweep collision e combate.
+
+URLs de referência:
+
+- https://raw.githubusercontent.com/Kaggle/kaggle-environments/master/kaggle_environments/envs/orbit_wars/orbit_wars.json
+- https://raw.githubusercontent.com/Kaggle/kaggle-environments/master/kaggle_environments/envs/orbit_wars/orbit_wars.py
 
 Elementos conhecidos:
 
@@ -29,9 +42,14 @@ Elementos conhecidos:
 11. Expiração e movimento de cometas.
 12. Score terminal.
 
+Cobertos em `tests/test_official_spec.py`, `tests/test_official_snapshots.py` e
+`tests/test_parity_tolerances.py`.
+
 ## Estratégia
 
-Não tente reproduzir o RNG Python em Rust para treinamento. Para paridade, carregue snapshots oficiais. Para treino, use gerador Rust determinístico com distribuição fiel.
+Não tente reproduzir o RNG Python em Rust para treinamento. Para paridade, carregue
+snapshots oficiais. Para treino, use gerador Rust determinístico com distribuição
+fiel (ver D2 em [`DECISIONS.md`](DECISIONS.md)).
 
 ## Tolerância
 

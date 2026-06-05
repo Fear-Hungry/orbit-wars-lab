@@ -1,8 +1,18 @@
 # Blueprint competitivo
 
+O método de seleção que o projeto persegue. A arquitetura que o suporta está em
+[`ARCHITECTURE.md`](ARCHITECTURE.md); o estado atual (PPO deferido, planner OEP
+ativo) em [`TRAINING.md`](TRAINING.md).
+
 ## Objetivo terminal
 
-Gerar um conjunto pequeno de agentes finais que sejam robustos contra estratégias variadas em 2p e 4p, com baixa taxa de erro, baixa explorabilidade e bom desempenho em seeds desconhecidas.
+Gerar um conjunto pequeno de agentes finais robustos contra estratégias variadas
+em 2p e 4p, com baixa taxa de erro, baixa explorabilidade e bom desempenho em
+seeds desconhecidas.
+
+> A meta da competição é **terminar no top 5**. Bater o Producer público é a
+> *entrada*, não a meta — ele é piso, não teto (ver
+> [`COMPETITIVE_INTEL.md`](COMPETITIVE_INTEL.md)).
 
 ## Núcleo
 
@@ -43,13 +53,14 @@ Ação neural compacta:
 Decoder:
 
 ```text
-source_rank -> planeta próprio ordenado por força
- target_rank -> alvo ordenado por valor estratégico
+source_rank  -> planeta próprio ordenado por força
+target_rank  -> alvo ordenado por valor estratégico
 fraction_idx -> fração discreta de naves
-offset_idx -> pequeno desvio angular
+offset_idx   -> pequeno desvio angular
 ```
 
-Vantagem: reduz ações inválidas e deixa a rede aprender intenção, não trigonometria básica.
+Vantagem: reduz ações inválidas e deixa a rede aprender intenção, não trigonometria
+básica.
 
 ## Métrica de fitness
 
@@ -73,6 +84,8 @@ Um candidato só entra no hall-of-fame se:
 - melhora desempenho em seeds de avaliação;
 - ou ocupa uma célula comportamental vazia no MAP-Elites.
 
+A régua executável (gate OEP contra o Producer) está em [`PLAYBOOK.md`](PLAYBOOK.md).
+
 ## Antipadrões
 
 - Treinar contra um único bot.
@@ -80,4 +93,4 @@ Um candidato só entra no hall-of-fame se:
 - Permitir ação contínua bruta desde o início.
 - Medir só média e ignorar pior decil.
 - Otimizar para mapa simplificado e esquecer paridade.
-- Submeter agente sem fallback.
+- Submeter agente sem fallback instrumentado.

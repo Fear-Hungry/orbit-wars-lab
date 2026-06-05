@@ -12,13 +12,25 @@ target/
 .ruff_cache/
 .autoresearch/
 .claude/
+.zed/
 CLAUDE.md
 graphify-out/
 runs/
 wandb/
 logs/
 checkpoints/
-artifacts/
+
+# artifacts/ holds mostly generated benchmark/sweep output (ignored).
+# Only the curated deliverables below are tracked on purpose.
+artifacts/*
+!artifacts/submission.py
+!artifacts/submission-check.py
+!artifacts/submission_benchmark.json
+!artifacts/kaggle_flow_0.png
+!artifacts/kaggle_flow_1.png
+!artifacts/kaggle_home.png
+!artifacts/kaggle_signin.png
+
 .todo
 autoresearch-*.json
 autoresearch-*.md

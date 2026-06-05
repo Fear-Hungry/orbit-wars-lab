@@ -1,75 +1,52 @@
 # Orbit Wars Lab
 
-Laboratório local para desenvolver agentes competitivos para a competição Kaggle **Orbit Wars**.
+Laboratório local para desenvolver agentes competitivos para a competição Kaggle
+**Orbit Wars**, um jogo de estratégia orbital em tempo real (2 e 4 jogadores).
 
-O objetivo deste repositório é separar três problemas que não devem ser misturados:
+O projeto é desenhado em torno de uma ideia: **separar três problemas que não
+devem se misturar.**
 
-1. **Simulação rápida**: motor Rust para rodar milhares de partidas por geração.
-2. **Aprendizado e seleção**: Python para PPO, self-play, liga, PBT/GA e análise.
-3. **Submissão Kaggle**: agente Python leve, com inferência NumPy/PyTorch e fallback heurístico.
+1. **Simulação rápida** — motor Rust para rodar milhares de partidas por geração.
+2. **Aprendizado e seleção** — Python para PPO, self-play, liga (Elo), PBT/GA e análise.
+3. **Submissão Kaggle** — agente Python leve, validado no `kaggle-environments`, sem dependência do Rust.
 
-A regra operacional é simples: o motor Rust é infraestrutura de treino; o `submission.py` final deve ser pequeno, estável e validado no `kaggle-environments`.
-
-## Fontes oficiais usadas como alvo de compatibilidade
-
-- `orbit_wars.json`, versão 1.0.9: define `agents=[2,4]`, `episodeSteps=500`, `actTimeout=1`, `shipSpeed=6.0`, `cometSpeed=4.0`, schema de observação e ação.
-- `orbit_wars.py`: define constantes físicas, geração de planetas, cometas, lançamento de frotas, produção, movimento, colisão contínua, rotação planetária, sweep collision e combate.
-
-URLs de referência:
-
-- https://raw.githubusercontent.com/Kaggle/kaggle-environments/master/kaggle_environments/envs/orbit_wars/orbit_wars.json
-- https://raw.githubusercontent.com/Kaggle/kaggle-environments/master/kaggle_environments/envs/orbit_wars/orbit_wars.py
+A regra que sustenta tudo: **Rust só simula; Python decide e é o que se submete.**
+A plataforma executa um `agent(obs)` Python e o gargalo é a qualidade do modelo,
+não a velocidade — então compilar o agente para Rust não é nem possível nem útil.
+O detalhe completo está em [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) e
+[`docs/DECISIONS.md`](docs/DECISIONS.md) (D11).
 
 ## Arquitetura
 
 ```text
 orbit-wars-lab/
-  crates/
-    orbit_wars_core/       # motor Rust puro: estado, geometria, step, combate, batch
-    orbit_wars_py/         # binding PyO3 para Python
-
-  python/
-    orbit_wars_gym/        # Gymnasium/PettingZoo wrappers, encoder e decoder
-    agents/                # heurísticas, política neural, adaptador de submissão
-    league/                # Elo, matchmaking, hall-of-fame, PBT, MAP-Elites
-    train/                 # scripts PPO, liga, evolução e avaliação
-    submission/            # template para Kaggle
-
-  tests/                   # testes Python de integração e regras
-  configs/                 # parâmetros de ambiente, PPO, liga e evolução
-  scripts/                 # build, benchmark, paridade e exportação
-  docs/                    # blueprint e decisões arquiteturais
+  crates/            # motor Rust (orbit_wars_core) + binding PyO3 (orbit_wars_py)
+  python/            # gym (backend Rust), agentes, liga, treino, CLI
+  orbit_lite/        # engine pura-Python usada pela submissão e pelos bots
+  bots/              # agentes versionados (producer, oep)
+  configs/           # parâmetros de ambiente, PPO, liga e avaliação
+  scripts/           # build, benchmark, paridade, gates e exportação
+  tests/             # paridade, regras oficiais e regressão
+  docs/              # documentação (comece por docs/README.md)
 ```
 
-## Estado atual do scaffold
+## Documentação
 
-Este é um repositório inicial para desenvolvimento. Ele já contém:
+A documentação curada vive em [`docs/`](docs/README.md), com uma fonte de verdade
+por tópico:
 
-- motor Rust inicial com física, lançamento, produção, rotação, colisão contínua e combate;
-- estrutura de batch simulator;
-- binding PyO3 de debug;
-- wrappers Python para Gymnasium e API paralela;
-- heurísticas baseline;
-- Elo, matchmaking, PBT e archive de diversidade;
-- configs de treino;
-- scripts de benchmark, smoke test, paridade e exportação;
-- documentação de decisões.
-
-Ainda exige trabalho antes de treino pesado:
-
-- completar paridade bit-a-bit contra o ambiente oficial;
-- migrar loops de treino para a API PyO3 rápida com ações NumPy, MessagePack e estado codificado em Rust;
-- validar geração de cometas contra o oficial;
-- integrar PPO real com coleta de trajetórias em batch;
-- calibrar reward shaping e action decoder por replays.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — o modelo de três camadas.
+- [`docs/DECISIONS.md`](docs/DECISIONS.md) — as decisões de arquitetura (D1–D11) e o porquê.
+- [`docs/BLUEPRINT.md`](docs/BLUEPRINT.md) — o método competitivo: ciclo, fitness, promoção.
+- [`docs/PARITY.md`](docs/PARITY.md) — fidelidade ao ambiente oficial do Kaggle (constantes e testes).
+- [`docs/COMPETITIVE_INTEL.md`](docs/COMPETITIVE_INTEL.md) — pesquisa externa que orienta hipóteses.
+- [`docs/TRAINING.md`](docs/TRAINING.md) — plano de treino e estado do PPO.
+- [`docs/SUBMISSION.md`](docs/SUBMISSION.md) — regra e checklist da submissão.
+- [`docs/PLAYBOOK.md`](docs/PLAYBOOK.md) — comandos operacionais para reproduzir tudo.
 
 ## Instalação local
 
-Requisitos:
-
-- Python 3.10+
-- Rust estável via `rustup`
-- `maturin`
+Requisitos: Python 3.10+, Rust estável (`rustup`), `maturin`.
 
 ```bash
 python -m venv .venv
@@ -84,156 +61,33 @@ maturin develop --release -m crates/orbit_wars_py/Cargo.toml
 python -m scripts.smoke_test
 ```
 
-Alternativa com `uv` para o fluxo leve de laboratório:
+Fluxo leve com `uv` e a CLI unificada:
 
 ```bash
 uv run python -m python.lab.cli doctor
-uv run python -m scripts.smoke_test
 uv run python -m python.lab.cli quick
 ```
 
-Para treino ou validação Kaggle completa via `uv`, instale os extras:
+Extras para treino/Kaggle completos: `uv sync --extra train --extra kaggle --extra dev`.
+
+## Docker
+
+Há um ambiente de container com Python 3.11, toolchain Rust e o binding já
+compilado, em duas variantes (`lab` com torch CPU, `lab-gpu` com CUDA). Limites de
+CPU/RAM são conservadores por padrão para evitar oversubscription em treino local
+(parametrizáveis via `TRAIN_CPUS`, `TRAIN_MEMORY`, etc. no `compose.yaml`).
 
 ```bash
-uv sync --extra train --extra kaggle --extra dev
+make docker-build && make docker-shell      # CPU
+make docker-gpu-build && make docker-gpu-shell   # GPU NVIDIA
 ```
 
-## Docker para treino limitado
-
-O repositório agora inclui um ambiente de container com:
-
-- Python 3.11 em imagem `slim`;
-- toolchain Rust para recompilar o binding PyO3 quando necessário;
-- binding `orbit_wars_rs` já compilado no build da imagem;
-- `git`, `ripgrep` e `tini`;
-- `node` no container para executar o `codex` já instalado no host.
-
-Há duas variantes:
-
-- `lab`: imagem menor, com `torch` CPU;
-- `lab-gpu`: imagem com `torch` CUDA para treino em GPU NVIDIA.
-
-O `compose.yaml` aplica limites conservadores por padrão para evitar oversubscription de CPU/RAM durante treino local:
-
-- `TRAIN_CPUS=4.0`
-- `TRAIN_MEMORY=8g`
-- `TRAIN_PIDS=512`
-- `TRAIN_SHM_SIZE=1g`
-- `OMP_NUM_THREADS=1`
-- `OPENBLAS_NUM_THREADS=1`
-- `MKL_NUM_THREADS=1`
-- `NUMEXPR_NUM_THREADS=1`
-- `RAYON_NUM_THREADS=4`
-
-Build e shell:
-
-```bash
-docker compose build lab
-docker compose run --rm lab
-```
-
-Build e shell com GPU:
-
-```bash
-docker compose --profile gpu build lab-gpu
-docker compose --profile gpu run --rm lab-gpu
-```
-
-Atalhos via `Makefile`:
-
-```bash
-make docker-build
-make docker-shell
-make docker-smoke
-make docker-test
-make docker-train
-make docker-codex
-make docker-gpu-build
-make docker-gpu-shell
-make docker-gpu-check
-make docker-gpu-train
-make docker-gpu-codex
-```
-
-Para usar o Codex CLI dentro do container, basta manter sua configuração local em `${HOME}/.codex`.
-O `compose.yaml` também monta `${HOME}/.local/bin` e `${HOME}/.local/lib/node_modules`, então o container reutiliza exatamente o `codex` já instalado no host. Na prática, ele compartilha o mesmo `auth.json`, histórico e configuração do notebook/ambiente local, sem exigir novo login nem nova exposição de `OPENAI_API_KEY` a cada container.
-
-Para usar GPU no Docker, o host precisa ter GPU NVIDIA disponível e suporte a GPU no Docker/Compose.
-
-Exemplos:
-
-```bash
-docker compose run --rm lab codex
-TRAIN_CPUS=6 TRAIN_MEMORY=12g docker compose run --rm lab python -m python.train.train_league --config configs/league.yaml
-docker compose run --rm lab maturin develop --release -m crates/orbit_wars_py/Cargo.toml
-docker compose --profile gpu run --rm lab-gpu codex
-GPU_COUNT=1 docker compose --profile gpu run --rm lab-gpu python -c "import torch; print(torch.cuda.is_available())"
-TRAIN_CPUS=8 TRAIN_MEMORY=16g docker compose --profile gpu run --rm lab-gpu python -m python.train.train_league --config configs/league.yaml
-```
-
-Por padrão, a variante GPU usa `TORCH_COMPUTE_PLATFORM=cu118` para maximizar compatibilidade. Se o seu host suportar outra variante CUDA do PyTorch, você pode sobrescrever no build:
-
-```bash
-TORCH_COMPUTE_PLATFORM=cu126 docker compose --profile gpu build lab-gpu
-```
-
-## Caminho de treino recomendado
-
-Para testar ideias sem lembrar todos os scripts, use a entrada consolidada:
-
-```bash
-python -m python.lab.cli doctor
-python -m python.lab.cli quick
-python -m python.lab.cli eval
-python -m python.lab.cli league
-```
-
-Os atalhos equivalentes no `Makefile` são:
-
-```bash
-make lab-doctor
-make lab-quick
-make lab-eval
-make lab-league
-```
-
-O playbook prático fica em `docs/PLAYBOOK.md`.
-
-```bash
-# 1. Rodar smoke test e benchmark
-python -m scripts.smoke_test
-python -m scripts.benchmark_sim --num-envs 1024 --steps 500
-
-# 2. Rodar testes de lógica local
-pytest -q
-
-# 3. Rodar gates pré-submissão no template atual
-uv run --extra dev python -m scripts.gate_check
-
-# 4. Gerar probes de paridade contra Kaggle
-python -m scripts.parity_probe --episodes 32 --steps 500
-
-# 5. Treinar currículo simples
-python -m python.train.train_league --config configs/league.yaml
-
-# 6. Selecionar checkpoint PPO por avaliação rápida
-python -m scripts.select_ppo_checkpoint "artifacts/ppo/*.pt"
-
-# 7. Avaliar candidatos finais
-python -m python.train.evaluate_population --config configs/eval_final.yaml
-
-# 8. Exportar submissão heurística atual
-python -m scripts.export_submission --out submission.py
-
-# 9. Exportar um checkpoint PPO selecionado
-python -m scripts.export_submission --checkpoint artifacts/ppo/best.pt --out submission.py
-```
-
-Observação: `scripts.export_submission --checkpoint ...` embute o checkpoint PPO
-em um runtime Python autocontido, sem `torch` ou `numpy` na submissão. Ainda é
-necessário selecionar o checkpoint por benchmark antes de submeter; checkpoints
-fracos agora são exportáveis, mas continuam sendo candidatos ruins.
+Os alvos de `make` cobrem build, smoke, test e train (ver `Makefile`).
 
 ## Princípio competitivo
 
-Não tente fazer o modelo aprender toda a geometria crua desde zero. A política deve escolher intenção estratégica; o decoder resolve detalhes táticos. O treino pesado deve selecionar políticas robustas contra uma liga diversa, não apenas maximizar vitória contra o oponente médio da geração atual.
+Não tente fazer o modelo aprender toda a geometria crua desde zero. A política
+escolhe **intenção estratégica**; o decoder resolve detalhes táticos. O treino
+pesado seleciona políticas robustas contra uma liga diversa, não apenas a vitória
+contra o oponente médio da geração atual. A meta é terminar no **top 5** — bater o
+Producer público é a entrada, não a meta (ver [`docs/COMPETITIVE_INTEL.md`](docs/COMPETITIVE_INTEL.md)).

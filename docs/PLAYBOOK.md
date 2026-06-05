@@ -1,6 +1,8 @@
 # Playbook de experimentos
 
-Use este arquivo como entrada operacional. A arquitetura detalhada continua em `docs/BLUEPRINT.md`; aqui ficam os comandos curtos para testar ideias.
+Fonte de verdade **operacional**: os comandos para reproduzir treino, benchmark e
+gates. O método está em [`BLUEPRINT.md`](BLUEPRINT.md); a arquitetura em
+[`ARCHITECTURE.md`](ARCHITECTURE.md). Comece pelo índice em [`README.md`](README.md).
 
 ## Primeiro check
 
