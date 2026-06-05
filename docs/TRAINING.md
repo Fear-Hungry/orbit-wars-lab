@@ -1,5 +1,18 @@
 # Plano de treinamento
 
+## Decisão atual
+
+PPO/self-play fica deferido enquanto o caminho OEP ainda for o candidato ativo contra o Producer.
+A ativação do PPO só volta para a fila quando uma destas condições for verdadeira:
+
+- OEP passa o gate de promoção contra Producer e vira baseline a ser batido por aprendizado;
+- OEP esgota o ganho mensurável contra Producer, com experimentos registrados em `EXPERIMENTS.md`;
+- surgir oponente externo forte que exija diversidade de politica em vez de busca sobre o planner.
+
+Quando ativado, PPO deve treinar contra Producer/heuristico e só gerar candidato promovivel se o
+checkpoint exportado tiver margem contra Producer >= baseline OEP, com crash/timeout/fallback igual
+a zero. Runs smoke de PPO podem existir para infraestrutura, mas nao sao caminho de submissao.
+
 ## Fase 0 — baseline funcional
 
 - ambiente 2p

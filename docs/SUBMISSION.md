@@ -8,14 +8,16 @@ A submissão final não deve depender do motor Rust. O motor Rust serve para tre
 
 ```python
 def agent(obs):
-    try:
-        features = encode(obs)
-        action = policy_forward(features)
-        moves = decode(action, obs)
-        return moves
-    except Exception:
-        return fallback_greedy(obs)
+    features = encode(obs)
+    action = policy_forward(features)
+    moves = decode(action, obs)
+    return validate_moves(moves, obs)
 ```
+
+Falhas devem ser atribuiveis no teste local. Nao degrade silenciosamente para outra politica
+(`fallback_greedy`, Producer, hold por timeout ou qualquer substituto) quando o caminho principal
+quebrar. Se a submissao precisar de guarda defensiva por causa do ambiente Kaggle, ela deve ser
+instrumentada e o gate local deve falhar com `fallback_rate > 0`.
 
 ## Checklist
 
@@ -25,7 +27,7 @@ def agent(obs):
 - não usa rede externa;
 - não excede tempo;
 - sempre retorna lista;
-- fallback não quebra;
+- não usa fallback silencioso;
 - ação nunca contém nave negativa, NaN ou origem inválida.
 
 ## Ciclo atual
@@ -47,5 +49,8 @@ Validação local antes da submissão:
 
 Decisão do próximo ciclo:
 
-- Se o public score subir forte, aprofundar forward simulation, usar este heurístico como oponente de PPO e fortalecer redistribuição 4p.
-- Se o public score não mover, priorizar análise de replays/estratégias públicas e considerar self-play/PPO contra este heurístico.
+- Caminho ativo: OEP/Producer. Um candidato só promove se bater a margem contra o Producer local
+  pela régua decisora.
+- PPO/self-play fica deferido ate o OEP bater o Producer ou esgotar o caminho OEP. Quando ativado,
+  treinar contra Producer/heuristico e exigir checkpoint com win/margem contra Producer >= baseline
+  OEP, sem crash/timeout/fallback.

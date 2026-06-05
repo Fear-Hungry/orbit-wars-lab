@@ -201,13 +201,18 @@ fase perf = MEDIR antes de consertar. Os candidatos abaixo são suspeitas a conf
   - [ ] verificar: em 4p, `opponent_entries` deixa de ser None (o lookahead realmente engaja)
   - [ ] verificar: OEP-com-oponente-4p vs Producer ≥16 seeds → win 4p ≥ baseline OEP-4p-off,
         crash/timeout/invalid=0, sem regressão de timeout (CONFIG_4P já é mais barato)
-- [ ] F2. PPO / self-play (D4) — infra de rollout batched foi construída (commits a887216,
+- [x] F2. PPO / self-play (D4) — infra de rollout batched foi construída (commits a887216,
       814eb04, 30f6d22) mas NENHUM run de treino produziu candidato. É o caminho pesado de
       longo prazo. Decisão docs/SUBMISSION.md: usar Producer/heurístico como oponente de PPO.
       DECIDIR: vale ativar agora ou só depois de o OEP bater o Producer? (Recomendo depois —
       OEP já tem sinal positivo; PPO é aposta de maior custo/prazo.)
-  - [ ] verificar (se ativado): 1 run de PPO contra Producer produz checkpoint com win vs
+      DECISÃO 2026-06-05: deferir PPO/self-play. Caminho ativo continua OEP vs Producer; PPO só
+      reabre depois de OEP passar o gate de promoção contra Producer, esgotar ganho mensurável, ou
+      surgir oponente externo forte que exija diversidade de política.
+  - [x] verificar (se ativado): 1 run de PPO contra Producer produz checkpoint com win vs
         Producer ≥ baseline OEP, sem crash/timeout
+        RESULTADO: não ativado por decisão. Sem run obrigatório neste ciclo; critério de ativação
+        registrado em `docs/TRAINING.md` e `docs/SUBMISSION.md`.
 - [ ] F3. Minerar notebooks públicos fortes do fórum (exp. 105): 704095 (benchmark 109
       agentes), 704113 (Producer ~1200). Extrair ideias de produção projetada / redistribuição
       / lookahead ainda não incorporadas. É inteligência competitiva, não código.
