@@ -159,7 +159,7 @@ fase perf = MEDIR antes de consertar. Os candidatos abaixo são suspeitas a conf
 
 ## Thread 3 — Régua de promoção honesta (parar de decidir por greedy/rush)
 
-- [ ] 3a. Formalizar o gate de promoção do OEP: margin ≥ 0 vs Producer em ≥96 seeds,
+- [x] 3a. Formalizar o gate de promoção do OEP: margin ≥ 0 vs Producer em ≥96 seeds,
       timeout/crash/invalid = 0, via scripts.compare_benchmark_significance.
       PROGRESSO 2026-06-05: `scripts/oep_promotion_gate.py` formaliza a regra sobre
       relatórios JSON de `benchmark_submission`: default exige `192` jogos (`96` seeds × 2
@@ -167,12 +167,19 @@ fase perf = MEDIR antes de consertar. Os candidatos abaixo são suspeitas a conf
       `paired_games>=192`, `paired_margin_delta>=0.0` vs baseline G2 e nenhum veredito de
       regressão significativa. `make oep-promotion-gate` roda o verificador usando o baseline
       G2 default.
-  - [ ] verificar: gate documentado (EXPERIMENTS.md/DECISIONS.md) e 1 run de promoção produz
+      RESULTADO 2026-06-05: run estrito 96 seeds/192 jogos produzido em
+      `artifacts/gates/oep/candidate_vs_producer_96seed.json`; `make oep-promotion-gate` gerou
+      `artifacts/gates/oep/promotion_gate.json` e FALHOU como esperado para este candidato:
+      `mean_score_margin=-0.099316`, `timeout_rate=0.000383`, `win_rate=0.447917`,
+      crash/invalid/fallback=0. O gate está formalizado e executado; OEP atual não promove.
+  - [x] verificar: gate documentado (EXPERIMENTS.md/DECISIONS.md) e 1 run de promoção produz
         veredito paired ≥ baseline G2
         SMOKE 2026-06-05: usando o relatório OEP 16 seeds já existente e `--min-games 32`,
         o gate passou: `mean_score_margin=0.0`, crash/timeout/invalid=0.0,
-        `paired_margin_delta=1.0`, `verdict=margin_significant_improvement`. Falta o run
-        estrito de promoção com `96` seeds/`192` jogos para fechar o item.
+        `paired_margin_delta=1.0`, `verdict=margin_significant_improvement`.
+        STRICT 2026-06-05: 96 seeds/192 jogos: `paired_margin_delta=0.900684`,
+        `verdict=margin_significant_improvement`, mas gate total falhou por margem negativa e
+        timeout técnico > 0.
 - [ ] 3b. (opcional) Adicionar um 2º oponente-régua (variante do Producer ou notebook forte do
       fórum) para não overfitar um único oponente.
   - [ ] verificar: candidato promovido não regride contra o 2º oponente
