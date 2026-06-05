@@ -43,3 +43,30 @@ pub fn angle_between(a: [f64; 2], b: [f64; 2]) -> f64 {
 pub fn line_crosses_circle(start: [f64; 2], end: [f64; 2], center: [f64; 2], radius: f64) -> bool {
     point_to_segment_distance(center, start, end) < radius
 }
+
+/// Exact port of the official `swept_pair_hit`: true iff a fleet moving `a->b`
+/// and a planet moving `p0->p1` come within `r` of each other for some t in
+/// [0, 1]. Both segments are treated as linear over the tick (planet rotation
+/// linearised to its chord). Accounting for the planet's motion is what keeps a
+/// rotating planet from registering a phantom hit at the position it has left.
+#[inline]
+pub fn swept_pair_hit(a: [f64; 2], b: [f64; 2], p0: [f64; 2], p1: [f64; 2], r: f64) -> bool {
+    let d0x = a[0] - p0[0];
+    let d0y = a[1] - p0[1];
+    let dvx = (b[0] - a[0]) - (p1[0] - p0[0]);
+    let dvy = (b[1] - a[1]) - (p1[1] - p0[1]);
+    let aa = dvx * dvx + dvy * dvy;
+    let bb = 2.0 * (d0x * dvx + d0y * dvy);
+    let cc = d0x * d0x + d0y * d0y - r * r;
+    if aa < 1e-12 {
+        return cc <= 0.0;
+    }
+    let disc = bb * bb - 4.0 * aa * cc;
+    if disc < 0.0 {
+        return false;
+    }
+    let sq = disc.sqrt();
+    let t1 = (-bb - sq) / (2.0 * aa);
+    let t2 = (-bb + sq) / (2.0 * aa);
+    t2 >= 0.0 && t1 <= 1.0
+}

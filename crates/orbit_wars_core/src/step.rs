@@ -10,11 +10,22 @@ use crate::config::{
     ROTATION_RADIUS_LIMIT, SUN_RADIUS,
 };
 use crate::generator::generate_training_game;
-use crate::geometry::{distance, orbital_radius, point_to_segment_distance, rotate_about_center};
+use crate::geometry::{
+    distance, orbital_radius, point_to_segment_distance, rotate_about_center, swept_pair_hit,
+};
 use crate::types::{CometGroup, Fleet, GameState, Move, Planet, StepOutcome};
 
-type PlanetCollisionSnapshot = (i32, f64, f64, f64);
-type PreviousPlanetPosition = [f64; 2];
+/// A planet's motion over a single tick: position before (`old`) and after
+/// (`new`) rotation / comet movement, plus whether it takes part in fleet
+/// collision this tick. `check` is false for a comet's first on-board placement
+/// (it appears mid-tick from off-board), which the official interpreter skips.
+struct PlanetPath {
+    id: i32,
+    old: [f64; 2],
+    new: [f64; 2],
+    radius: f64,
+    check: bool,
+}
 
 #[derive(Clone, Debug)]
 pub struct Game {
@@ -39,21 +50,24 @@ impl Game {
             return self.outcome();
         }
 
-        self.remove_expired_comets();
         self.spawn_comets();
         self.process_actions(actions);
         self.produce();
 
+        // Compute each planet's (old -> new) motion for this tick up front, move
+        // fleets against those swept paths, then commit the motion. This mirrors
+        // the official interpreter, which resolves fleet/planet collision
+        // continuously over the planet's movement instead of against a stale
+        // single position (which made rotating planets register phantom hits).
+        let planet_paths = self.compute_planet_paths();
         let mut combat_lists: HashMap<i32, Vec<(i8, i32)>> = HashMap::new();
-        self.move_fleets_and_collect_collisions(&mut combat_lists);
-        let previous_planet_positions: Vec<PreviousPlanetPosition> = self
-            .state
-            .planets
-            .iter()
-            .map(|planet| [planet.x, planet.y])
-            .collect();
-        self.rotate_planets_and_comets();
-        self.sweep_planet_collisions(&previous_planet_positions, &mut combat_lists);
+        self.move_fleets_and_collect_collisions(&planet_paths, &mut combat_lists);
+        self.commit_planet_paths(&planet_paths);
+        // Expired comets are removed after movement but before combat resolution,
+        // matching the official interpreter: a just-expired comet is still
+        // collidable during movement, but a fleet that hits it finds no combat
+        // target, and a captured comet can still launch this tick before removal.
+        self.remove_expired_comets();
         self.resolve_combat(combat_lists);
 
         self.state.step += 1;
@@ -166,14 +180,9 @@ impl Game {
 
     fn move_fleets_and_collect_collisions(
         &mut self,
+        planet_paths: &[PlanetPath],
         combat_lists: &mut HashMap<i32, Vec<(i8, i32)>>,
     ) {
-        let planets: Vec<PlanetCollisionSnapshot> = self
-            .state
-            .planets
-            .iter()
-            .map(|planet| (planet.id, planet.x, planet.y, planet.radius))
-            .collect();
         let max_fleets = self.cfg.max_fleets;
         let mut survivors = Vec::with_capacity(self.state.fleets.len().min(max_fleets));
         let drained: Vec<Fleet> = self.state.fleets.drain(..).collect();
@@ -185,6 +194,29 @@ impl Game {
             fleet.y += fleet.angle.sin() * speed;
             let new = [fleet.x, fleet.y];
 
+            // Order matches the official interpreter: check planets FIRST, via a
+            // swept-pair test over each planet's own motion this tick, so fast
+            // fleets that would overshoot the board bounds or graze the sun still
+            // get credit for hitting a planet along the way. Only fleets that hit
+            // nothing are then tested against bounds and the sun.
+            let mut collided = false;
+            for path in planet_paths {
+                if !path.check {
+                    continue;
+                }
+                if swept_pair_hit(old, new, path.old, path.new, path.radius) {
+                    combat_lists
+                        .entry(path.id)
+                        .or_default()
+                        .push((fleet.owner, fleet.ships));
+                    collided = true;
+                    break;
+                }
+            }
+            if collided {
+                continue;
+            }
+
             if !(0.0..=BOARD_SIZE).contains(&fleet.x) || !(0.0..=BOARD_SIZE).contains(&fleet.y) {
                 continue;
             }
@@ -192,25 +224,17 @@ impl Game {
                 continue;
             }
 
-            let mut collided = false;
-            for (planet_id, planet_x, planet_y, planet_radius) in &planets {
-                if point_to_segment_distance([*planet_x, *planet_y], old, new) < *planet_radius {
-                    combat_lists
-                        .entry(*planet_id)
-                        .or_default()
-                        .push((fleet.owner, fleet.ships));
-                    collided = true;
-                    break;
-                }
-            }
-            if !collided && survivors.len() < max_fleets {
+            if survivors.len() < max_fleets {
                 survivors.push(fleet);
             }
         }
         self.state.fleets = survivors;
     }
 
-    fn rotate_planets_and_comets(&mut self) {
+    /// Compute each planet's (old -> new) motion for this tick without committing
+    /// it, so fleet movement can use a continuous swept-pair collision check.
+    /// Planet order matches `self.state.planets` (== official `obs0.planets`).
+    fn compute_planet_paths(&self) -> Vec<PlanetPath> {
         let comet_ids: HashSet<i32> = self.state.comet_planet_ids.iter().copied().collect();
         let initial_by_id: HashMap<i32, Planet> = self
             .state
@@ -219,75 +243,73 @@ impl Game {
             .map(|planet| (planet.id, *planet))
             .collect();
         let rotation_angle = self.state.angular_velocity * self.state.step as f64;
-        for planet in &mut self.state.planets {
+
+        let mut paths: Vec<PlanetPath> = Vec::with_capacity(self.state.planets.len());
+
+        for planet in &self.state.planets {
             if comet_ids.contains(&planet.id) {
                 continue;
             }
-            let Some(initial) = initial_by_id.get(&planet.id) else {
-                continue;
-            };
-            if orbital_radius(initial.x, initial.y) + planet.radius < ROTATION_RADIUS_LIMIT {
-                let p = rotate_about_center(initial.x, initial.y, rotation_angle);
-                planet.x = p[0];
-                planet.y = p[1];
+            let old = [planet.x, planet.y];
+            let mut new = old;
+            if let Some(initial) = initial_by_id.get(&planet.id) {
+                if orbital_radius(initial.x, initial.y) + planet.radius < ROTATION_RADIUS_LIMIT {
+                    new = rotate_about_center(initial.x, initial.y, rotation_angle);
+                }
             }
+            paths.push(PlanetPath {
+                id: planet.id,
+                old,
+                new,
+                radius: planet.radius,
+                check: true,
+            });
         }
 
-        for group in &mut self.state.comets {
-            group.path_index += 1;
+        for group in &self.state.comets {
+            let idx = (group.path_index + 1) as usize;
             for (k, pid) in group.planet_ids.iter().copied().enumerate() {
+                let Some(planet) = self.state.planets.iter().find(|p| p.id == pid) else {
+                    continue;
+                };
                 let Some(path) = group.paths.get(k) else {
                     continue;
                 };
-                let idx = group.path_index as usize;
-                if idx >= path.len() {
-                    continue;
-                }
-                if let Some(p) = self.state.planets.iter_mut().find(|p| p.id == pid) {
-                    p.x = path[idx][0];
-                    p.y = path[idx][1];
-                }
+                let old = [planet.x, planet.y];
+                // Exhausted path: comet stays put (still collidable). Stepping in
+                // from the off-board placeholder: appears mid-tick, no collision.
+                let (new, check) = if idx >= path.len() {
+                    (old, true)
+                } else {
+                    ([path[idx][0], path[idx][1]], old[0] >= 0.0)
+                };
+                paths.push(PlanetPath {
+                    id: pid,
+                    old,
+                    new,
+                    radius: planet.radius,
+                    check,
+                });
             }
         }
+
+        paths
     }
 
-    fn sweep_planet_collisions(
-        &mut self,
-        previous_planet_positions: &[PreviousPlanetPosition],
-        combat_lists: &mut HashMap<i32, Vec<(i8, i32)>>,
-    ) {
-        let planets: Vec<PlanetCollisionSnapshot> = self
-            .state
-            .planets
-            .iter()
-            .map(|planet| (planet.id, planet.x, planet.y, planet.radius))
-            .collect();
-        let mut survivors = Vec::with_capacity(self.state.fleets.len());
-        for fleet in self.state.fleets.drain(..) {
-            let mut collided = false;
-            for (planet_index, (planet_id, planet_x, planet_y, planet_radius)) in
-                planets.iter().enumerate()
-            {
-                let previous = previous_planet_positions
-                    .get(planet_index)
-                    .copied()
-                    .unwrap_or([*planet_x, *planet_y]);
-                let current = [*planet_x, *planet_y];
-                if point_to_segment_distance([fleet.x, fleet.y], previous, current) < *planet_radius
-                {
-                    combat_lists
-                        .entry(*planet_id)
-                        .or_default()
-                        .push((fleet.owner, fleet.ships));
-                    collided = true;
-                    break;
-                }
-            }
-            if !collided {
-                survivors.push(fleet);
+    /// Apply the motion computed by `compute_planet_paths` and advance comet
+    /// path indices. Called after fleet movement, like the official interpreter.
+    fn commit_planet_paths(&mut self, planet_paths: &[PlanetPath]) {
+        let new_positions: HashMap<i32, [f64; 2]> =
+            planet_paths.iter().map(|path| (path.id, path.new)).collect();
+        for planet in &mut self.state.planets {
+            if let Some(position) = new_positions.get(&planet.id) {
+                planet.x = position[0];
+                planet.y = position[1];
             }
         }
-        self.state.fleets = survivors;
+        for group in &mut self.state.comets {
+            group.path_index += 1;
+        }
     }
 
     fn resolve_combat(&mut self, combat_lists: HashMap<i32, Vec<(i8, i32)>>) {
@@ -326,7 +348,10 @@ impl Game {
                 let Some(path) = group.paths.get(i) else {
                     continue;
                 };
-                if group.path_index >= path.len() as i32 - 1 {
+                // Expired once the (post-increment) path index has advanced past
+                // the last sampled position; the comet then stays put for one tick
+                // and is removed this step, before combat (mirrors the official).
+                if group.path_index >= path.len() as i32 {
                     expired.insert(pid);
                 }
             }
@@ -940,7 +965,8 @@ mod tests {
             assert_eq!(comet.production, COMET_PRODUCTION);
         }
 
-        game.rotate_planets_and_comets();
+        let paths = game.compute_planet_paths();
+        game.commit_planet_paths(&paths);
         let after_first_move = game.state.comets[0].clone();
         assert_eq!(after_first_move.path_index, 0);
         for (idx, pid) in after_first_move.planet_ids.iter().enumerate() {
@@ -968,7 +994,8 @@ mod tests {
                 [comet.x, comet.y]
             })
             .collect();
-        game.rotate_planets_and_comets();
+        let paths = game.compute_planet_paths();
+        game.commit_planet_paths(&paths);
         for (idx, pid) in game.state.comets[0].planet_ids.iter().enumerate() {
             let comet = game
                 .state
