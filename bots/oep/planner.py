@@ -117,6 +117,7 @@ class OEPLiteConfig:
     base: OEPPlannerConfig = dataclasses.field(default_factory=OEPPlannerConfig)
     fractions: tuple[float, ...] = (0.5, 1.0)
     opponent_response: bool = True
+    opponent_response_mode: str = "producer"
     min_advantage: float = 0.0
     max_sources_per_lane: int = 6
     max_offensive_targets: int = 6
@@ -419,7 +420,10 @@ def _entries_from_lane_intents(
             continue
         if source_slot == target_slot:
             continue
-        if not bool(obs.alive[source_slot]) or not bool(obs.owned[source_slot]):
+        if (
+            not bool(obs.alive[source_slot])
+            or int(obs.owner_abs[source_slot].item()) != int(player_id)
+        ):
             continue
         if not bool(obs.alive[target_slot]):
             continue
@@ -474,7 +478,7 @@ def _entries_from_lane_intents(
     if K > 0:
         k_arr = (eta.clamp(min=1.0, max=float(K)).ceil().long() - 1).clamp(0, K - 1)
         floor_at_arr = floor.gather(-1, k_arr.unsqueeze(-1)).squeeze(-1)
-        target_owned = obs.owned[tgt]
+        target_owned = obs.owner_abs[tgt] == float(player_id)
         valid = valid & (target_owned | (ships >= floor_at_arr))
 
     remaining = obs.ships.to(dtype).floor().clone()
@@ -497,6 +501,93 @@ def _entries_from_lane_intents(
         angle=torch.where(repaired_valid, angle, torch.zeros_like(angle)),
         eta=torch.where(repaired_valid, eta, torch.ones_like(eta)),
         valid=repaired_valid,
+    )
+
+
+def _cheap_opponent_entries(
+    *,
+    movement: PlanetMovement,
+    obs,
+    cache,
+    status,
+    config: OEPPlannerConfig,
+    opponent_id: int,
+) -> LaunchEntries:
+    """Cheap 1-ply adversary model used only inside OEP fitness.
+
+    This deliberately avoids calling the full Producer policy a second time.
+    It models the opponent as sending a few high-garrison planets toward
+    valuable non-owned targets, with legality and aiming still handled by the
+    shared movement helpers.
+    """
+    P = int(obs.P)
+    if P == 0:
+        return _empty_entries(obs.device, obs.ships.dtype)
+    source_mask = (
+        obs.alive
+        & (obs.owner_abs == float(opponent_id))
+        & (obs.ships >= float(config.min_ships_to_launch))
+    )
+    target_mask = obs.alive & (obs.owner_abs != float(opponent_id))
+    if not bool(source_mask.any()) or not bool(target_mask.any()):
+        return _empty_entries(obs.device, obs.ships.dtype)
+
+    source_cap = max(1, min(3, int(config.max_sources_per_lane), P))
+    target_cap = max(1, min(5, int(config.max_offensive_targets), P))
+    source_idx, source_exists = _candidate_indices(obs.ships, source_mask, source_cap)
+    target_value = (
+        18.0 * (obs.owner_abs == float(obs.player_id)).to(obs.ships.dtype)
+        + 5.0 * obs.prod.to(obs.ships.dtype)
+        - 0.08 * obs.ships.to(obs.ships.dtype)
+    )
+    target_idx, target_exists = _candidate_indices(target_value, target_mask, target_cap)
+    if not bool(source_exists.any()) or not bool(target_exists.any()):
+        return _empty_entries(obs.device, obs.ships.dtype)
+
+    S = int(source_idx.shape[0])
+    T = int(target_idx.shape[0])
+    dist = cache.cross_dist[0][source_idx.clamp(0, P - 1)][:, target_idx.clamp(0, P - 1)]
+    pair_score = (
+        target_value[target_idx.clamp(0, P - 1)].view(1, T)
+        - 0.04 * dist.to(obs.ships.dtype)
+    )
+    pair_score = torch.where(
+        source_exists.view(S, 1) & target_exists.view(1, T),
+        pair_score,
+        torch.full_like(pair_score, float("-inf")),
+    )
+    flat_order = torch.argsort(pair_score.reshape(-1), descending=True)
+    lanes: list[LaneIntent] = []
+    used_sources: set[int] = set()
+    used_targets: set[int] = set()
+    max_lanes = max(1, min(2, int(config.max_waves_per_turn)))
+    for flat in flat_order.tolist():
+        if len(lanes) >= max_lanes:
+            break
+        if not torch.isfinite(pair_score.reshape(-1)[flat]):
+            break
+        source_short = flat // T
+        target_short = flat % T
+        source_slot = int(source_idx[source_short].item())
+        target_slot = int(target_idx[target_short].item())
+        if source_slot in used_sources or target_slot in used_targets:
+            continue
+        used_sources.add(source_slot)
+        used_targets.add(target_slot)
+        lanes.append(
+            LaneIntent(
+                source_planet_id=int(movement.planet_ids[source_slot].item()),
+                target_planet_id=int(movement.planet_ids[target_slot].item()),
+                fraction=1.0,
+            )
+        )
+    return _entries_from_lane_intents(
+        tuple(lanes),
+        movement=movement,
+        obs=obs,
+        status=status,
+        config=config,
+        player_id=int(opponent_id),
     )
 
 
@@ -870,18 +961,35 @@ class OEPLiteRuntime:
         opponent_entries = None
         opp_id = _opponent_id(int(obs.player_id), player_count)
         if bool(self.config.opponent_response) and opp_id is not None:
-            stage_start = self._profile_start()
-            opponent_moves = self.opponent_policy(_with_player(raw_obs, opp_id))
-            self._profile_record("producer_opponent_policy", stage_start)
+            mode = str(self.config.opponent_response_mode)
+            if mode == "producer":
+                stage_start = self._profile_start()
+                opponent_moves = self.opponent_policy(_with_player(raw_obs, opp_id))
+                self._profile_record("producer_opponent_policy", stage_start)
 
-            stage_start = self._profile_start()
-            opponent_entries = _entries_from_moves(
-                moves=opponent_moves,
-                movement=movement,
-                obs_tensors=obs_tensors,
-                player_id=opp_id,
-            )
-            self._profile_record("opponent_entries", stage_start)
+                stage_start = self._profile_start()
+                opponent_entries = _entries_from_moves(
+                    moves=opponent_moves,
+                    movement=movement,
+                    obs_tensors=obs_tensors,
+                    player_id=opp_id,
+                )
+                self._profile_record("opponent_entries", stage_start)
+            elif mode == "cheap":
+                stage_start = self._profile_start()
+                opponent_entries = _cheap_opponent_entries(
+                    movement=movement,
+                    obs=obs,
+                    cache=cache,
+                    status=status,
+                    config=base_config,
+                    opponent_id=opp_id,
+                )
+                self._profile_record("cheap_opponent_entries", stage_start)
+            elif mode == "none":
+                opponent_entries = None
+            else:
+                raise ValueError(f"unknown OEP opponent_response_mode: {mode!r}")
 
         stage_start = self._profile_start()
         opponent_launch_set = (
