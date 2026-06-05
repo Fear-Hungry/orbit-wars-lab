@@ -213,10 +213,14 @@ fase perf = MEDIR antes de consertar. Os candidatos abaixo são suspeitas a conf
         Producer ≥ baseline OEP, sem crash/timeout
         RESULTADO: não ativado por decisão. Sem run obrigatório neste ciclo; critério de ativação
         registrado em `docs/TRAINING.md` e `docs/SUBMISSION.md`.
-- [ ] F3. Minerar notebooks públicos fortes do fórum (exp. 105): 704095 (benchmark 109
+- [x] F3. Minerar notebooks públicos fortes do fórum (exp. 105): 704095 (benchmark 109
       agentes), 704113 (Producer ~1200). Extrair ideias de produção projetada / redistribuição
       / lookahead ainda não incorporadas. É inteligência competitiva, não código.
-  - [ ] verificar: lista de 2-3 ideias acionáveis extraídas, cada uma com hipótese testável
+      RESULTADO 2026-06-05: `docs/COMPETITIVE_INTEL.md` registra fontes Kaggle consultadas,
+      notebooks puxados para `/tmp/orbit_wars_f3` e quatro hipóteses acionáveis: shortlist top-K
+      por fonte, fitness com risco de timeline curta, redistribuição por dominância como candidato
+      de plano e genes compostos hammer/multiprong.
+  - [x] verificar: lista de 2-3 ideias acionáveis extraídas, cada uma com hipótese testável
         registrada em EXPERIMENTS.md
 - [x] F4. Fechar pendências de micro-tuning local (exp. 106-107): "reduzir perdas vs rush" e
       "decisão 4p com anti_meta+defensive juntos". ATENÇÃO: provavelmente SUPERADAS pelo pivô
