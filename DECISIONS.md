@@ -51,3 +51,20 @@ Orbit Wars 2p e 4p têm dinâmicas diferentes. Em 2p, dano direto é mais limpo.
 ## D10 — Submissão final sem Rust
 
 Rust é infraestrutura local. O `submission.py` final deve ser Python leve, com fallback heurístico, para reduzir risco de timeout, incompatibilidade e crash.
+
+## D11 — Fronteira Rust/Python é um invariante, não uma preferência (consolida D1 + D10)
+
+"Só Rust para ser rápido" **não é uma opção**: a plataforma fixa o formato. O Kaggle Orbit Wars executa um `agent(obs)` **Python** (via `kaggle-environments`); não há como submeter binário/extensão Rust. E velocidade não é o gargalo — o agente roda em 4–290 ms/step contra um `actTimeout` de **1 s** (`tests/test_official_spec.py`); o limite é qualidade do modelo de estado/valor, não throughput de compute.
+
+Regra de fronteira a preservar:
+
+> **Rust só simula; Python decide e é o que se submete.** Nenhum bot em `bots/` nem submissão em `artifacts/` pode importar `orbit_wars_core` / `orbit_wars_py`. O crate Rust é importado apenas pelo simulador local (`python/orbit_wars_gym/backend.py`) e pela CLI (`python/lab/cli.py`).
+
+Verificado em 2026-06-05: nenhum agente/submissão importa o crate. Dois modos de envio válidos:
+
+- **arquivo único Python puro** (`artifacts/submission.py`, só `math` — dependência zero; o `export_submission.py` serializa a rede PPO em forward pass Python puro, sem torch em runtime);
+- **tarball** com `orbit_lite` + torch (ex.: Producer, ~53 KB).
+
+Não compilar o planner para `.so` e submeter: casar Python/arquitetura do Kaggle é frágil e um `.so` que não carrega = submissão morta, sem ganho (não é CPU-bound). O único crescimento legítimo de Rust é **acelerar o treino local** (batch step vetorizado no `orbit_wars_core`), e só após perfilar e confirmar que o rollout em CPU é o gargalo.
+
+**Guarda recomendada:** um teste de arquitetura (`test_no_native_in_submission`) que falha se `artifacts/submission.py` ou o tarball importarem o crate Rust, para impedir regressão silenciosa que quebraria a submissão.

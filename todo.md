@@ -205,12 +205,17 @@ fase perf = MEDIR antes de consertar. Os candidatos abaixo são suspeitas a conf
   - [ ] verificar: probe instancia `kaggle_environments.make('orbit_wars')`, dá step do Rust a
         partir do snapshot oficial e compara planets/fleets/comets dentro de tolerância — ou
         EXPERIMENTS.md registra por que fica deferido.
-- [ ] 5c. Blindar a fronteira Rust/Python (invariante D11 em DECISIONS.md): teste de arquitetura
+- [x] 5c. Blindar a fronteira Rust/Python (invariante D11 em DECISIONS.md): teste de arquitetura
       `test_no_native_in_submission` que falha se `artifacts/submission.py` (e o tarball de
       submissão) importarem `orbit_wars_core` / `orbit_wars_py`. Impede regressão silenciosa que
       quebraria a submissão no Kaggle.
-  - [ ] verificar: o teste passa hoje (nenhum import nativo) e falha de propósito ao injetar um
+  - [x] verificar: o teste passa hoje (nenhum import nativo) e falha de propósito ao injetar um
         `import orbit_wars_py` no template de submissão.
+        RESULTADO: `test_no_native_imports_in_submission_artifacts_and_producer_tarball`
+        checa o template renderizado, `artifacts/submission.py` quando existe e o tarball
+        Producer gerado em `tmp_path`; `test_native_runtime_import_detector_rejects_rust_boundary_crossing`
+        prova que `import orbit_wars_py`/`from orbit_wars_rs import ...` seriam detectados.
+        `rtk .venv/bin/python -m pytest -q tests/test_submission_pipeline.py`: 41 passed.
 
 ## Parado / não fazer agora
 

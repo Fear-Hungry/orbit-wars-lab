@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import math
+import subprocess
+import sys
+import tarfile
 from pathlib import Path
 from time import perf_counter
 
@@ -13,6 +17,8 @@ from python.agents.submission_adapter import safe_submission_agent
 from python.orbit_wars_gym.encoding import observation_dim
 from python.orbit_wars_gym.entities import planet_id, planet_owner
 from scripts.export_submission import render_submission, validate_submission_template
+
+NATIVE_RUNTIME_MODULES = {"orbit_wars_core", "orbit_wars_py", "orbit_wars_rs"}
 
 SAMPLE_OBS = {
     "player": 0,
@@ -36,6 +42,27 @@ def _assert_moves_are_legal(obs: dict, moves: list[list[float]]) -> None:
         assert int(move[0]) in own_ids
         assert math.isfinite(float(move[1]))
         assert int(move[2]) > 0
+
+
+def _native_runtime_imports(source: str) -> set[str]:
+    tree = ast.parse(source)
+    imports: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".", 1)[0]
+                if root in NATIVE_RUNTIME_MODULES:
+                    imports.add(root)
+        elif isinstance(node, ast.ImportFrom) and node.module is not None:
+            root = node.module.split(".", 1)[0]
+            if root in NATIVE_RUNTIME_MODULES:
+                imports.add(root)
+    return imports
+
+
+def _assert_no_native_runtime_imports(source: str, *, label: str) -> None:
+    imports = _native_runtime_imports(source)
+    assert imports == set(), f"{label} imports native Rust runtime modules: {sorted(imports)}"
 
 
 def _load_rendered_submission(tmp_path: Path, module_name: str):
@@ -948,11 +975,62 @@ def test_exported_submission_avoids_local_runtime_dependencies():
         Path("python/submission/submission_template.py").read_text(encoding="utf-8"),
         checkpoint=None,
     )
-    assert "orbit_wars_rs" not in rendered
+    _assert_no_native_runtime_imports(rendered, label="rendered submission")
     assert "requests" not in rendered
     assert "torch" not in rendered
     assert "numpy" not in rendered
     assert "fallback_greedy" in rendered
+
+
+def test_native_runtime_import_detector_rejects_rust_boundary_crossing():
+    source = """
+import orbit_wars_py
+from orbit_wars_rs import PyBatchSimulator
+from math import sqrt
+"""
+
+    assert _native_runtime_imports(source) == {"orbit_wars_py", "orbit_wars_rs"}
+
+
+def test_no_native_imports_in_submission_artifacts_and_producer_tarball(tmp_path: Path):
+    rendered = render_submission(
+        Path("python/submission/submission_template.py").read_text(encoding="utf-8"),
+        checkpoint=None,
+    )
+    _assert_no_native_runtime_imports(rendered, label="rendered submission")
+
+    submission_path = Path("artifacts/submission.py")
+    if submission_path.exists():
+        _assert_no_native_runtime_imports(
+            submission_path.read_text(encoding="utf-8"),
+            label=str(submission_path),
+        )
+
+    tarball = tmp_path / "submission_producer.tar.gz"
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "scripts.package_producer_submission",
+            "--out",
+            str(tarball),
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    with tarfile.open(tarball, "r:gz") as tar:
+        python_members = [
+            member
+            for member in tar.getmembers()
+            if member.isfile() and member.name.endswith(".py")
+        ]
+        assert python_members
+        for member in python_members:
+            extracted = tar.extractfile(member)
+            assert extracted is not None
+            source = extracted.read().decode("utf-8")
+            _assert_no_native_runtime_imports(source, label=f"{tarball}:{member.name}")
 
 
 def test_export_refuses_template_without_fallback_guardrail():
