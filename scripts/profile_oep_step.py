@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 from pathlib import Path
 from statistics import fmean
 from time import perf_counter
 from typing import Any
 
-from bots.oep.planner import OEPLiteConfig, OEPLiteRuntime
+from bots.oep.planner import OEPLiteRuntime, _env_config
 from bots.producer.agent import agent as producer_agent
 from python.orbit_wars_gym.backend import RustBatchBackend, RustConfig
 from python.orbit_wars_gym.observation import to_official_observation
@@ -51,7 +52,8 @@ def _run_match(
     runtime = OEPLiteRuntime(
         seed_policy=producer_agent,
         opponent_policy=producer_agent,
-        config=OEPLiteConfig(
+        config=dataclasses.replace(
+            _env_config(),
             profile_stages=True,
             opponent_response_mode=str(opponent_response_mode),
         ),

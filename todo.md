@@ -55,6 +55,13 @@ margin=+0.125), **legal sob orçamento de tempo sem fallback silencioso**.
         mean_ms=287.48, crash=0.0, timeout=0.0, invalid=0.0.
   - [ ] 1b-iii. Reduzir C por configuração (shortlist/frações/waves/regroup) até o pior caso
         medido ficar sob o teto com margem, sem alterar a regra de seleção por fitness.
+        PROGRESSO 2026-06-05: `bots/oep/planner.py` agora expõe knobs via env vars
+        (`OEP_MAX_SOURCES_PER_LANE`, `OEP_MAX_OFFENSIVE_TARGETS`,
+        `OEP_MAX_DEFENSIVE_TARGETS`, `OEP_MAX_WAVES_PER_TURN`, `OEP_FRACTIONS`,
+        `OEP_MIN_ADVANTAGE`) e `scripts/profile_oep_step.py` usa a mesma configuração
+        do agente. Tentativa `4×4,waves=3,fractions=0.5,1.0` reduziu custo no smoke
+        4 seeds (`mean_ms` 273.99→200.86, timeout=0), mas regrediu margem
+        0.00000→-0.50000 e win 0.50000→0.25000; rejeitada como default.
   - [ ] 1b-iv. Se um dia virar EA iterativa real, reintroduzir anytime como output legítimo
         best-so-far da busca, nunca como fallback por exceção/timeout.
   - [ ] verificar: config ampla (a que deu win=0.5625) rodar vs Producer 96 seeds →

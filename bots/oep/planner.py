@@ -1090,8 +1090,51 @@ class OEPLiteRuntime:
         return sparse_action_row_to_moves(sparse_row, obs, player_id=player_id)
 
 def _env_config() -> OEPLiteConfig:
+    def _env_int(name: str, default: int) -> int:
+        raw = os.getenv(name)
+        if raw is None or raw.strip() == "":
+            return int(default)
+        return int(raw)
+
+    def _env_float(name: str, default: float) -> float:
+        raw = os.getenv(name)
+        if raw is None or raw.strip() == "":
+            return float(default)
+        return float(raw)
+
+    def _env_fractions(default: tuple[float, ...]) -> tuple[float, ...]:
+        raw = os.getenv("OEP_FRACTIONS")
+        if raw is None or raw.strip() == "":
+            return default
+        values = tuple(float(part.strip()) for part in raw.split(",") if part.strip())
+        if not values:
+            raise ValueError("OEP_FRACTIONS must contain at least one float")
+        return values
+
+    defaults = OEPLiteConfig()
     return OEPLiteConfig(
-        opponent_response_mode=os.getenv("OEP_OPPONENT_RESPONSE_MODE", "producer"),
+        opponent_response_mode=os.getenv(
+            "OEP_OPPONENT_RESPONSE_MODE",
+            defaults.opponent_response_mode,
+        ),
+        fractions=_env_fractions(defaults.fractions),
+        min_advantage=_env_float("OEP_MIN_ADVANTAGE", defaults.min_advantage),
+        max_sources_per_lane=_env_int(
+            "OEP_MAX_SOURCES_PER_LANE",
+            defaults.max_sources_per_lane,
+        ),
+        max_offensive_targets=_env_int(
+            "OEP_MAX_OFFENSIVE_TARGETS",
+            defaults.max_offensive_targets,
+        ),
+        max_defensive_targets=_env_int(
+            "OEP_MAX_DEFENSIVE_TARGETS",
+            defaults.max_defensive_targets,
+        ),
+        max_waves_per_turn=_env_int(
+            "OEP_MAX_WAVES_PER_TURN",
+            defaults.max_waves_per_turn,
+        ),
     )
 
 

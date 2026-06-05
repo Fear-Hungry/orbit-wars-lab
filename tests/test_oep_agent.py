@@ -61,3 +61,30 @@ def test_oep_runtime_fails_fast_when_oep_planner_errors(monkeypatch: pytest.Monk
 
     with pytest.raises(RuntimeError, match="forced OEP planner failure"):
         runtime.act(_initial_official_obs())
+
+
+def test_oep_env_config_overrides_search_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OEP_FRACTIONS", "0.25,0.5")
+    monkeypatch.setenv("OEP_MIN_ADVANTAGE", "0.1")
+    monkeypatch.setenv("OEP_MAX_SOURCES_PER_LANE", "4")
+    monkeypatch.setenv("OEP_MAX_OFFENSIVE_TARGETS", "5")
+    monkeypatch.setenv("OEP_MAX_DEFENSIVE_TARGETS", "1")
+    monkeypatch.setenv("OEP_MAX_WAVES_PER_TURN", "3")
+    monkeypatch.setenv("OEP_OPPONENT_RESPONSE_MODE", "producer")
+
+    config = oep_planner._env_config()
+
+    assert config.fractions == (0.25, 0.5)
+    assert config.min_advantage == 0.1
+    assert config.max_sources_per_lane == 4
+    assert config.max_offensive_targets == 5
+    assert config.max_defensive_targets == 1
+    assert config.max_waves_per_turn == 3
+    assert config.opponent_response_mode == "producer"
+
+
+def test_oep_env_config_rejects_empty_fraction_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OEP_FRACTIONS", ",,,")
+
+    with pytest.raises(ValueError, match="OEP_FRACTIONS"):
+        oep_planner._env_config()
