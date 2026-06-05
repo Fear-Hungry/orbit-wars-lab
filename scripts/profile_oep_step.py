@@ -15,6 +15,19 @@ from python.orbit_wars_gym.observation import to_official_observation
 from python.orbit_wars_gym.rules import moves_are_legal, normalized_margin
 
 
+def _percentile(values: list[float], q: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return float(ordered[0])
+    pos = (len(ordered) - 1) * max(0.0, min(1.0, float(q)))
+    lo = int(pos)
+    hi = min(lo + 1, len(ordered) - 1)
+    frac = pos - lo
+    return float(ordered[lo] * (1.0 - frac) + ordered[hi] * frac)
+
+
 def _producer_policy(state: dict[str, Any], player: int) -> list[list[float]]:
     obs = to_official_observation(state, player=player)
     moves = producer_agent(obs)
@@ -76,6 +89,7 @@ def _run_match(
     crashes = 0.0
     timeouts = 0.0
     invalid_actions = 0.0
+    decision_ms: list[float] = []
     outcome = {"scores": [0.0, 0.0], "done": False}
 
     while True:
@@ -88,6 +102,7 @@ def _run_match(
                 if player_idx == int(submission_player):
                     decision_turns += 1.0
                     elapsed_seconds += elapsed
+                    decision_ms.append(1000.0 * elapsed)
                     if elapsed > float(act_timeout):
                         timeouts += 1.0
                         moves = []
@@ -114,6 +129,10 @@ def _run_match(
         "decision_turns": decision_turns,
         "elapsed_seconds": elapsed_seconds,
         "mean_decision_ms": 1000.0 * elapsed_seconds / max(1.0, decision_turns),
+        "p50_decision_ms": _percentile(decision_ms, 0.50),
+        "p95_decision_ms": _percentile(decision_ms, 0.95),
+        "p99_decision_ms": _percentile(decision_ms, 0.99),
+        "max_decision_ms": max(decision_ms) if decision_ms else 0.0,
         "normalized_margin": normalized_margin(scores, int(submission_player)),
         "crashes": crashes,
         "timeouts": timeouts,
@@ -147,6 +166,9 @@ def _summarize(records: list[dict[str, float]], profile: dict[str, dict[str, flo
             "games": len(records),
             "decision_turns": decisions,
             "mean_decision_ms": 1000.0 * elapsed / max(1.0, decisions),
+            "mean_match_p95_decision_ms": fmean(record["p95_decision_ms"] for record in records) if records else 0.0,
+            "max_match_p95_decision_ms": max((record["p95_decision_ms"] for record in records), default=0.0),
+            "max_decision_ms": max((record["max_decision_ms"] for record in records), default=0.0),
             "mean_score_margin": fmean(record["normalized_margin"] for record in records) if records else 0.0,
             "crash_rate": sum(record["crashes"] for record in records) / max(1.0, decisions),
             "timeout_rate": sum(record["timeouts"] for record in records) / max(1.0, decisions),

@@ -76,6 +76,11 @@ margin=+0.125), **legal sob orçamento de tempo sem fallback silencioso**.
         TENTATIVA 2026-06-05: deadline por estágios é legal (`OEP_TIME_BUDGET_MS=20`
         teve crash/timeout/invalid=0), mas `150ms` em 16 seeds regrediu margin
         0.00000→-0.18750; rejeitado e removido para cumprir a regra sem fallback.
+        PROGRESSO 2026-06-05: `scripts/profile_oep_step.py` agora reporta `p50/p95/p99/max`
+        por partida e cauda agregada. Profile pós-cache, `1` seed, `500` steps,
+        `opponent_response_mode=producer`: `mean_decision_ms=33.44`, `max_decision_ms=59.97`,
+        `max_match_p95_decision_ms=42.20`, crash/timeout/invalid=0.0. Neste smoke a cauda
+        não é o risco imediato; as duas chamadas Producer ainda dominam (~55.6% do tempo).
 - [ ] 1c. Trocar o candidato único guloso por BUSCA sobre população de genomas multi-lançamento
       (OEP de verdade). (Lit. forte: Justesen, Mahlmann & Togelius 2016)
       ACHADO: hoje há UM só candidato OEP, montado guloso em `_greedy_select` (L697), comparado
