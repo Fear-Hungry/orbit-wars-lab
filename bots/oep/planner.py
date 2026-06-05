@@ -43,6 +43,13 @@ Policy = Callable[[dict[str, Any]], list[list[float]]]
 
 
 @dataclass(frozen=True)
+class LaneIntent:
+    source_planet_id: int
+    target_planet_id: int
+    fraction: float
+
+
+@dataclass(frozen=True)
 class OEPPlannerConfig:
     horizon: int = 18
     max_sources_per_lane: int = 12
@@ -327,6 +334,170 @@ def _plan_fitness(
     return float(score.reshape(-1)[0].item())
 
 
+def _planet_id_to_slot(movement: PlanetMovement) -> dict[int, int]:
+    return {
+        int(planet_id.item()): int(slot)
+        for slot, planet_id in enumerate(movement.planet_ids)
+    }
+
+
+def _safe_drain_by_slot(*, status, obs, player_id: int) -> Tensor:
+    if int(obs.P) == 0:
+        return torch.zeros(0, dtype=obs.ships.dtype, device=obs.device)
+    source_idx = torch.arange(int(obs.P), dtype=torch.long, device=obs.device)
+    H = max(0, int(status.ships.shape[-1]) - 1)
+    return safe_drain(
+        status,
+        source_idx=source_idx,
+        source_ships=obs.ships.to(obs.ships.dtype),
+        H_eff=torch.full((), float(H), dtype=obs.ships.dtype, device=obs.device),
+        player_id=int(player_id),
+    )
+
+
+def _lane_intents_from_entries(
+    entries: LaunchEntries,
+    *,
+    movement: PlanetMovement,
+    status,
+    obs,
+    player_id: int,
+) -> tuple[LaneIntent, ...]:
+    valid_slots = torch.where(entries.valid & (entries.ships >= 1.0))[0]
+    if int(valid_slots.numel()) == 0:
+        return ()
+    drain = _safe_drain_by_slot(status=status, obs=obs, player_id=int(player_id))
+    lanes: list[LaneIntent] = []
+    seen: set[tuple[int, int, float]] = set()
+    for entry_idx in valid_slots.tolist():
+        source_slot = int(entries.source_slots[entry_idx].item())
+        target_slot = int(entries.target_slots[entry_idx].item())
+        if source_slot < 0 or target_slot < 0 or source_slot >= obs.P or target_slot >= obs.P:
+            continue
+        denom = float(drain[source_slot].item()) if int(drain.shape[0]) > source_slot else 0.0
+        if denom < 1.0:
+            continue
+        ships = float(entries.ships[entry_idx].item())
+        fraction = max(0.05, min(1.0, ships / denom))
+        source_id = int(movement.planet_ids[source_slot].item())
+        target_id = int(movement.planet_ids[target_slot].item())
+        key = (source_id, target_id, round(fraction, 3))
+        if key in seen:
+            continue
+        seen.add(key)
+        lanes.append(
+            LaneIntent(
+                source_planet_id=source_id,
+                target_planet_id=target_id,
+                fraction=fraction,
+            )
+        )
+    return tuple(lanes)
+
+
+def _entries_from_lane_intents(
+    lanes: tuple[LaneIntent, ...],
+    *,
+    movement: PlanetMovement,
+    obs,
+    status,
+    config: OEPPlannerConfig,
+    player_id: int,
+) -> LaunchEntries:
+    if not lanes:
+        return _empty_entries(obs.device, obs.ships.dtype)
+    slot_by_id = _planet_id_to_slot(movement)
+    source_slots: list[int] = []
+    target_slots: list[int] = []
+    fractions: list[float] = []
+    for lane in lanes:
+        source_slot = slot_by_id.get(int(lane.source_planet_id))
+        target_slot = slot_by_id.get(int(lane.target_planet_id))
+        if source_slot is None or target_slot is None:
+            continue
+        if source_slot == target_slot:
+            continue
+        if not bool(obs.alive[source_slot]) or not bool(obs.owned[source_slot]):
+            continue
+        if not bool(obs.alive[target_slot]):
+            continue
+        source_slots.append(source_slot)
+        target_slots.append(target_slot)
+        fractions.append(max(0.05, min(1.0, float(lane.fraction))))
+    if not source_slots:
+        return _empty_entries(obs.device, obs.ships.dtype)
+
+    device = obs.device
+    dtype = obs.ships.dtype
+    src = torch.tensor(source_slots, dtype=torch.long, device=device)
+    tgt = torch.tensor(target_slots, dtype=torch.long, device=device)
+    frac = torch.tensor(fractions, dtype=dtype, device=device)
+    drain = _safe_drain_by_slot(status=status, obs=obs, player_id=int(player_id))
+    ships = (drain[src] * frac).floor()
+    valid = ships >= max(1.0, float(config.min_ships_to_launch))
+    if not bool(valid.any()):
+        return _empty_entries(device, dtype)
+
+    count = int(src.shape[0])
+    eta_cap = torch.full((count,), float(config.horizon), dtype=dtype, device=device)
+    pair_sizes = ships.view(count, 1, 1).expand(count, count, 1)
+    active = reachable_mask(
+        movement,
+        source_idx=src,
+        target_idx=tgt,
+        fleet_sizes=pair_sizes,
+        eta_cap=eta_cap,
+    ).squeeze(-1)
+    aim = intercept_angle(
+        movement,
+        src.view(count, 1),
+        tgt.view(1, count),
+        ships.view(count, 1).expand(count, count),
+        active=active,
+    )
+    eta = aim["eta"].diagonal()
+    angle = aim["angle"].diagonal()
+    aimed_valid = aim["viable"].diagonal()
+    valid = valid & aimed_valid & (eta <= eta_cap)
+
+    K_eta = max(1, min(int(config.horizon), max(0, int(status.ships.shape[-1]) - 1)))
+    floor = capture_floor(
+        status,
+        target_idx=tgt,
+        k_max=K_eta,
+        capture_overhead=1.0,
+        player_id=int(player_id),
+    )
+    K = int(floor.shape[-1])
+    if K > 0:
+        k_arr = (eta.clamp(min=1.0, max=float(K)).ceil().long() - 1).clamp(0, K - 1)
+        floor_at_arr = floor.gather(-1, k_arr.unsqueeze(-1)).squeeze(-1)
+        target_owned = obs.owned[tgt]
+        valid = valid & (target_owned | (ships >= floor_at_arr))
+
+    remaining = obs.ships.to(dtype).floor().clone()
+    repaired_valid = torch.zeros_like(valid)
+    for idx in range(int(src.shape[0])):
+        if not bool(valid[idx]):
+            continue
+        source_slot = int(src[idx].item())
+        send = ships[idx].floor()
+        if float(send.item()) < 1.0 or send > remaining[source_slot]:
+            continue
+        ships[idx] = send
+        remaining[source_slot] = (remaining[source_slot] - send).clamp(min=0.0)
+        repaired_valid[idx] = True
+
+    return LaunchEntries(
+        source_slots=src,
+        target_slots=tgt,
+        ships=torch.where(repaired_valid, ships, torch.zeros_like(ships)),
+        angle=torch.where(repaired_valid, angle, torch.zeros_like(angle)),
+        eta=torch.where(repaired_valid, eta, torch.ones_like(eta)),
+        valid=repaired_valid,
+    )
+
+
 def _build_fraction_candidates(
     *,
     movement: PlanetMovement,
@@ -565,11 +736,13 @@ class OEPLiteMemory:
         self.movement = None
         self.cached_player_count: int | None = None
         self.last_sparse_action_row: dict | None = None
+        self.last_lanes: tuple[LaneIntent, ...] = ()
 
     def reset(self) -> None:
         self.movement = None
         self.cached_player_count = None
         self.last_sparse_action_row = None
+        self.last_lanes = ()
 
 
 class OEPLiteRuntime:
@@ -663,6 +836,15 @@ class OEPLiteRuntime:
             if opponent_entries is not None and opp_id is not None
             else None
         )
+        oep_config = self._oep_config(base_config)
+        incumbent_entries = _entries_from_lane_intents(
+            mem.last_lanes,
+            movement=movement,
+            obs=obs,
+            status=status,
+            config=oep_config,
+            player_id=int(obs.player_id),
+        )
         oep_entries = plan_oep_waves(
             movement=movement,
             obs=obs,
@@ -671,13 +853,22 @@ class OEPLiteRuntime:
             status=status,
             prod=movement.planet_prod,
             alive_by_step=alive_by_step,
-            config=self._oep_config(base_config),
+            config=oep_config,
             fractions=self.config.fractions,
             player_count=player_count,
             opponent_entries=opponent_entries,
         )
         producer_fitness = _plan_fitness(
             producer_entries,
+            opponent_launch_set=opponent_launch_set,
+            status=status,
+            prod=movement.planet_prod,
+            alive_by_step=alive_by_step,
+            player_count=player_count,
+            player_id=int(obs.player_id),
+        )
+        incumbent_fitness = _plan_fitness(
+            incumbent_entries,
             opponent_launch_set=opponent_launch_set,
             status=status,
             prod=movement.planet_prod,
@@ -694,13 +885,26 @@ class OEPLiteRuntime:
             player_count=player_count,
             player_id=int(obs.player_id),
         )
+        incumbent_is_valid = bool((incumbent_entries.valid & (incumbent_entries.ships >= 1.0)).any())
+        seed_entries = producer_entries
+        seed_fitness = producer_fitness
+        if incumbent_is_valid and incumbent_fitness > producer_fitness:
+            seed_entries = incumbent_entries
+            seed_fitness = incumbent_fitness
         chosen = (
             oep_entries
-            if oep_fitness > producer_fitness + float(self.config.min_advantage)
-            else producer_entries
+            if oep_fitness > seed_fitness + float(self.config.min_advantage)
+            else seed_entries
         )
 
         chosen = disambiguate_duplicate_launches(chosen)
+        mem.last_lanes = _lane_intents_from_entries(
+            chosen,
+            movement=movement,
+            status=status,
+            obs=obs,
+            player_id=int(obs.player_id),
+        )
         launches = infer_planned_launches_from_entries(
             obs_tensors=obs_tensors,
             movement=movement,
