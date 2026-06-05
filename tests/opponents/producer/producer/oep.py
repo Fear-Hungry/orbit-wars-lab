@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import dataclasses
-import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -52,7 +51,6 @@ class OEPLiteConfig:
     """Experimental one-turn OEP overlay for the tracked Producer fixture."""
 
     base: ProducerLiteConfig = dataclasses.field(default_factory=ProducerLiteConfig)
-    wall_clock_ms: float = 200.0
     fractions: tuple[float, ...] = (0.5, 1.0)
     opponent_response: bool = True
     min_advantage: float = 0.0
@@ -191,6 +189,44 @@ def _score_launch_set(
     me = net[..., int(player_id)]
     opp = net.sum(dim=-1) - me
     return me - opp
+
+
+def _plan_fitness(
+    entries: LaunchEntries,
+    *,
+    opponent_launch_set: LaunchSet | None,
+    status,
+    prod: Tensor,
+    alive_by_step: Tensor,
+    player_count: int,
+    player_id: int,
+) -> float:
+    own_launch_set = _launch_set_from_entries(
+        entries=entries,
+        owner_id=int(player_id),
+        candidates=1,
+    )
+    if own_launch_set is None:
+        return 0.0
+    score = _score_launch_set(
+        _combine_launch_sets(own_launch_set, opponent_launch_set),
+        status=status,
+        prod=prod,
+        alive_by_step=alive_by_step,
+        player_count=int(player_count),
+        player_id=int(player_id),
+    )
+    if opponent_launch_set is not None:
+        opponent_baseline = _score_launch_set(
+            opponent_launch_set,
+            status=status,
+            prod=prod,
+            alive_by_step=alive_by_step,
+            player_count=int(player_count),
+            player_id=int(player_id),
+        )
+        score = score - opponent_baseline
+    return float(score.reshape(-1)[0].item())
 
 
 def _build_fraction_candidates(
@@ -472,7 +508,6 @@ class OEPLiteRuntime:
         )
 
     def tensor_action(self, obs_tensors: dict, raw_obs: Any | None = None):
-        start = time.perf_counter()
         mem = self.memory
         if bool((obs_tensors["step"] == 0).all()):
             mem.reset()
@@ -510,42 +545,67 @@ class OEPLiteRuntime:
         opponent_entries = None
         opp_id = _opponent_id(int(obs.player_id), player_count)
         if bool(self.config.opponent_response) and raw_obs is not None and opp_id is not None:
-            try:
-                opp_tensors = single_obs_to_tensor(_with_player(raw_obs, opp_id), player_id=opp_id)
-                opp_row = run_turn(
-                    opp_tensors,
-                    config=base_config,
-                    player_count=player_count,
-                    memory=mem.opponent_memory,
-                )
-                opponent_entries = _entries_from_sparse_payload(
-                    payload=opp_row,
-                    movement=movement,
-                    obs_tensors=obs_tensors,
-                    player_id=opp_id,
-                )
-            except Exception:
-                opponent_entries = None
-
-        elapsed_ms = (time.perf_counter() - start) * 1000.0
-        if elapsed_ms >= float(self.config.wall_clock_ms):
-            chosen = producer_entries
-        else:
-            chosen = plan_oep_waves(
-                movement=movement,
-                obs=obs,
-                obs_tensors=obs_tensors,
-                cache=cache,
-                status=status,
-                prod=movement.planet_prod,
-                alive_by_step=alive_by_step,
-                config=self._oep_config(base_config),
-                fractions=self.config.fractions,
+            opp_tensors = single_obs_to_tensor(_with_player(raw_obs, opp_id), player_id=opp_id)
+            opp_row = run_turn(
+                opp_tensors,
+                config=base_config,
                 player_count=player_count,
-                opponent_entries=opponent_entries,
+                memory=mem.opponent_memory,
             )
-            if not bool(chosen.valid.any()):
-                chosen = producer_entries
+            opponent_entries = _entries_from_sparse_payload(
+                payload=opp_row,
+                movement=movement,
+                obs_tensors=obs_tensors,
+                player_id=opp_id,
+            )
+        elif bool(self.config.opponent_response) and opp_id is not None:
+            raise ValueError("OEPLiteRuntime.tensor_action requires raw_obs for opponent response")
+
+        opponent_launch_set = (
+            _launch_set_from_entries(
+                entries=opponent_entries,
+                owner_id=int(opp_id),
+                candidates=1,
+            )
+            if opponent_entries is not None and opp_id is not None
+            else None
+        )
+        oep_entries = plan_oep_waves(
+            movement=movement,
+            obs=obs,
+            obs_tensors=obs_tensors,
+            cache=cache,
+            status=status,
+            prod=movement.planet_prod,
+            alive_by_step=alive_by_step,
+            config=self._oep_config(base_config),
+            fractions=self.config.fractions,
+            player_count=player_count,
+            opponent_entries=opponent_entries,
+        )
+        producer_fitness = _plan_fitness(
+            producer_entries,
+            opponent_launch_set=opponent_launch_set,
+            status=status,
+            prod=movement.planet_prod,
+            alive_by_step=alive_by_step,
+            player_count=player_count,
+            player_id=int(obs.player_id),
+        )
+        oep_fitness = _plan_fitness(
+            oep_entries,
+            opponent_launch_set=opponent_launch_set,
+            status=status,
+            prod=movement.planet_prod,
+            alive_by_step=alive_by_step,
+            player_count=player_count,
+            player_id=int(obs.player_id),
+        )
+        chosen = (
+            oep_entries
+            if oep_fitness > producer_fitness + float(self.config.min_advantage)
+            else producer_entries
+        )
 
         chosen = disambiguate_duplicate_launches(chosen)
         launches = infer_planned_launches_from_entries(
