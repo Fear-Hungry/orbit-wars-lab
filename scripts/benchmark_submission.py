@@ -46,9 +46,27 @@ def _load_submission_agent(path: Path) -> Callable[[dict[str, Any]], list[list[f
 
 
 def _submission_runtime(agent: Callable[[dict[str, Any]], list[list[float]]]) -> Policy:
+    def _stats_snapshot() -> dict[str, float]:
+        raw = getattr(agent, "__globals__", {}).get("SUBMISSION_STATS", {})
+        if not isinstance(raw, dict):
+            return {}
+        return {
+            "fallbacks": float(raw.get("fallbacks", 0.0)),
+            "illegal_moves": float(raw.get("illegal_moves", 0.0)),
+            "fallback_errors": float(raw.get("fallback_errors", 0.0)),
+        }
+
     def act(state: dict[str, Any], player: int) -> list[list[float]]:
         obs = to_official_observation(state, player=player)
-        moves = agent(obs)
+        before = _stats_snapshot()
+        try:
+            moves = agent(obs)
+        finally:
+            after = _stats_snapshot()
+            act._last_submission_stats_delta = {
+                name: max(0.0, float(after.get(name, 0.0)) - float(before.get(name, 0.0)))
+                for name in ("fallbacks", "illegal_moves", "fallback_errors")
+            }
         return list(moves) if isinstance(moves, list) else []
 
     return act
@@ -97,6 +115,9 @@ def _empty_runtime_stats() -> dict[str, float]:
         "crashes": 0.0,
         "timeouts": 0.0,
         "invalid_actions": 0.0,
+        "fallbacks": 0.0,
+        "policy_illegal_moves": 0.0,
+        "fallback_errors": 0.0,
         "decision_turns": 0.0,
         "elapsed_seconds": 0.0,
     }
@@ -131,6 +152,15 @@ def _run_match(
                 start = perf_counter()
                 moves = policy(state, idx)
                 elapsed = perf_counter() - start
+                submission_delta = getattr(policy, "_last_submission_stats_delta", {})
+                if isinstance(submission_delta, dict):
+                    stats["fallbacks"] += float(submission_delta.get("fallbacks", 0.0))
+                    stats["policy_illegal_moves"] += float(
+                        submission_delta.get("illegal_moves", 0.0)
+                    )
+                    stats["fallback_errors"] += float(
+                        submission_delta.get("fallback_errors", 0.0)
+                    )
                 stats["elapsed_seconds"] += elapsed
                 if elapsed > act_timeout:
                     stats["timeouts"] += 1.0
@@ -206,6 +236,9 @@ def _four_player_task(task: dict[str, Any]) -> dict[str, Any]:
         "crashes": runtime_stats[0]["crashes"],
         "timeouts": runtime_stats[0]["timeouts"],
         "invalid_actions": runtime_stats[0]["invalid_actions"],
+        "fallbacks": runtime_stats[0]["fallbacks"],
+        "policy_illegal_moves": runtime_stats[0]["policy_illegal_moves"],
+        "fallback_errors": runtime_stats[0]["fallback_errors"],
         "decision_turns": runtime_stats[0]["decision_turns"],
         "elapsed_seconds": runtime_stats[0]["elapsed_seconds"],
         "lineup": [name for name, _ in picks],
@@ -221,6 +254,9 @@ def _summary_from_records(records: list[dict[str, float]]) -> dict[str, float]:
             "crash_rate": 0.0,
             "timeout_rate": 0.0,
             "invalid_action_rate": 0.0,
+            "fallback_rate": 0.0,
+            "policy_illegal_move_rate": 0.0,
+            "fallback_error_rate": 0.0,
             "mean_decision_ms": 0.0,
         }
     decisions = sum(record["decision_turns"] for record in records)
@@ -232,6 +268,11 @@ def _summary_from_records(records: list[dict[str, float]]) -> dict[str, float]:
         "crash_rate": sum(record["crashes"] for record in records) / max(decisions, 1.0),
         "timeout_rate": sum(record["timeouts"] for record in records) / max(decisions, 1.0),
         "invalid_action_rate": sum(record["invalid_actions"] for record in records)
+        / max(decisions, 1.0),
+        "fallback_rate": sum(record["fallbacks"] for record in records) / max(decisions, 1.0),
+        "policy_illegal_move_rate": sum(record["policy_illegal_moves"] for record in records)
+        / max(decisions, 1.0),
+        "fallback_error_rate": sum(record["fallback_errors"] for record in records)
         / max(decisions, 1.0),
         "mean_decision_ms": 1000.0 * elapsed / max(decisions, 1.0),
     }
@@ -349,6 +390,9 @@ def benchmark_four_player(
                 "crashes": runtime_stats[0]["crashes"],
                 "timeouts": runtime_stats[0]["timeouts"],
                 "invalid_actions": runtime_stats[0]["invalid_actions"],
+                "fallbacks": runtime_stats[0]["fallbacks"],
+                "policy_illegal_moves": runtime_stats[0]["policy_illegal_moves"],
+                "fallback_errors": runtime_stats[0]["fallback_errors"],
                 "decision_turns": runtime_stats[0]["decision_turns"],
                 "elapsed_seconds": runtime_stats[0]["elapsed_seconds"],
                 "lineup": [name for name, _ in picks],

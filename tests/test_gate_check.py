@@ -4,6 +4,7 @@ from scripts.gate_check import (
     _final_seed_list,
     _gate_floors,
     _gate_holdout,
+    _gate_no_silent_fallbacks,
     _gate_regression,
     _load_config,
 )
@@ -126,6 +127,40 @@ def test_gate_holdout_enforces_worst_decile_floor():
 
     assert not gate["passed"]
     assert gate["metrics"]["worst_decile_score_margin"] == -1.0
+
+
+def test_gate_no_silent_fallbacks_rejects_nonzero_fallback_rate():
+    report = {
+        "formats": [
+            {
+                "format": "2p",
+                "opponents": [
+                    {
+                        "opponent": "producer",
+                        "summary": {
+                            "fallback_rate": 0.25,
+                            "policy_illegal_move_rate": 0.0,
+                            "fallback_error_rate": 0.0,
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+
+    gate = _gate_no_silent_fallbacks(report)
+
+    assert not gate["passed"]
+    failed = [check for check in gate["checks"] if not check["passed"]]
+    assert failed == [
+        {
+            "opponent": "producer",
+            "metric": "fallback_rate",
+            "value": 0.25,
+            "maximum": 0.0,
+            "passed": False,
+        }
+    ]
 
 
 def test_final_seed_list_uses_holdout_range_offset():

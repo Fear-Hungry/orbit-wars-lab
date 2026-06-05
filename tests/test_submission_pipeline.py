@@ -968,6 +968,10 @@ def test_exported_submission_falls_back_on_illegal_output(tmp_path: Path):
     moves = module.agent(SAMPLE_OBS)
     assert isinstance(moves, list)
     _assert_moves_are_legal(SAMPLE_OBS, moves)
+    assert module.SUBMISSION_STATS["calls"] == 1
+    assert module.SUBMISSION_STATS["illegal_moves"] == 1
+    assert module.SUBMISSION_STATS["fallbacks"] == 1
+    assert module.SUBMISSION_STATS["fallback_errors"] == 0
 
 
 def test_exported_submission_avoids_local_runtime_dependencies():

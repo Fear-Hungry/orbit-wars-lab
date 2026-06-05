@@ -284,13 +284,16 @@ def _neural_decode(obs, player, action):
 
 
 def agent(obs):
+    _submission_stats_increment("calls")
     try:
         player = int(obs.get("player", 0))
         moves = _neural_decode(obs, player, _neural_action(obs, player))
         if not _moves_are_legal(obs, player, moves):
+            _submission_stats_increment("illegal_moves")
             raise ValueError("neural policy produced illegal moves")
         return list(moves)
     except Exception:
+        _submission_stats_increment("fallbacks")
         return fallback_greedy(obs)
 '''
 

@@ -29,6 +29,35 @@ def test_parallel_two_player_matches_serial_results(tmp_path: Path):
     assert _drop_timing(serial["records"]) == _drop_timing(parallel["records"])
 
 
+def test_benchmark_reports_submission_fallback_rate(tmp_path: Path):
+    submission = tmp_path / "submission.py"
+    submission.write_text(
+        """
+SUBMISSION_STATS = {"fallbacks": 0, "illegal_moves": 0, "fallback_errors": 0}
+
+def agent(obs):
+    SUBMISSION_STATS["fallbacks"] += 1
+    return []
+""",
+        encoding="utf-8",
+    )
+
+    report = benchmark_two_player_spec(
+        submission,
+        "greedy",
+        seeds=[0],
+        episode_steps=8,
+        enable_comets=False,
+        act_timeout=1.0,
+        jobs=1,
+    )
+
+    assert report["summary"]["fallback_rate"] == 1.0
+    assert report["summary"]["policy_illegal_move_rate"] == 0.0
+    assert report["summary"]["fallback_error_rate"] == 0.0
+    assert all(record["fallbacks"] == record["decision_turns"] for record in report["records"])
+
+
 def test_parallel_four_player_matches_serial_lineups(tmp_path: Path):
     submission = tmp_path / "submission.py"
     submission.write_text("def agent(obs):\n    return []\n", encoding="utf-8")

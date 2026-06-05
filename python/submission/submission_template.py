@@ -1397,6 +1397,18 @@ def _moves_are_legal(obs, player, moves):
     return True
 
 
+SUBMISSION_STATS = {
+    "calls": 0,
+    "fallbacks": 0,
+    "illegal_moves": 0,
+    "fallback_errors": 0,
+}
+
+
+def _submission_stats_increment(name, amount=1):
+    SUBMISSION_STATS[name] = int(SUBMISSION_STATS.get(name, 0)) + int(amount)
+
+
 def fallback_greedy(obs):
     try:
         player = int(obs.get("player", 0))
@@ -1427,17 +1439,21 @@ def fallback_greedy(obs):
             moves.append([_planet_id(source), float(angle), int(ships)])
         return moves if _moves_are_legal(obs, player, moves) else []
     except Exception:
+        _submission_stats_increment("fallback_errors")
         return []
 
 
 def agent(obs):
+    _submission_stats_increment("calls")
     try:
         player = int(obs.get("player", 0))
         features = encode(obs)
         action = policy_forward(features)
         moves = decode(action, obs)
         if not _moves_are_legal(obs, player, moves):
+            _submission_stats_increment("illegal_moves")
             raise ValueError(f"submission policy produced illegal moves for player={player}: {moves!r}")
         return list(moves)
     except Exception:
+        _submission_stats_increment("fallbacks")
         return fallback_greedy(obs)

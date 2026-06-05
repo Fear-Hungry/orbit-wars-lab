@@ -227,6 +227,52 @@ def _gate_technical(path: Path, cfg: GateConfig) -> dict[str, Any]:
     return {"name": "gate_1_technical_robustness", "passed": passed, "validations": validations}
 
 
+def _gate_no_silent_fallbacks(report: dict[str, Any]) -> dict[str, Any]:
+    checks = []
+    for item in report.get("formats", []):
+        if item.get("format") == "2p":
+            for opponent in item.get("opponents", []):
+                summary = opponent.get("summary", {})
+                label = str(opponent.get("opponent", "unknown"))
+                for metric in (
+                    "fallback_rate",
+                    "policy_illegal_move_rate",
+                    "fallback_error_rate",
+                ):
+                    value = float(summary.get(metric, 0.0))
+                    checks.append(
+                        {
+                            "opponent": label,
+                            "metric": metric,
+                            "value": value,
+                            "maximum": 0.0,
+                            "passed": value == 0.0,
+                        }
+                    )
+        elif item.get("format") == "4p":
+            summary = item.get("summary", {})
+            for metric in (
+                "fallback_rate",
+                "policy_illegal_move_rate",
+                "fallback_error_rate",
+            ):
+                value = float(summary.get(metric, 0.0))
+                checks.append(
+                    {
+                        "opponent": "four_player",
+                        "metric": metric,
+                        "value": value,
+                        "maximum": 0.0,
+                        "passed": value == 0.0,
+                    }
+                )
+    return {
+        "name": "gate_1b_no_silent_fallbacks",
+        "passed": all(check["passed"] for check in checks),
+        "checks": checks,
+    }
+
+
 def _gate_floors(report: dict[str, Any], cfg: GateConfig) -> dict[str, Any]:
     checks = []
     hall_of_fame_names = {
@@ -334,6 +380,13 @@ def main() -> None:
     if not args.skip_pytest:
         gates.append(_run_pytest())
     gates.append(_gate_technical(submission_path, cfg))
+    technical_fallback_report = _run_benchmark(
+        submission_path,
+        cfg,
+        cfg.technical_seeds,
+        include_4p=False,
+    )
+    gates.append(_gate_no_silent_fallbacks(technical_fallback_report))
 
     benchmark_seeds = list(range(max(1, cfg.benchmark_seeds)))
     candidate_report = _run_benchmark(submission_path, cfg, benchmark_seeds)

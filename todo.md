@@ -188,16 +188,23 @@ fase perf = MEDIR antes de consertar. Os candidatos abaixo são suspeitas a conf
 
 ## Thread 5 — Correções de higiene encontradas na auditoria (2026-06-05)
 
-- [ ] 5a. Fallback silencioso no agente submetido viola a regra "Forbid silent fallbacks"
+- [x] 5a. Fallback silencioso no agente submetido viola a regra "Forbid silent fallbacks"
       (commit b94819c). Em `python/submission/submission_template.py:1442`, `agent()` envolve
       tudo em `except Exception: return fallback_greedy(obs)`; em `:1429` o próprio
       `fallback_greedy` engole erro e retorna `[]`. Se a política degradar todo step, o agente
       vira greedy sem sinal — e isso corrompe a correlação local↔leaderboard. NÃO remover a
       rede de segurança (crash no Kaggle = 0); torná-la BARULHENTA.
-  - [ ] Instrumentar: contar `fallback_rate` / `illegal_move_rate` por episódio na avaliação local.
-  - [ ] Falhar o gate de submissão se `fallback_rate > 0` em seeds técnicas.
-  - [ ] verificar: rodar 16+ seeds vs Producer e confirmar `fallback_rate == 0.0` na régua atual;
+  - [x] Instrumentar: contar `fallback_rate` / `illegal_move_rate` por episódio na avaliação local.
+        RESULTADO: `SUBMISSION_STATS` no template/export neural e agregação em
+        `scripts/benchmark_submission.py` como `fallback_rate`, `policy_illegal_move_rate`
+        e `fallback_error_rate`.
+  - [x] Falhar o gate de submissão se `fallback_rate > 0` em seeds técnicas.
+        RESULTADO: `scripts/gate_check.py` adiciona `gate_1b_no_silent_fallbacks`.
+  - [x] verificar: rodar 16+ seeds vs Producer e confirmar `fallback_rate == 0.0` na régua atual;
         se >0, o número aparece no relatório do gate em vez de passar silencioso.
+        RESULTADO: `artifacts/gates/fallback_metrics/template_vs_producer_16seed.json`,
+        32 jogos vs Producer, `fallback_rate=0.0`, `policy_illegal_move_rate=0.0`,
+        `fallback_error_rate=0.0`, crash/timeout/invalid=0.0.
 - [ ] 5b. `scripts/parity_probe.py:15` é um stub (`print("TODO: ...")`) — a paridade
       Rust↔motor oficial NÃO é checada. Como toda a régua de backtest depende da fidelidade do
       motor (modelo de 3 camadas), implementar a sonda real OU registrar decisão explícita de
