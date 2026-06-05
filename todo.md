@@ -133,6 +133,12 @@ fase perf = MEDIR antes de consertar. Os candidatos abaixo são suspeitas a conf
         seeds reduziu `mean_ms` 273.99→184.33, mas regrediu margem 0.00000→-0.50000
         e win 0.50000→0.25000. Rejeitado como default; provável causa: não reproduz
         a memória/runtime completo do Producer ao longo do episódio.
+        TENTATIVA 2026-06-05: `OEP_PRODUCER_PLAN_MODE=tensor` chama
+        `ProducerLiteRuntime.tensor_action` diretamente sobre tensores e evita
+        dict/list/move roundtrip; após corrigir `torch.no_grad()`, profile curto ficou
+        próximo do modo policy (`mean_decision_ms=33.80`, `max_decision_ms=54.23`), mas
+        4 seeds vs Producer regrediu `mean_score_margin` 0.00000→-0.50000 e win
+        0.50000→0.25000. Rejeitado como default; preservar só como modo experimental.
 - [x] 2c. (suspeito #2) `_fill_garrison_trajectory` (L899): loop Python `for k in range(...)`
       (L1070) sobre o horizonte. Confirmar se a projeção é reconstruída do zero a cada step ou
       se o cache incremental (`_roll_garrison_projection` L1150, `_mark_garrison_dirty` L1210)

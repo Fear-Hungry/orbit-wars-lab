@@ -42,6 +42,9 @@ from bots.producer._upstream import (
     ProducerLiteConfig,
 )
 from bots.producer._upstream import (
+    ProducerLiteRuntime as _ProducerLiteRuntime,
+)
+from bots.producer._upstream import (
     plan_lite_waves as _producer_plan_lite_waves,
 )
 from bots.producer.agent import agent as _producer_policy
@@ -162,6 +165,13 @@ def _with_player(obs: Any, player_id: int) -> Any:
     return copied
 
 
+def _with_tensor_player(obs_tensors: dict, player_id: int) -> dict:
+    copied = dict(obs_tensors)
+    player = obs_tensors["player"]
+    copied["player"] = torch.full_like(player, int(player_id))
+    return copied
+
+
 def _producer_config_from_oep(config: OEPPlannerConfig) -> ProducerLiteConfig:
     return ProducerLiteConfig(
         horizon=int(config.horizon),
@@ -247,6 +257,50 @@ def _entries_from_moves(
         ships=ships,
         angle=angle,
         eta=torch.ones(count, dtype=movement.dtype, device=movement.device),
+        valid=(source_slots >= 0) & (ships >= 1.0),
+    )
+    launches = infer_planned_launches_from_entries(
+        obs_tensors=obs_tensors,
+        movement=movement,
+        entries=provisional,
+        player_id=int(player_id),
+    )
+    return LaunchEntries(
+        source_slots=source_slots,
+        target_slots=launches.target_slots,
+        ships=ships,
+        angle=angle,
+        eta=launches.eta_turns.to(device=movement.device, dtype=movement.dtype),
+        valid=provisional.valid & launches.valid,
+    )
+
+
+def _entries_from_sparse_row(
+    *,
+    row: dict[str, Tensor],
+    movement: PlanetMovement,
+    obs_tensors: dict,
+    player_id: int,
+) -> LaunchEntries:
+    counts = int(row["counts"].item())
+    if counts <= 0:
+        return _empty_entries(movement.device, movement.dtype)
+    from_ids = row["from_planet_id"][:counts].to(device=movement.device, dtype=torch.long)
+    source_slots = torch.full((counts,), -1, dtype=torch.long, device=movement.device)
+    for idx in range(counts):
+        matches = torch.where(movement.planet_ids == from_ids[idx])[0]
+        if int(matches.numel()) > 0:
+            source_slots[idx] = matches[0]
+        else:
+            raise ValueError(f"policy emitted move from unknown planet id: {int(from_ids[idx].item())}")
+    angle = row["angle"][:counts].to(device=movement.device, dtype=movement.dtype)
+    ships = row["num_ships"][:counts].to(device=movement.device, dtype=movement.dtype)
+    provisional = LaunchEntries(
+        source_slots=source_slots,
+        target_slots=torch.zeros(counts, dtype=torch.long, device=movement.device),
+        ships=ships,
+        angle=angle,
+        eta=torch.ones(counts, dtype=movement.dtype, device=movement.device),
         valid=(source_slots >= 0) & (ships >= 1.0),
     )
     launches = infer_planned_launches_from_entries(
@@ -857,6 +911,7 @@ class OEPLiteMemory:
         self.cached_player_count: int | None = None
         self.last_sparse_action_row: dict | None = None
         self.last_lanes: tuple[LaneIntent, ...] = ()
+        self.producer_runtimes: dict[int, _ProducerLiteRuntime] = {}
         self.profile_totals: dict[str, float] = {}
         self.profile_counts: dict[str, int] = {}
 
@@ -865,6 +920,7 @@ class OEPLiteMemory:
         self.cached_player_count = None
         self.last_sparse_action_row = None
         self.last_lanes = ()
+        self.producer_runtimes = {}
 
     def reset_profile(self) -> None:
         self.profile_totals = {}
@@ -960,6 +1016,26 @@ class OEPLiteRuntime:
         )
         return disambiguate_duplicate_launches(entries)
 
+    def _producer_entries_tensor(
+        self,
+        *,
+        owner_id: int,
+        obs_tensors: dict,
+        movement: PlanetMovement,
+    ) -> LaunchEntries:
+        runtime = self.memory.producer_runtimes.get(int(owner_id))
+        if runtime is None:
+            runtime = _ProducerLiteRuntime()
+            self.memory.producer_runtimes[int(owner_id)] = runtime
+        with torch.no_grad():
+            row = runtime.tensor_action(_with_tensor_player(obs_tensors, int(owner_id)))
+        return _entries_from_sparse_row(
+            row=row,
+            movement=movement,
+            obs_tensors=obs_tensors,
+            player_id=int(owner_id),
+        )
+
     def tensor_action(self, obs_tensors: dict, raw_obs: Any | None = None):
         action_start = self._profile_start()
         mem = self.memory
@@ -1026,6 +1102,14 @@ class OEPLiteRuntime:
                 player_id=int(obs.player_id),
             )
             self._profile_record("producer_entries", stage_start)
+        elif producer_plan_mode == "tensor":
+            stage_start = self._profile_start()
+            producer_entries = self._producer_entries_tensor(
+                owner_id=int(obs.player_id),
+                obs_tensors=obs_tensors,
+                movement=movement,
+            )
+            self._profile_record("producer_seed_tensor", stage_start)
         else:
             raise ValueError(f"unknown OEP producer_plan_mode: {producer_plan_mode!r}")
         opponent_entries = None
@@ -1049,6 +1133,14 @@ class OEPLiteRuntime:
                         player_count=player_count,
                     )
                     self._profile_record("producer_opponent_inline", stage_start)
+                elif producer_plan_mode == "tensor":
+                    stage_start = self._profile_start()
+                    opponent_entries = self._producer_entries_tensor(
+                        owner_id=opp_id,
+                        obs_tensors=obs_tensors,
+                        movement=movement,
+                    )
+                    self._profile_record("producer_opponent_tensor", stage_start)
                 else:
                     stage_start = self._profile_start()
                     opponent_moves = self.opponent_policy(_with_player(raw_obs, opp_id))
