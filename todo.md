@@ -95,12 +95,15 @@ margin=+0.125), **legal sob orçamento de tempo**.
 Embasamento de literatura FRACO/NA — isto é engenharia de perf. Regra que manda: diagnose.md
 fase perf = MEDIR antes de consertar. Os candidatos abaixo são suspeitas a confirmar pelo profile.
 
-- [ ] 2a. Profilar o step do OEP com `perf_counter` por ESTÁGIO (não "logar tudo"): cronometrar
+- [x] 2a. Profilar o step do OEP com `perf_counter` por ESTÁGIO (não "logar tudo"): cronometrar
       separadamente (i) as 2 chamadas do Producer (L812 seed, L822 opponent), (ii)
       `ensure_planet_movement` (L801), (iii) `build_distance_cache` (L807), (iv)
       `_build_fraction_candidates`/`plan_oep_waves` (L848), (v) os 2 `_plan_fitness`.
-  - [ ] verificar: breakdown em ms por estágio impresso, somando ~o mean_ms total; hot path
+  - [x] verificar: breakdown em ms por estágio impresso, somando ~o mean_ms total; hot path
         identificado por número (não por palpite)
+        RESULTADO: `artifacts/gates/oep/profile_1seed_128steps.json`, 223 decisões,
+        mean_decision_ms=35.78, coverage=99.42%; hot path: Producer seed 26.71%,
+        Producer opponent 24.79%, `plan_oep_waves` 19.43%, fitnesses somadas ~14.08%.
 - [ ] 2b. (suspeito #1) Eliminar o 2º Producer completo: o OEP paga DOIS rollouts Producer por
       step (seed L812 + oponente L822) antes de buscar. O seed é necessário (é o genoma base);
       o OPONENTE pode usar um modelo barato. Trocar `opponent_policy` por uma resposta heurística
@@ -113,9 +116,10 @@ fase perf = MEDIR antes de consertar. Os candidatos abaixo são suspeitas a conf
       está sendo de fato aproveitado; vetorizar a recorrência se o profile apontar custo aqui.
   - [ ] verificar: custo da projeção cai (microbench) E gates L1–L5a verdes
         (tests/test_movement_fidelity.py sem regressão — fidelidade é inegociável)
-- [ ] NOTA (prioridade): se 2a confirmar que os 2 Producers dominam o tempo, 2b pode ser o item
+- [x] NOTA (prioridade): se 2a confirmar que os 2 Producers dominam o tempo, 2b pode ser o item
       de MAIOR alavancagem do plano inteiro — derruba a média o bastante para 1b/1c caberem no
       orçamento. Nesse caso, fazer 2a+2b ANTES de 1c (talvez até antes de 1a).
+      DECISÃO: confirmado; as duas chamadas Producer somam ~51.5% do tempo perfilado.
 
 ## Thread 3 — Régua de promoção honesta (parar de decidir por greedy/rush)
 

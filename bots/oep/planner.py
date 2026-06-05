@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Callable
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Any
 
 import torch
@@ -121,6 +122,7 @@ class OEPLiteConfig:
     max_offensive_targets: int = 6
     max_defensive_targets: int = 2
     max_waves_per_turn: int = 4
+    profile_stages: bool = False
 
 
 def _effective_config(config: OEPPlannerConfig, *, step: int) -> OEPPlannerConfig:
@@ -737,12 +739,32 @@ class OEPLiteMemory:
         self.cached_player_count: int | None = None
         self.last_sparse_action_row: dict | None = None
         self.last_lanes: tuple[LaneIntent, ...] = ()
+        self.profile_totals: dict[str, float] = {}
+        self.profile_counts: dict[str, int] = {}
 
     def reset(self) -> None:
         self.movement = None
         self.cached_player_count = None
         self.last_sparse_action_row = None
         self.last_lanes = ()
+
+    def reset_profile(self) -> None:
+        self.profile_totals = {}
+        self.profile_counts = {}
+
+    def record_profile(self, name: str, elapsed: float) -> None:
+        self.profile_totals[name] = self.profile_totals.get(name, 0.0) + float(elapsed)
+        self.profile_counts[name] = self.profile_counts.get(name, 0) + 1
+
+    def profile_summary(self) -> dict[str, dict[str, float]]:
+        return {
+            name: {
+                "calls": float(self.profile_counts.get(name, 0)),
+                "total_ms": 1000.0 * total,
+                "mean_ms": 1000.0 * total / max(1, self.profile_counts.get(name, 0)),
+            }
+            for name, total in sorted(self.profile_totals.items())
+        }
 
 
 class OEPLiteRuntime:
@@ -761,6 +783,17 @@ class OEPLiteRuntime:
 
     def reset(self) -> None:
         self.memory.reset()
+        self.memory.reset_profile()
+
+    def _profile_start(self) -> float | None:
+        return perf_counter() if bool(self.config.profile_stages) else None
+
+    def _profile_record(self, name: str, start: float | None) -> None:
+        if start is not None:
+            self.memory.record_profile(name, perf_counter() - start)
+
+    def profile_summary(self) -> dict[str, dict[str, float]]:
+        return self.memory.profile_summary()
 
     def _oep_config(self, base_config: OEPPlannerConfig) -> OEPPlannerConfig:
         return dataclasses.replace(
@@ -784,11 +817,14 @@ class OEPLiteRuntime:
         )
 
     def tensor_action(self, obs_tensors: dict, raw_obs: Any | None = None):
+        action_start = self._profile_start()
         mem = self.memory
         if raw_obs is None:
             raise ValueError("OEPLiteRuntime.tensor_action requires raw_obs for policy injection")
         if bool((obs_tensors["step"] == 0).all()):
             mem.reset()
+            mem.reset_profile()
+            action_start = self._profile_start()
         if mem.cached_player_count is None:
             mem.cached_player_count = largest_initial_player_count(obs_tensors)
         player_count = int(mem.cached_player_count)
@@ -796,37 +832,58 @@ class OEPLiteRuntime:
         device = obs_tensors["planets"].device
         obs = parse_obs(obs_tensors)
         if obs.P == 0:
-            return empty_action_row(device)
+            row = empty_action_row(device)
+            self._profile_record("action_total", action_start)
+            return row
 
+        stage_start = self._profile_start()
         movement = ensure_planet_movement(
             obs_tensors=obs_tensors,
             expected_cfg=_movement_config(base_config, player_count=player_count),
             cached_movement=mem.movement,
         )
+        self._profile_record("ensure_planet_movement", stage_start)
         mem.movement = movement
+
+        stage_start = self._profile_start()
         cache = build_distance_cache(movement, max_k=int(base_config.horizon))
+        self._profile_record("build_distance_cache", stage_start)
+
+        stage_start = self._profile_start()
         H = int(base_config.horizon)
         status = movement.garrison_status(max_horizon=H)
         alive_by_step = movement.alive_by_step[: H + 1]
+        self._profile_record("garrison_status", stage_start)
 
+        stage_start = self._profile_start()
         producer_moves = self.seed_policy(_with_player(raw_obs, int(obs.player_id)))
+        self._profile_record("producer_seed_policy", stage_start)
+
+        stage_start = self._profile_start()
         producer_entries = _entries_from_moves(
             moves=producer_moves,
             movement=movement,
             obs_tensors=obs_tensors,
             player_id=int(obs.player_id),
         )
+        self._profile_record("producer_entries", stage_start)
         opponent_entries = None
         opp_id = _opponent_id(int(obs.player_id), player_count)
         if bool(self.config.opponent_response) and opp_id is not None:
+            stage_start = self._profile_start()
             opponent_moves = self.opponent_policy(_with_player(raw_obs, opp_id))
+            self._profile_record("producer_opponent_policy", stage_start)
+
+            stage_start = self._profile_start()
             opponent_entries = _entries_from_moves(
                 moves=opponent_moves,
                 movement=movement,
                 obs_tensors=obs_tensors,
                 player_id=opp_id,
             )
+            self._profile_record("opponent_entries", stage_start)
 
+        stage_start = self._profile_start()
         opponent_launch_set = (
             _launch_set_from_entries(
                 entries=opponent_entries,
@@ -836,7 +893,10 @@ class OEPLiteRuntime:
             if opponent_entries is not None and opp_id is not None
             else None
         )
+        self._profile_record("opponent_launch_set", stage_start)
         oep_config = self._oep_config(base_config)
+
+        stage_start = self._profile_start()
         incumbent_entries = _entries_from_lane_intents(
             mem.last_lanes,
             movement=movement,
@@ -845,6 +905,9 @@ class OEPLiteRuntime:
             config=oep_config,
             player_id=int(obs.player_id),
         )
+        self._profile_record("incumbent_entries", stage_start)
+
+        stage_start = self._profile_start()
         oep_entries = plan_oep_waves(
             movement=movement,
             obs=obs,
@@ -858,6 +921,9 @@ class OEPLiteRuntime:
             player_count=player_count,
             opponent_entries=opponent_entries,
         )
+        self._profile_record("plan_oep_waves", stage_start)
+
+        stage_start = self._profile_start()
         producer_fitness = _plan_fitness(
             producer_entries,
             opponent_launch_set=opponent_launch_set,
@@ -867,6 +933,9 @@ class OEPLiteRuntime:
             player_count=player_count,
             player_id=int(obs.player_id),
         )
+        self._profile_record("fitness_producer", stage_start)
+
+        stage_start = self._profile_start()
         incumbent_fitness = _plan_fitness(
             incumbent_entries,
             opponent_launch_set=opponent_launch_set,
@@ -876,6 +945,9 @@ class OEPLiteRuntime:
             player_count=player_count,
             player_id=int(obs.player_id),
         )
+        self._profile_record("fitness_incumbent", stage_start)
+
+        stage_start = self._profile_start()
         oep_fitness = _plan_fitness(
             oep_entries,
             opponent_launch_set=opponent_launch_set,
@@ -885,6 +957,7 @@ class OEPLiteRuntime:
             player_count=player_count,
             player_id=int(obs.player_id),
         )
+        self._profile_record("fitness_oep", stage_start)
         incumbent_is_valid = bool((incumbent_entries.valid & (incumbent_entries.ships >= 1.0)).any())
         seed_entries = producer_entries
         seed_fitness = producer_fitness
@@ -898,6 +971,7 @@ class OEPLiteRuntime:
         )
 
         chosen = disambiguate_duplicate_launches(chosen)
+        stage_start = self._profile_start()
         mem.last_lanes = _lane_intents_from_entries(
             chosen,
             movement=movement,
@@ -905,30 +979,44 @@ class OEPLiteRuntime:
             obs=obs,
             player_id=int(obs.player_id),
         )
+        self._profile_record("store_incumbent_lanes", stage_start)
+
+        stage_start = self._profile_start()
         launches = infer_planned_launches_from_entries(
             obs_tensors=obs_tensors,
             movement=movement,
             entries=chosen,
             player_id=int(obs.player_id),
         )
+        self._profile_record("chosen_launch_inference", stage_start)
+
+        stage_start = self._profile_start()
         apply_private_planned_launches(
             movement=movement,
             launches=launches,
             owner_id=int(obs.player_id),
             obs_tensors=obs_tensors,
         )
+        self._profile_record("apply_private_launches", stage_start)
+
+        stage_start = self._profile_start()
         row = entries_to_sparse_payload(chosen, planet_ids=obs_tensors["planets"][..., 0].long())
+        self._profile_record("entries_to_payload", stage_start)
         mem.last_sparse_action_row = row
+        self._profile_record("action_total", action_start)
         return row
+
+    def act(self, obs):
+        obs = _to_list_observation(obs)
+        player = obs.get("player", 0) if isinstance(obs, dict) else obs.player
+        player_id = int(player)
+        obs_tensors = single_obs_to_tensor(obs, player_id=player_id)
+        with torch.no_grad():
+            sparse_row = self.tensor_action(obs_tensors, raw_obs=obs)
+        return sparse_action_row_to_moves(sparse_row, obs, player_id=player_id)
 
 _RUNTIME = OEPLiteRuntime(seed_policy=_producer_policy, opponent_policy=_producer_policy)
 
 
 def agent(obs):
-    obs = _to_list_observation(obs)
-    player = obs.get("player", 0) if isinstance(obs, dict) else obs.player
-    player_id = int(player)
-    obs_tensors = single_obs_to_tensor(obs, player_id=player_id)
-    with torch.no_grad():
-        sparse_row = _RUNTIME.tensor_action(obs_tensors, raw_obs=obs)
-    return sparse_action_row_to_moves(sparse_row, obs, player_id=player_id)
+    return _RUNTIME.act(obs)
