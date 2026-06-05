@@ -48,6 +48,24 @@ def test_oep_runtime_has_no_time_budget_fallback_config() -> None:
     assert not hasattr(OEPLiteRuntime, "_deadline_expired")
 
 
+def test_effective_horizon_never_crosses_spawn() -> None:
+    cfg = oep_planner.OEPPlannerConfig(horizon=18)
+
+    for spawn in oep_planner.COMET_SPAWN_STEPS:
+        for step in range(max(0, spawn - 5), spawn + 6):
+            effective = oep_planner._effective_config(cfg, step=step)
+            future = [
+                future_spawn - step
+                for future_spawn in oep_planner.COMET_SPAWN_STEPS
+                if future_spawn > step
+            ]
+            if future:
+                assert effective.horizon <= min(future)
+            else:
+                assert effective.horizon == cfg.horizon
+            assert effective.horizon >= 1
+
+
 def test_oep_runtime_fails_fast_when_oep_planner_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     def _raise_from_oep(**_kwargs):
         raise RuntimeError("forced OEP planner failure")

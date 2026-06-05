@@ -163,6 +163,13 @@ def test_gate_no_silent_fallbacks_rejects_nonzero_fallback_rate():
     ]
 
 
+def test_gate_no_silent_fallbacks_rejects_report_without_checked_formats():
+    gate = _gate_no_silent_fallbacks({"formats": []})
+
+    assert not gate["passed"]
+    assert gate["checks"] == []
+
+
 def test_final_seed_list_uses_holdout_range_offset():
     assert _final_seed_list(_cfg()) == list(range(100, 120))
 

@@ -308,6 +308,29 @@ fase perf = MEDIR antes de consertar. Os candidatos abaixo são suspeitas a conf
         prova que `import orbit_wars_py`/`from orbit_wars_rs import ...` seriam detectados.
         `rtk .venv/bin/python -m pytest -q tests/test_submission_pipeline.py`: 41 passed.
 
+## Thread 6 — Decisões de hardening pós-validação (2026-06-05)
+
+- [x] 6a. PONTO 1 (parity probe não cobre pós-spawn) — DECISÃO: ACEITAR e FECHAR. O vão é
+      benigno por construção: o clamp `_effective_config` (`bots/oep/planner.py:147-151`, chamado
+      todo step em `:1051`) impede o planner de pontuar além da próxima fronteira de spawn —
+      exatamente a região que a probe não verifica. Modelar spawn futuro é impossível (seed
+      oculta); adivinhar pioraria o fitness. NÃO investir em mais fidelidade aqui. Único trabalho:
+      travar o invariante com teste para refactor futuro não quebrá-lo em silêncio.
+      RESULTADO 2026-06-05: invariante travado em `tests/test_oep_agent.py`.
+  - [x] verificar: `test_effective_horizon_never_crosses_spawn` — para step em 45–55 (e demais
+        vizinhanças de COMET_SPAWN_STEPS), `_effective_config(cfg, step).horizon <=
+        min(s - step for s in COMET_SPAWN_STEPS if s > step)`. Passa hoje.
+- [x] 6b. PONTO 2 (gate passa vazio) — DECISÃO: CORRIGIR. Em `scripts/gate_check.py` (~L269),
+      trocar `"passed": all(...)` por `"passed": bool(checks) and all(...)` em
+      `_gate_no_silent_fallbacks`. Integridade do gate = fundação de não queimar submissões.
+      RESULTADO 2026-06-05: `scripts/gate_check.py` agora exige `bool(checks)`; teste novo cobre
+      relatório vazio.
+  - [x] verificar: relatório sem `formats` (ou sem 2p/4p) → gate `passed: False` (hoje True); o
+        run real atual com `technical_seeds=[0,1,2,3]` continua `passed: True`.
+        RESULTADO: `tests/test_gate_check.py` cobre relatório vazio; o relatório real
+        `artifacts/gates/fallback_metrics/template_vs_producer_16seed.json` inclui seeds 0–15
+        e continua `gate_1b_no_silent_fallbacks.passed=True`.
+
 ## Parado / não fazer agora
 
 - [x] Micro-tuning de heurística (reservas, aberturas, hammer, pressão por ratio) — saturado

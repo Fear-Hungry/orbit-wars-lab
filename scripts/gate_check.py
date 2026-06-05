@@ -268,7 +268,7 @@ def _gate_no_silent_fallbacks(report: dict[str, Any]) -> dict[str, Any]:
                 )
     return {
         "name": "gate_1b_no_silent_fallbacks",
-        "passed": all(check["passed"] for check in checks),
+        "passed": bool(checks) and all(check["passed"] for check in checks),
         "checks": checks,
     }
 
