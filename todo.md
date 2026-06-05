@@ -242,10 +242,14 @@ fase perf = MEDIR antes de consertar. Os candidatos abaixo são suspeitas a conf
 
 ## Thread 4 — Risco deferido (só com repro concreto)
 
-- [ ] 4a. L5b / fidelity de fixtures set_state arbitrárias: validar que o sim interno do
+- [x] 4a. L5b / fidelity de fixtures set_state arbitrárias: validar que o sim interno do
       lookahead não diverge do motor real em estados de borda. Investir SÓ se aparecer um
       caso em que o fitness do planner contradiz o resultado real da partida.
-  - [ ] verificar: repro de divergência sim-interno vs motor, ou decisão explícita de manter deferido
+      DECISÃO 2026-06-05: manter deferido. Não há repro atual de fitness contradizendo resultado
+      real; L1–L5a seguem cobertos por `tests/test_movement_fidelity.py`, `parity_probe` recusa
+      janelas que cruzam spawn futuro oculto e 6a travou `_effective_config` para nunca pontuar
+      além da próxima fronteira de spawn. Só reabrir com repro nomeado.
+  - [x] verificar: repro de divergência sim-interno vs motor, ou decisão explícita de manter deferido
 
 ## Thread 5 — Correções de higiene encontradas na auditoria (2026-06-05)
 
