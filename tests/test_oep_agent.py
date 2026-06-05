@@ -71,6 +71,7 @@ def test_oep_env_config_overrides_search_budget(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("OEP_MAX_DEFENSIVE_TARGETS", "1")
     monkeypatch.setenv("OEP_MAX_WAVES_PER_TURN", "3")
     monkeypatch.setenv("OEP_OPPONENT_RESPONSE_MODE", "producer")
+    monkeypatch.setenv("OEP_PRODUCER_PLAN_MODE", "inline")
 
     config = oep_planner._env_config()
 
@@ -81,6 +82,7 @@ def test_oep_env_config_overrides_search_budget(monkeypatch: pytest.MonkeyPatch)
     assert config.max_defensive_targets == 1
     assert config.max_waves_per_turn == 3
     assert config.opponent_response_mode == "producer"
+    assert config.producer_plan_mode == "inline"
 
 
 def test_oep_env_config_rejects_empty_fraction_override(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -88,3 +90,19 @@ def test_oep_env_config_rejects_empty_fraction_override(monkeypatch: pytest.Monk
 
     with pytest.raises(ValueError, match="OEP_FRACTIONS"):
         oep_planner._env_config()
+
+
+def test_oep_inline_producer_plan_matches_policy_on_initial_obs() -> None:
+    obs = _initial_official_obs(seed=0, player=0)
+    policy_runtime = OEPLiteRuntime(
+        seed_policy=producer_agent,
+        opponent_policy=producer_agent,
+        config=OEPLiteConfig(producer_plan_mode="policy"),
+    )
+    inline_runtime = OEPLiteRuntime(
+        seed_policy=producer_agent,
+        opponent_policy=producer_agent,
+        config=OEPLiteConfig(producer_plan_mode="inline"),
+    )
+
+    assert inline_runtime.act(obs) == policy_runtime.act(obs)

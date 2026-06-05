@@ -123,6 +123,11 @@ fase perf = MEDIR antes de consertar. Os candidatos abaixo são suspeitas a conf
         ≥16 seeds não regride (o modelo de oponente barato não pode cegar o lookahead)
         TENTATIVA 2026-06-05: `opponent_response_mode=cheap` reduziu 16-seed mean_ms
         289.99→205.53, mas regrediu margin 0.00000→-0.12500; rejeitado como default.
+        TENTATIVA 2026-06-05: `OEP_PRODUCER_PLAN_MODE=inline` evita chamadas completas
+        ao `agent()` do Producer e reusa o `movement/cache/status` do OEP; no smoke 4
+        seeds reduziu `mean_ms` 273.99→184.33, mas regrediu margem 0.00000→-0.50000
+        e win 0.50000→0.25000. Rejeitado como default; provável causa: não reproduz
+        a memória/runtime completo do Producer ao longo do episódio.
 - [ ] 2c. (suspeito #2) `_fill_garrison_trajectory` (L899): loop Python `for k in range(...)`
       (L1070) sobre o horizonte. Confirmar se a projeção é reconstruída do zero a cada step ou
       se o cache incremental (`_roll_garrison_projection` L1150, `_mark_garrison_dirty` L1210)

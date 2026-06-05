@@ -38,6 +38,12 @@ from orbit_lite.planner_core import (
 )
 from torch import Tensor
 
+from bots.producer._upstream import (
+    ProducerLiteConfig,
+)
+from bots.producer._upstream import (
+    plan_lite_waves as _producer_plan_lite_waves,
+)
 from bots.producer.agent import agent as _producer_policy
 
 COMET_SPAWN_STEPS = (50, 150, 250, 350, 450)
@@ -119,6 +125,7 @@ class OEPLiteConfig:
     fractions: tuple[float, ...] = (0.5, 1.0)
     opponent_response: bool = True
     opponent_response_mode: str = "producer"
+    producer_plan_mode: str = "policy"
     min_advantage: float = 0.0
     max_sources_per_lane: int = 6
     max_offensive_targets: int = 6
@@ -153,6 +160,25 @@ def _with_player(obs: Any, player_id: int) -> Any:
     copied = dict(obs)
     copied["player"] = int(player_id)
     return copied
+
+
+def _producer_config_from_oep(config: OEPPlannerConfig) -> ProducerLiteConfig:
+    return ProducerLiteConfig(
+        horizon=int(config.horizon),
+        max_sources_per_lane=int(config.max_sources_per_lane),
+        max_offensive_targets=int(config.max_offensive_targets),
+        max_defensive_targets=int(config.max_defensive_targets),
+        max_waves_per_turn=int(config.max_waves_per_turn),
+        roi_threshold=float(config.roi_threshold),
+        min_ships_to_launch=float(config.min_ships_to_launch),
+        enable_regroup=bool(config.enable_regroup),
+        max_regroup_time=float(config.max_regroup_time),
+        regroup_pressure_delta_min=float(config.regroup_pressure_delta_min),
+        max_regroup_sources_per_lane=int(config.max_regroup_sources_per_lane),
+        max_regroup_targets_per_source=int(config.max_regroup_targets_per_source),
+        regroup_pressure_norm=str(config.regroup_pressure_norm),
+        regroup_time_penalty_weight=float(config.regroup_time_penalty_weight),
+    )
 
 
 def _planet_row(planet: Any) -> Any:
@@ -908,6 +934,32 @@ class OEPLiteRuntime:
             ),
         )
 
+    def _producer_entries_inline(
+        self,
+        *,
+        owner_id: int,
+        obs_tensors: dict,
+        movement: PlanetMovement,
+        cache,
+        status,
+        alive_by_step: Tensor,
+        base_config: OEPPlannerConfig,
+        player_count: int,
+    ) -> LaunchEntries:
+        obs = parse_obs(obs_tensors, player_id=int(owner_id))
+        entries = _producer_plan_lite_waves(
+            movement=movement,
+            obs=obs,
+            obs_tensors=obs_tensors,
+            cache=cache,
+            garrison_status=status,
+            prod=movement.planet_prod,
+            alive_by_step=alive_by_step,
+            config=_producer_config_from_oep(base_config),
+            player_count=int(player_count),
+        )
+        return disambiguate_duplicate_launches(entries)
+
     def tensor_action(self, obs_tensors: dict, raw_obs: Any | None = None):
         action_start = self._profile_start()
         mem = self.memory
@@ -947,18 +999,35 @@ class OEPLiteRuntime:
         alive_by_step = movement.alive_by_step[: H + 1]
         self._profile_record("garrison_status", stage_start)
 
-        stage_start = self._profile_start()
-        producer_moves = self.seed_policy(_with_player(raw_obs, int(obs.player_id)))
-        self._profile_record("producer_seed_policy", stage_start)
+        producer_plan_mode = str(self.config.producer_plan_mode)
+        if producer_plan_mode == "inline":
+            stage_start = self._profile_start()
+            producer_entries = self._producer_entries_inline(
+                owner_id=int(obs.player_id),
+                obs_tensors=obs_tensors,
+                movement=movement,
+                cache=cache,
+                status=status,
+                alive_by_step=alive_by_step,
+                base_config=base_config,
+                player_count=player_count,
+            )
+            self._profile_record("producer_seed_inline", stage_start)
+        elif producer_plan_mode == "policy":
+            stage_start = self._profile_start()
+            producer_moves = self.seed_policy(_with_player(raw_obs, int(obs.player_id)))
+            self._profile_record("producer_seed_policy", stage_start)
 
-        stage_start = self._profile_start()
-        producer_entries = _entries_from_moves(
-            moves=producer_moves,
-            movement=movement,
-            obs_tensors=obs_tensors,
-            player_id=int(obs.player_id),
-        )
-        self._profile_record("producer_entries", stage_start)
+            stage_start = self._profile_start()
+            producer_entries = _entries_from_moves(
+                moves=producer_moves,
+                movement=movement,
+                obs_tensors=obs_tensors,
+                player_id=int(obs.player_id),
+            )
+            self._profile_record("producer_entries", stage_start)
+        else:
+            raise ValueError(f"unknown OEP producer_plan_mode: {producer_plan_mode!r}")
         opponent_entries = None
         opp_id = _opponent_id(int(obs.player_id), player_count)
         if (
@@ -967,18 +1036,32 @@ class OEPLiteRuntime:
         ):
             mode = str(self.config.opponent_response_mode)
             if mode == "producer":
-                stage_start = self._profile_start()
-                opponent_moves = self.opponent_policy(_with_player(raw_obs, opp_id))
-                self._profile_record("producer_opponent_policy", stage_start)
+                if producer_plan_mode == "inline":
+                    stage_start = self._profile_start()
+                    opponent_entries = self._producer_entries_inline(
+                        owner_id=opp_id,
+                        obs_tensors=obs_tensors,
+                        movement=movement,
+                        cache=cache,
+                        status=status,
+                        alive_by_step=alive_by_step,
+                        base_config=base_config,
+                        player_count=player_count,
+                    )
+                    self._profile_record("producer_opponent_inline", stage_start)
+                else:
+                    stage_start = self._profile_start()
+                    opponent_moves = self.opponent_policy(_with_player(raw_obs, opp_id))
+                    self._profile_record("producer_opponent_policy", stage_start)
 
-                stage_start = self._profile_start()
-                opponent_entries = _entries_from_moves(
-                    moves=opponent_moves,
-                    movement=movement,
-                    obs_tensors=obs_tensors,
-                    player_id=opp_id,
-                )
-                self._profile_record("opponent_entries", stage_start)
+                    stage_start = self._profile_start()
+                    opponent_entries = _entries_from_moves(
+                        moves=opponent_moves,
+                        movement=movement,
+                        obs_tensors=obs_tensors,
+                        player_id=opp_id,
+                    )
+                    self._profile_record("opponent_entries", stage_start)
             elif mode == "cheap":
                 stage_start = self._profile_start()
                 opponent_entries = _cheap_opponent_entries(
@@ -1116,6 +1199,10 @@ def _env_config() -> OEPLiteConfig:
         opponent_response_mode=os.getenv(
             "OEP_OPPONENT_RESPONSE_MODE",
             defaults.opponent_response_mode,
+        ),
+        producer_plan_mode=os.getenv(
+            "OEP_PRODUCER_PLAN_MODE",
+            defaults.producer_plan_mode,
         ),
         fractions=_env_fractions(defaults.fractions),
         min_advantage=_env_float("OEP_MIN_ADVANTAGE", defaults.min_advantage),
