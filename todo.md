@@ -150,8 +150,18 @@ fase perf = MEDIR antes de consertar. Os candidatos abaixo são suspeitas a conf
 
 - [ ] 3a. Formalizar o gate de promoção do OEP: margin ≥ 0 vs Producer em ≥96 seeds,
       timeout/crash/invalid = 0, via scripts.compare_benchmark_significance.
+      PROGRESSO 2026-06-05: `scripts/oep_promotion_gate.py` formaliza a regra sobre
+      relatórios JSON de `benchmark_submission`: default exige `192` jogos (`96` seeds × 2
+      lados), margem média `>=0.0` contra `2p:producer`, crash/timeout/invalid `0.0`,
+      `paired_games>=192`, `paired_margin_delta>=0.0` vs baseline G2 e nenhum veredito de
+      regressão significativa. `make oep-promotion-gate` roda o verificador usando o baseline
+      G2 default.
   - [ ] verificar: gate documentado (EXPERIMENTS.md/DECISIONS.md) e 1 run de promoção produz
         veredito paired ≥ baseline G2
+        SMOKE 2026-06-05: usando o relatório OEP 16 seeds já existente e `--min-games 32`,
+        o gate passou: `mean_score_margin=0.0`, crash/timeout/invalid=0.0,
+        `paired_margin_delta=1.0`, `verdict=margin_significant_improvement`. Falta o run
+        estrito de promoção com `96` seeds/`192` jogos para fechar o item.
 - [ ] 3b. (opcional) Adicionar um 2º oponente-régua (variante do Producer ou notebook forte do
       fórum) para não overfitar um único oponente.
   - [ ] verificar: candidato promovido não regride contra o 2º oponente

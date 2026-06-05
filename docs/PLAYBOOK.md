@@ -55,9 +55,15 @@ rtk .venv/bin/python -m scripts.compare_benchmark_significance \
   --baseline artifacts/producer_mirror_96seed.json \
   --candidate artifacts/candidate_vs_producer_96seed.json \
   --min-games 128 --min-effect 0.05
+
+rtk .venv/bin/python -m scripts.oep_promotion_gate \
+  --baseline artifacts/gates/producer_fix_gates/g2_champion_vs_corrected_producer_96seed.json \
+  --candidate artifacts/candidate_vs_producer_96seed.json \
+  --out artifacts/gates/oep/promotion_gate.json
 ```
 
 Interprete `underpowered` como "amostra insuficiente", não como regressão real. Só promova uma mudança quando a margem normalizada média contra o Producer for `>= 0.0` e nenhum veredito marcar regressão significativa. `margin_significant_improvement`, `paired_significant_improvement` ou `significant_improvement` são bônus; `inconclusive` com margem negativa é descarte, não commit.
+Para o OEP, `scripts.oep_promotion_gate` torna essa regra executável: exige `192` jogos (`96` seeds × `2` lados), margem média `>= 0.0` contra Producer, crash/timeout/invalid `0.0`, e delta pareado de margem não-negativo contra o baseline G2.
 
 Rode `submission_v_old.py`, `greedy`, `rush` e `4p` em baixa amostra como sanity técnico, não como decisor de melhoria 2p:
 

@@ -1,4 +1,4 @@
-.PHONY: install build test smoke bench fmt lint clean lab-doctor lab-heuristics lab-quick lab-eval lab-league lab-submission gate-check gate-check-final ppo-train-targeted ppo-select ppo-select-targeted ppo-bench-exported ppo-select-exported docker-build docker-shell docker-codex docker-smoke docker-test docker-train docker-gpu-build docker-gpu-shell docker-gpu-codex docker-gpu-check docker-gpu-train
+.PHONY: install build test smoke bench fmt lint clean lab-doctor lab-heuristics lab-quick lab-eval lab-league lab-submission gate-check gate-check-final oep-promotion-gate ppo-train-targeted ppo-select ppo-select-targeted ppo-bench-exported ppo-select-exported docker-build docker-shell docker-codex docker-smoke docker-test docker-train docker-gpu-build docker-gpu-shell docker-gpu-codex docker-gpu-check docker-gpu-train
 
 PPO_SEED ?= 11
 PPO_TIMESTEPS ?= 32768
@@ -13,6 +13,9 @@ PPO_DECODER_MIN_SHIPS ?= 2
 PPO_DECODER_RESERVE ?= 8
 PPO_EXPORT_BENCH_SEEDS ?= 1
 BENCH_JOBS ?= 8
+OEP_CANDIDATE_REPORT ?= artifacts/gates/oep/candidate_vs_producer_96seed.json
+OEP_BASELINE_REPORT ?= artifacts/gates/producer_fix_gates/g2_champion_vs_corrected_producer_96seed.json
+OEP_PROMOTION_OUT ?= artifacts/gates/oep/promotion_gate.json
 UV_DEV ?= $(shell command -v uv >/dev/null 2>&1 && printf 'uv run --extra dev')
 
 install:
@@ -55,6 +58,9 @@ gate-check:
 
 gate-check-final:
 	uv run --extra dev python -m scripts.gate_check --include-final --jobs $(BENCH_JOBS)
+
+oep-promotion-gate:
+	uv run --extra dev python -m scripts.oep_promotion_gate --baseline $(OEP_BASELINE_REPORT) --candidate $(OEP_CANDIDATE_REPORT) --out $(OEP_PROMOTION_OUT)
 
 ppo-train-targeted:
 	uv run --extra dev python -m python.train.train_ppo --seed $(PPO_SEED) --training-track phase0_2p --num-players 2 --opponents $(PPO_TARGETED_OPPONENTS) --total-timesteps $(PPO_TIMESTEPS) --rollout-steps 256 --update-epochs 4 --minibatch-size 256 --learning-rate $(PPO_LEARNING_RATE) --ship-margin-scale $(PPO_SHIP_MARGIN_SCALE) --checkpoint-in $(PPO_CHECKPOINT_IN) --checkpoint-out $(PPO_CHECKPOINT_OUT) --decoder-max-moves-per-turn $(PPO_DECODER_MAX_MOVES) --decoder-min-ships-to-launch $(PPO_DECODER_MIN_SHIPS) --decoder-reserve-home-ships $(PPO_DECODER_RESERVE)
