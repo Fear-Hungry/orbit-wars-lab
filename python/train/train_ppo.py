@@ -323,9 +323,9 @@ def _collect_single_env_rollout_segment(
     obs_buf = []
     action_buf = []
     logprob_buf = []
-    reward_buf = []
-    done_buf = []
     value_buf = []
+    rewards_np = np.empty(rollout_steps, dtype=np.float32)
+    dones_np = np.empty(rollout_steps, dtype=np.float32)
 
     for reset_idx in range(rollout_steps):
         obs_tensor = torch.as_tensor(obs_np, dtype=torch.float32, device=device).unsqueeze(0)
@@ -348,9 +348,9 @@ def _collect_single_env_rollout_segment(
         obs_buf.append(obs_tensor.squeeze(0))
         action_buf.append(action_tensor.squeeze(0))
         logprob_buf.append(logprob_tensor.squeeze(0))
-        reward_buf.append(torch.tensor(float(reward), dtype=torch.float32, device=device))
-        done_buf.append(torch.tensor(float(done), dtype=torch.float32, device=device))
         value_buf.append(value_tensor.squeeze(0))
+        rewards_np[reset_idx] = float(reward)
+        dones_np[reset_idx] = float(done)
 
         if done:
             episode.completed = True
@@ -367,14 +367,14 @@ def _collect_single_env_rollout_segment(
     with torch.no_grad():
         next_obs_tensor = torch.as_tensor(obs_np, dtype=torch.float32, device=device).unsqueeze(0)
         _, _, _, next_value = model.get_action_and_value(next_obs_tensor)
-        if done_buf and bool(done_buf[-1].item()):
+        if rollout_steps > 0 and bool(dones_np[rollout_steps - 1]):
             next_value = torch.zeros(1, device=device, dtype=torch.float32)
 
     observations = torch.stack(obs_buf)
     actions = torch.stack(action_buf).to(dtype=torch.long)
     logprobs = torch.stack(logprob_buf)
-    rewards = torch.stack(reward_buf)
-    dones = torch.stack(done_buf)
+    rewards = torch.as_tensor(rewards_np, dtype=torch.float32, device=device)
+    dones = torch.as_tensor(dones_np, dtype=torch.float32, device=device)
     values = torch.stack(value_buf)
     advantages, returns = _compute_gae(
         rewards,
@@ -457,11 +457,11 @@ def _collect_batched_rollout_segment(
     obs_buf = []
     action_buf = []
     logprob_buf = []
-    reward_buf = []
-    done_buf = []
     value_buf = []
+    rewards_np = np.empty((rollout_steps, num_envs), dtype=np.float32)
+    dones_np = np.empty((rollout_steps, num_envs), dtype=np.float32)
 
-    for _ in range(rollout_steps):
+    for step_index in range(rollout_steps):
         obs_tensor = torch.as_tensor(obs_np, dtype=torch.float32, device=device)
         with torch.no_grad():
             action_tensor, logprob_tensor, _, value_tensor = model.get_action_and_value(obs_tensor)
@@ -487,13 +487,15 @@ def _collect_batched_rollout_segment(
         outcomes, next_obs_np = backend.step_flat_with_encoded_states(flat_actions, 0)
         next_states = backend.states()
 
-        rewards_np = np.zeros(num_envs, dtype=np.float32)
-        dones_np = np.zeros(num_envs, dtype=np.float32)
+        rewards_row = rewards_np[step_index]
+        dones_row = dones_np[step_index]
+        rewards_row.fill(0.0)
+        dones_row.fill(0.0)
         for env_index, (previous_state, next_state, outcome) in enumerate(
             zip(previous_states, next_states, outcomes, strict=True)
         ):
             if not active[env_index]:
-                dones_np[env_index] = 1.0
+                dones_row[env_index] = 1.0
                 continue
             base_reward = reward_env._base_shaping_reward(
                 previous_state,
@@ -513,8 +515,8 @@ def _collect_batched_rollout_segment(
                 rewards = outcome.get("rewards", [])
                 reward += float(rewards[0]) if rewards else 0.0
 
-            rewards_np[env_index] = float(reward)
-            dones_np[env_index] = float(done)
+            rewards_row[env_index] = float(reward)
+            dones_row[env_index] = float(done)
             neutral_captures = _neutral_capture_count(previous_state, next_state, player=0)
             alive = _player_alive(next_state, player=0)
             episodes[env_index].record_step(
@@ -531,8 +533,6 @@ def _collect_batched_rollout_segment(
         obs_buf.append(obs_tensor)
         action_buf.append(action_tensor)
         logprob_buf.append(logprob_tensor)
-        reward_buf.append(torch.as_tensor(rewards_np, dtype=torch.float32, device=device))
-        done_buf.append(torch.as_tensor(dones_np, dtype=torch.float32, device=device))
         value_buf.append(value_tensor)
 
         current_states = next_states
@@ -551,8 +551,8 @@ def _collect_batched_rollout_segment(
     observations = torch.stack(obs_buf)
     actions = torch.stack(action_buf).to(dtype=torch.long)
     logprobs = torch.stack(logprob_buf)
-    rewards = torch.stack(reward_buf)
-    dones = torch.stack(done_buf)
+    rewards = torch.as_tensor(rewards_np, dtype=torch.float32, device=device)
+    dones = torch.as_tensor(dones_np, dtype=torch.float32, device=device)
     values = torch.stack(value_buf)
     advantages, returns = _compute_gae_batched(
         rewards,

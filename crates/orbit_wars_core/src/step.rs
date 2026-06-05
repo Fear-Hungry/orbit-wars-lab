@@ -13,6 +13,9 @@ use crate::generator::generate_training_game;
 use crate::geometry::{distance, orbital_radius, point_to_segment_distance, rotate_about_center};
 use crate::types::{CometGroup, Fleet, GameState, Move, Planet, StepOutcome};
 
+type PlanetCollisionSnapshot = (i32, f64, f64, f64);
+type PreviousPlanetPosition = [f64; 2];
+
 #[derive(Clone, Debug)]
 pub struct Game {
     pub cfg: Config,
@@ -43,11 +46,11 @@ impl Game {
 
         let mut combat_lists: HashMap<i32, Vec<(i8, i32)>> = HashMap::new();
         self.move_fleets_and_collect_collisions(&mut combat_lists);
-        let previous_planet_positions: HashMap<i32, [f64; 2]> = self
+        let previous_planet_positions: Vec<PreviousPlanetPosition> = self
             .state
             .planets
             .iter()
-            .map(|planet| (planet.id, [planet.x, planet.y]))
+            .map(|planet| [planet.x, planet.y])
             .collect();
         self.rotate_planets_and_comets();
         self.sweep_planet_collisions(&previous_planet_positions, &mut combat_lists);
@@ -165,7 +168,12 @@ impl Game {
         &mut self,
         combat_lists: &mut HashMap<i32, Vec<(i8, i32)>>,
     ) {
-        let planets = self.state.planets.clone();
+        let planets: Vec<PlanetCollisionSnapshot> = self
+            .state
+            .planets
+            .iter()
+            .map(|planet| (planet.id, planet.x, planet.y, planet.radius))
+            .collect();
         let max_fleets = self.cfg.max_fleets;
         let mut survivors = Vec::with_capacity(self.state.fleets.len().min(max_fleets));
         let drained: Vec<Fleet> = self.state.fleets.drain(..).collect();
@@ -185,10 +193,10 @@ impl Game {
             }
 
             let mut collided = false;
-            for planet in &planets {
-                if point_to_segment_distance([planet.x, planet.y], old, new) < planet.radius {
+            for (planet_id, planet_x, planet_y, planet_radius) in &planets {
+                if point_to_segment_distance([*planet_x, *planet_y], old, new) < *planet_radius {
                     combat_lists
-                        .entry(planet.id)
+                        .entry(*planet_id)
                         .or_default()
                         .push((fleet.owner, fleet.ships));
                     collided = true;
@@ -235,23 +243,30 @@ impl Game {
 
     fn sweep_planet_collisions(
         &mut self,
-        previous_planet_positions: &HashMap<i32, [f64; 2]>,
+        previous_planet_positions: &[PreviousPlanetPosition],
         combat_lists: &mut HashMap<i32, Vec<(i8, i32)>>,
     ) {
-        let planets = self.state.planets.clone();
+        let planets: Vec<PlanetCollisionSnapshot> = self
+            .state
+            .planets
+            .iter()
+            .map(|planet| (planet.id, planet.x, planet.y, planet.radius))
+            .collect();
         let mut survivors = Vec::with_capacity(self.state.fleets.len());
         for fleet in self.state.fleets.drain(..) {
             let mut collided = false;
-            for planet in &planets {
+            for (planet_index, (planet_id, planet_x, planet_y, planet_radius)) in
+                planets.iter().enumerate()
+            {
                 let previous = previous_planet_positions
-                    .get(&planet.id)
+                    .get(planet_index)
                     .copied()
-                    .unwrap_or([planet.x, planet.y]);
-                let current = [planet.x, planet.y];
-                if point_to_segment_distance([fleet.x, fleet.y], previous, current) < planet.radius
+                    .unwrap_or([*planet_x, *planet_y]);
+                let current = [*planet_x, *planet_y];
+                if point_to_segment_distance([fleet.x, fleet.y], previous, current) < *planet_radius
                 {
                     combat_lists
-                        .entry(planet.id)
+                        .entry(*planet_id)
                         .or_default()
                         .push((fleet.owner, fleet.ships));
                     collided = true;
