@@ -213,11 +213,16 @@ fase perf = MEDIR antes de consertar. Os candidatos abaixo são suspeitas a conf
       / lookahead ainda não incorporadas. É inteligência competitiva, não código.
   - [ ] verificar: lista de 2-3 ideias acionáveis extraídas, cada uma com hipótese testável
         registrada em EXPERIMENTS.md
-- [ ] F4. Fechar pendências de micro-tuning local (exp. 106-107): "reduzir perdas vs rush" e
+- [x] F4. Fechar pendências de micro-tuning local (exp. 106-107): "reduzir perdas vs rush" e
       "decisão 4p com anti_meta+defensive juntos". ATENÇÃO: provavelmente SUPERADAS pelo pivô
       (régua vs-old/rush está desqualificada como promotor). NÃO ressuscitar cegamente —
       primeiro DECIDIR se ainda fazem sentido contra a régua Producer.
-  - [ ] verificar: decisão registrada (manter parado OU re-escopar contra Producer)
+      DECISÃO 2026-06-05: manter parado. As pendências de 31/05 foram formuladas contra
+      `rush`, `anti_meta`, `defensive` e 4p agregado antes do pivô Producer; desde 04/06,
+      `submission_v_old.py`, `greedy` e `rush` são sanity técnico, não promoção. Não há
+      hipótese Producer/OEP específica nestas pendências antigas. Se voltarem, devem entrar
+      como nova hipótese mensurável contra Producer ou como F1 4p, não como micro-tuning local.
+  - [x] verificar: decisão registrada (manter parado OU re-escopar contra Producer)
 
 ## Thread 4 — Risco deferido (só com repro concreto)
 
