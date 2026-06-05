@@ -1,6 +1,6 @@
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
+use std::f64::consts::FRAC_PI_2;
 
 use crate::config::{BOARD_SIZE, CENTER, PLANET_CLEARANCE, ROTATION_RADIUS_LIMIT, SUN_RADIUS};
 use crate::geometry::distance;
@@ -71,26 +71,10 @@ fn generate_training_planets<R: Rng + ?Sized>(rng: &mut R) -> Vec<Planet> {
         }
     }
 
-    for _ in 0..1000 {
-        let production = rng.gen_range(1..=5);
-        let radius = 1.0 + (production as f64).ln();
-        let min_orbital = SUN_RADIUS + radius + 10.0;
-        let max_orbital = ROTATION_RADIUS_LIMIT - radius;
-        if min_orbital >= max_orbital {
-            continue;
-        }
-        let orbital_radius = rng.gen_range(min_orbital..=max_orbital);
-        let x = CENTER + orbital_radius * FRAC_PI_4.cos();
-        let y = CENTER + orbital_radius * FRAC_PI_4.sin();
-        let ships = sample_large_group_ships(rng);
-        let group = build_symmetric_group(id_counter, x, y, radius, ships, production);
-        if group_is_valid(&group, &planets) {
-            planets.extend(group);
-            id_counter += 4;
-            break;
-        }
-    }
-
+    // Phase 2 (matches official generate_planets): fill remaining groups with the
+    // low-ship random loop, which also guarantees at least one orbiting group.
+    // The official has no dedicated high-ship "diagonal orbiting" phase; adding one
+    // inflated mean starting ships above the official opening distribution.
     let mut attempts = 0;
     let mut has_orbiting = planets.iter().any(is_rotating);
     while planets.len() < groups * 4 || !has_orbiting {
@@ -180,14 +164,13 @@ fn build_symmetric_group(
 }
 
 fn group_is_valid(group: &[Planet; 4], existing: &[Planet]) -> bool {
-    let mut seen = existing.to_vec();
-    for planet in group {
-        if !is_valid_new_planet(planet, &seen) {
-            return false;
-        }
-        seen.push(*planet);
-    }
-    true
+    // Match official generate_planets: each symmetric copy is validated only
+    // against pre-existing planets, NOT against the other copies of its own group.
+    // Validating intra-group rejected groups the official accepts, yielding fewer
+    // (and more high-ship-weighted) groups than the official opening distribution.
+    group
+        .iter()
+        .all(|planet| is_valid_new_planet(planet, existing))
 }
 
 fn is_rotating(planet: &Planet) -> bool {
@@ -200,16 +183,8 @@ fn assign_home_planets<R: Rng + ?Sized>(planets: &mut [Planet], num_players: usi
         return;
     }
 
-    let mut home_group = rng.gen_range(0..num_groups);
-    if num_players == 4 && is_rotating(&planets[home_group * 4]) {
-        if let Some(diagonal_group) = (0..num_groups).find(|group_idx| {
-            let planet = planets[group_idx * 4];
-            is_rotating(&planet) && ((planet.x - CENTER) - (planet.y - CENTER)).abs() < 0.01
-        }) {
-            home_group = diagonal_group;
-        }
-    }
-
+    // Official picks the home group uniformly at random (no diagonal preference).
+    let home_group = rng.gen_range(0..num_groups);
     let base = home_group * 4;
     if num_players == 2 {
         planets[base].owner = 0;
@@ -304,13 +279,6 @@ mod tests {
             .count()
     }
 
-    fn has_diagonal_orbiting_group(planets: &[Planet]) -> bool {
-        planets.chunks_exact(4).any(|group| {
-            let planet = group[0];
-            is_rotating(&planet) && ((planet.x - CENTER) - (planet.y - CENTER)).abs() < 0.01
-        })
-    }
-
     fn assert_training_distribution(seed: u64, num_players: usize) {
         let state = generate_training_game(seed, num_players);
 
@@ -330,7 +298,6 @@ mod tests {
         assert_no_overlap(&state.planets);
         assert!(static_group_count(&state.planets) >= MIN_STATIC_GROUPS);
         assert!(orbiting_group_count(&state.planets) >= 1);
-        assert!(has_diagonal_orbiting_group(&state.planets));
 
         for chunk in state.planets.chunks_exact(4) {
             assert_quadrant_symmetry(chunk);

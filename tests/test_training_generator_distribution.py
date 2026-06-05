@@ -40,7 +40,12 @@ def _aggregate(samples: list[dict[str, float]]) -> dict[str, float]:
 
 
 def test_training_generator_distribution_tracks_official_openings():
-    seeds = list(range(16))
+    # Distributional check, not per-seed parity: the Rust generator (ChaCha8) and the
+    # official generator (Python Mersenne Twister) draw different maps for the same
+    # integer seed by design (see docs/PARITY.md — do NOT reproduce the Python RNG in
+    # Rust). Tolerances below compare aggregate distributions, so the sample must be
+    # large enough that cross-RNG variance averages out; 16 seeds was under-powered.
+    seeds = list(range(256))
     for players in (2, 4):
         backend = RustBatchBackend(num_envs=1, num_players=players, seed=0)
         local_samples = [_summary(backend.reset(seed)[0]) for seed in seeds]
