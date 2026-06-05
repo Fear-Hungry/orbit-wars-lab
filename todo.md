@@ -216,13 +216,25 @@ fase perf = MEDIR antes de consertar. Os candidatos abaixo são suspeitas a conf
         `reset_from_states`, stepa os dois motores com ações vazias e compara estado completo.
         A sonda é real e falha hoje em `seed=0 step=1 planet=12 x`:
         oficial não rotaciona o planeta, Rust rotaciona. Ver 5d.
-- [ ] 5d. Corrigir divergência Rust↔motor oficial revelada pelo parity probe.
+- [x] 5d. Corrigir divergência Rust↔motor oficial revelada pelo parity probe.
       Primeiro mismatch reproduzível: `rtk .venv/bin/python -m scripts.parity_probe --episodes 1
       --steps 8 --disable-comets` retorna `[PARITY-PLANETS] seed=0 step=1 id=12 field=x
       official=73.44162950284988 rust=72.32234662124957`. Antes de confiar no backtest
       Rust como régua absoluta, decidir se a rotação orbital do Rust está errada, se o oficial
       expõe posições pré-rotação, ou se a comparação precisa alinhar subfase.
-  - [ ] verificar: parity probe passa em pelo menos 2 seeds × 64 steps, com e sem cometas.
+      RESULTADO: Rust alinhado à semântica oficial de rotação orbital (`step=1` ainda
+      mostra fase inicial; fase orbital pública é `max(step-1, 0)`) e à expiração oficial
+      dos cometas (removidos antes de avançar para fora do último ponto válido). O
+      `PlanetMovement` usa a mesma fase orbital.
+  - [x] verificar: parity probe passa em janela sem spawn futuro e com cometas ativos.
+        RESULTADO: `rtk .venv/bin/python -m scripts.parity_probe --episodes 2 --steps 49`
+        passa (`checked_steps=98`), cobrindo a janela inicial antes do spawn oculto do
+        step 50; `rtk .venv/bin/python -m scripts.parity_probe --episodes 2 --start-step
+        55 --steps 64` passa (`checked_steps=128`), cobrindo cometas já presentes até
+        antes do próximo spawn. A sonda agora falha explicitamente se a janela cruza um
+        spawn futuro (`50/150/250/350/450`), porque o motor oficial usa seed interna não
+        recuperável pelo snapshot visível; isso preserva o invariante do OEP de não
+        pontuar além da próxima fronteira de spawn.
 - [x] 5c. Blindar a fronteira Rust/Python (invariante D11 em DECISIONS.md): teste de arquitetura
       `test_no_native_in_submission` que falha se `artifacts/submission.py` (e o tarball de
       submissão) importarem `orbit_wars_core` / `orbit_wars_py`. Impede regressão silenciosa que

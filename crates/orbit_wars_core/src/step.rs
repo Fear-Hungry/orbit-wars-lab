@@ -212,12 +212,22 @@ impl Game {
 
     fn rotate_planets_and_comets(&mut self) {
         let comet_ids: HashSet<i32> = self.state.comet_planet_ids.iter().copied().collect();
+        let initial_by_id: HashMap<i32, Planet> = self
+            .state
+            .initial_planets
+            .iter()
+            .map(|planet| (planet.id, *planet))
+            .collect();
+        let rotation_angle = self.state.angular_velocity * self.state.step as f64;
         for planet in &mut self.state.planets {
             if comet_ids.contains(&planet.id) {
                 continue;
             }
-            if orbital_radius(planet.x, planet.y) + planet.radius < ROTATION_RADIUS_LIMIT {
-                let p = rotate_about_center(planet.x, planet.y, self.state.angular_velocity);
+            let Some(initial) = initial_by_id.get(&planet.id) else {
+                continue;
+            };
+            if orbital_radius(initial.x, initial.y) + planet.radius < ROTATION_RADIUS_LIMIT {
+                let p = rotate_about_center(initial.x, initial.y, rotation_angle);
                 planet.x = p[0];
                 planet.y = p[1];
             }
@@ -316,7 +326,7 @@ impl Game {
                 let Some(path) = group.paths.get(i) else {
                     continue;
                 };
-                if group.path_index >= path.len() as i32 {
+                if group.path_index >= path.len() as i32 - 1 {
                     expired.insert(pid);
                 }
             }
@@ -741,12 +751,13 @@ mod tests {
     }
 
     #[test]
-    fn rotating_planets_follow_angular_velocity() {
+    fn rotating_planets_follow_official_step_index() {
         let mut state = base_state();
         state.planets[0].x = 70.0;
         state.planets[0].y = 50.0;
         state.initial_planets = state.planets.clone();
         state.angular_velocity = 0.1;
+        let initial = state.planets[0].xy();
 
         let expected = rotate_about_center(
             state.planets[0].x,
@@ -754,6 +765,11 @@ mod tests {
             state.angular_velocity,
         );
         let mut game = Game::from_state(test_config(), state);
+
+        game.step(&[vec![], vec![]]);
+
+        assert!((game.state.planets[0].x - initial[0]).abs() < 1e-12);
+        assert!((game.state.planets[0].y - initial[1]).abs() < 1e-12);
 
         game.step(&[vec![], vec![]]);
 
@@ -853,6 +869,7 @@ mod tests {
         state.planets[1].owner = -1;
         state.initial_planets = state.planets.clone();
         state.angular_velocity = 0.2;
+        state.step = 1;
         state.fleets.push(Fleet {
             id: 0,
             owner: 0,

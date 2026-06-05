@@ -15,6 +15,7 @@ PLANET_FIELDS = ("id", "owner", "x", "y", "radius", "ships", "production")
 FLEET_FIELDS = ("id", "owner", "x", "y", "angle", "from_planet_id", "ships")
 FLOAT_FIELDS = {"x", "y", "radius", "angle"}
 XY_ATOL = 1.0e-6
+COMET_SPAWN_STEPS = (50, 150, 250, 350, 450)
 
 
 def _planet_dict(row: Any) -> dict[str, Any]:
@@ -267,25 +268,44 @@ def run_probe(
     *,
     episodes: int,
     steps: int,
+    start_step: int,
     num_players: int,
     enable_comets: bool,
     atol: float,
 ) -> dict[str, Any]:
+    start_step = int(start_step)
+    steps = int(steps)
+    final_step = start_step + steps
+    crossed_spawns = [step for step in COMET_SPAWN_STEPS if start_step < step <= final_step]
+    if crossed_spawns:
+        raise ValueError(
+            "official comet spawns are hidden-seed events; choose a deterministic window "
+            f"that does not cross spawn steps {crossed_spawns}"
+        )
+    episode_steps = final_step + 2
+    if episode_steps > 500:
+        raise ValueError("parity probe window exceeds the official 500-step episode limit")
+
     checked_steps = 0
     for seed in range(int(episodes)):
         env = make(
             "orbit_wars",
-            configuration={"seed": seed, "episodeSteps": int(steps)},
+            configuration={"seed": seed, "episodeSteps": episode_steps},
             debug=True,
         )
         env.reset(int(num_players))
+        actions = [[] for _ in range(int(num_players))]
+        official_obs = env.state[0].observation
+        while not env.done and int(official_obs.step) < start_step:
+            env.step(actions)
+            official_obs = env.state[0].observation
+
         rust = RustBatchBackend(
             num_envs=1,
             num_players=int(num_players),
             seed=seed,
-            config=RustConfig(episode_steps=int(steps), enable_comets=bool(enable_comets)),
+            config=RustConfig(episode_steps=episode_steps, enable_comets=bool(enable_comets)),
         )
-        official_obs = env.state[0].observation
         rust_state = _state_from_official_observation(
             official_obs,
             num_players=int(num_players),
@@ -300,8 +320,7 @@ def run_probe(
         if diff is not None:
             return {"passed": False, "error": diff, "seed": seed, "checked_steps": checked_steps}
 
-        while not env.done and int(official_obs.step) < int(steps):
-            actions = [[] for _ in range(int(num_players))]
+        while not env.done and int(official_obs.step) < final_step:
             env.step(actions)
             _, rust_states = rust.step_with_states([actions])
             official_obs = env.state[0].observation
@@ -323,6 +342,8 @@ def run_probe(
         "passed": True,
         "episodes": int(episodes),
         "steps": int(steps),
+        "start_step": start_step,
+        "final_step": final_step,
         "num_players": int(num_players),
         "enable_comets": bool(enable_comets),
         "checked_steps": checked_steps,
@@ -332,7 +353,8 @@ def run_probe(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--episodes", type=int, default=2)
-    parser.add_argument("--steps", type=int, default=64)
+    parser.add_argument("--steps", type=int, default=49)
+    parser.add_argument("--start-step", type=int, default=0)
     parser.add_argument("--num-players", type=int, choices=(2, 4), default=2)
     parser.add_argument("--disable-comets", action="store_true")
     parser.add_argument("--atol", type=float, default=XY_ATOL)
@@ -341,6 +363,7 @@ def main() -> None:
     report = run_probe(
         episodes=max(1, int(args.episodes)),
         steps=max(1, int(args.steps)),
+        start_step=max(0, int(args.start_step)),
         num_players=int(args.num_players),
         enable_comets=not bool(args.disable_comets),
         atol=float(args.atol),
