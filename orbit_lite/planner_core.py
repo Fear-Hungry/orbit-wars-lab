@@ -8,6 +8,8 @@ reachability gate, the device-stable greedy selector, the hold-reserve cap
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import torch
 from torch import Tensor
 
@@ -363,7 +365,7 @@ def reachable_mask(
 def _greedy_select(
     *, P, W, device, dtype, score, cand_src, cand_send, cand_angle, cand_eta,
     cand_active, cand_tgt_slot, cand_tgt_short, cand_is_def, source_budget,
-    target_exists, roi_threshold,
+    target_exists, roi_threshold, should_stop: Callable[[], bool] | None = None,
 ) -> LaunchEntries:
     """Masking-only greedy over [C, L] candidates: pick the best wave each iter,
     one per target, source-budget aware across all L contributors. Enforces the
@@ -381,6 +383,8 @@ def _greedy_select(
     w_active = torch.zeros(W, L, dtype=torch.bool, device=device)
 
     for w in range(W):
+        if should_stop is not None and should_stop():
+            break
         taken_cand = target_taken[cand_tgt_short]                               # [C]
         budget_at = source_budget[cand_src]                                     # [C, L]
         can_fund = ((cand_send <= budget_at) | ~cand_active).all(dim=-1)        # [C]

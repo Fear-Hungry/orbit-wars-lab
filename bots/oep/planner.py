@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from time import perf_counter
@@ -124,6 +125,7 @@ class OEPLiteConfig:
     max_defensive_targets: int = 2
     max_waves_per_turn: int = 4
     profile_stages: bool = False
+    time_budget_ms: float = 0.0
 
 
 def _effective_config(config: OEPPlannerConfig, *, step: int) -> OEPPlannerConfig:
@@ -771,6 +773,7 @@ def plan_oep_waves(
     fractions: tuple[float, ...],
     player_count: int,
     opponent_entries: LaunchEntries | None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> LaunchEntries:
     built = _build_fraction_candidates(
         movement=movement,
@@ -786,6 +789,8 @@ def plan_oep_waves(
         opponent_entries=opponent_entries,
     )
     if built is None:
+        return _empty_entries(obs.device, obs.ships.dtype)
+    if should_stop is not None and should_stop():
         return _empty_entries(obs.device, obs.ships.dtype)
     wave_entries, leftover = _greedy_select(
         P=built["P"],
@@ -804,8 +809,11 @@ def plan_oep_waves(
         source_budget=built["source_budget"],
         target_exists=built["target_exists"],
         roi_threshold=float(config.roi_threshold),
+        should_stop=should_stop,
     )
     if not bool(config.enable_regroup):
+        return wave_entries
+    if should_stop is not None and should_stop():
         return wave_entries
     pressure = cheap_enemy_pressure(obs, cache, horizon=float(config.horizon), player_id=int(obs.player_id))
     from orbit_lite.planner_core import _plan_regroup
@@ -886,6 +894,16 @@ class OEPLiteRuntime:
     def profile_summary(self) -> dict[str, dict[str, float]]:
         return self.memory.profile_summary()
 
+    def _deadline(self) -> float | None:
+        budget_ms = float(self.config.time_budget_ms)
+        if budget_ms <= 0.0:
+            return None
+        return perf_counter() + budget_ms / 1000.0
+
+    @staticmethod
+    def _deadline_expired(deadline: float | None) -> bool:
+        return deadline is not None and perf_counter() > deadline
+
     def _oep_config(self, base_config: OEPPlannerConfig) -> OEPPlannerConfig:
         return dataclasses.replace(
             base_config,
@@ -909,6 +927,7 @@ class OEPLiteRuntime:
 
     def tensor_action(self, obs_tensors: dict, raw_obs: Any | None = None):
         action_start = self._profile_start()
+        deadline = self._deadline()
         mem = self.memory
         if raw_obs is None:
             raise ValueError("OEPLiteRuntime.tensor_action requires raw_obs for policy injection")
@@ -916,6 +935,7 @@ class OEPLiteRuntime:
             mem.reset()
             mem.reset_profile()
             action_start = self._profile_start()
+            deadline = self._deadline()
         if mem.cached_player_count is None:
             mem.cached_player_count = largest_initial_player_count(obs_tensors)
         player_count = int(mem.cached_player_count)
@@ -960,7 +980,11 @@ class OEPLiteRuntime:
         self._profile_record("producer_entries", stage_start)
         opponent_entries = None
         opp_id = _opponent_id(int(obs.player_id), player_count)
-        if bool(self.config.opponent_response) and opp_id is not None:
+        if (
+            bool(self.config.opponent_response)
+            and opp_id is not None
+            and not self._deadline_expired(deadline)
+        ):
             mode = str(self.config.opponent_response_mode)
             if mode == "producer":
                 stage_start = self._profile_start()
@@ -1004,32 +1028,37 @@ class OEPLiteRuntime:
         self._profile_record("opponent_launch_set", stage_start)
         oep_config = self._oep_config(base_config)
 
-        stage_start = self._profile_start()
-        incumbent_entries = _entries_from_lane_intents(
-            mem.last_lanes,
-            movement=movement,
-            obs=obs,
-            status=status,
-            config=oep_config,
-            player_id=int(obs.player_id),
-        )
-        self._profile_record("incumbent_entries", stage_start)
+        incumbent_entries = _empty_entries(obs.device, obs.ships.dtype)
+        if not self._deadline_expired(deadline):
+            stage_start = self._profile_start()
+            incumbent_entries = _entries_from_lane_intents(
+                mem.last_lanes,
+                movement=movement,
+                obs=obs,
+                status=status,
+                config=oep_config,
+                player_id=int(obs.player_id),
+            )
+            self._profile_record("incumbent_entries", stage_start)
 
-        stage_start = self._profile_start()
-        oep_entries = plan_oep_waves(
-            movement=movement,
-            obs=obs,
-            obs_tensors=obs_tensors,
-            cache=cache,
-            status=status,
-            prod=movement.planet_prod,
-            alive_by_step=alive_by_step,
-            config=oep_config,
-            fractions=self.config.fractions,
-            player_count=player_count,
-            opponent_entries=opponent_entries,
-        )
-        self._profile_record("plan_oep_waves", stage_start)
+        oep_entries = _empty_entries(obs.device, obs.ships.dtype)
+        if not self._deadline_expired(deadline):
+            stage_start = self._profile_start()
+            oep_entries = plan_oep_waves(
+                movement=movement,
+                obs=obs,
+                obs_tensors=obs_tensors,
+                cache=cache,
+                status=status,
+                prod=movement.planet_prod,
+                alive_by_step=alive_by_step,
+                config=oep_config,
+                fractions=self.config.fractions,
+                player_count=player_count,
+                opponent_entries=opponent_entries,
+                should_stop=lambda: self._deadline_expired(deadline),
+            )
+            self._profile_record("plan_oep_waves", stage_start)
 
         stage_start = self._profile_start()
         producer_fitness = _plan_fitness(
@@ -1043,29 +1072,33 @@ class OEPLiteRuntime:
         )
         self._profile_record("fitness_producer", stage_start)
 
-        stage_start = self._profile_start()
-        incumbent_fitness = _plan_fitness(
-            incumbent_entries,
-            opponent_launch_set=opponent_launch_set,
-            status=status,
-            prod=movement.planet_prod,
-            alive_by_step=alive_by_step,
-            player_count=player_count,
-            player_id=int(obs.player_id),
-        )
-        self._profile_record("fitness_incumbent", stage_start)
+        incumbent_fitness = 0.0
+        if not self._deadline_expired(deadline):
+            stage_start = self._profile_start()
+            incumbent_fitness = _plan_fitness(
+                incumbent_entries,
+                opponent_launch_set=opponent_launch_set,
+                status=status,
+                prod=movement.planet_prod,
+                alive_by_step=alive_by_step,
+                player_count=player_count,
+                player_id=int(obs.player_id),
+            )
+            self._profile_record("fitness_incumbent", stage_start)
 
-        stage_start = self._profile_start()
-        oep_fitness = _plan_fitness(
-            oep_entries,
-            opponent_launch_set=opponent_launch_set,
-            status=status,
-            prod=movement.planet_prod,
-            alive_by_step=alive_by_step,
-            player_count=player_count,
-            player_id=int(obs.player_id),
-        )
-        self._profile_record("fitness_oep", stage_start)
+        oep_fitness = 0.0
+        if not self._deadline_expired(deadline):
+            stage_start = self._profile_start()
+            oep_fitness = _plan_fitness(
+                oep_entries,
+                opponent_launch_set=opponent_launch_set,
+                status=status,
+                prod=movement.planet_prod,
+                alive_by_step=alive_by_step,
+                player_count=player_count,
+                player_id=int(obs.player_id),
+            )
+            self._profile_record("fitness_oep", stage_start)
         incumbent_is_valid = bool((incumbent_entries.valid & (incumbent_entries.ships >= 1.0)).any())
         seed_entries = producer_entries
         seed_fitness = producer_fitness
@@ -1123,7 +1156,25 @@ class OEPLiteRuntime:
             sparse_row = self.tensor_action(obs_tensors, raw_obs=obs)
         return sparse_action_row_to_moves(sparse_row, obs, player_id=player_id)
 
-_RUNTIME = OEPLiteRuntime(seed_policy=_producer_policy, opponent_policy=_producer_policy)
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return float(default)
+    return float(raw)
+
+
+def _env_config() -> OEPLiteConfig:
+    return OEPLiteConfig(
+        opponent_response_mode=os.getenv("OEP_OPPONENT_RESPONSE_MODE", "producer"),
+        time_budget_ms=_env_float("OEP_TIME_BUDGET_MS", 0.0),
+    )
+
+
+_RUNTIME = OEPLiteRuntime(
+    seed_policy=_producer_policy,
+    opponent_policy=_producer_policy,
+    config=_env_config(),
+)
 
 
 def agent(obs):

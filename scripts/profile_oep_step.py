@@ -47,6 +47,7 @@ def _run_match(
     enable_comets: bool,
     act_timeout: float,
     opponent_response_mode: str,
+    time_budget_ms: float,
 ) -> tuple[dict[str, float], dict[str, dict[str, float]]]:
     runtime = OEPLiteRuntime(
         seed_policy=producer_agent,
@@ -54,6 +55,7 @@ def _run_match(
         config=OEPLiteConfig(
             profile_stages=True,
             opponent_response_mode=str(opponent_response_mode),
+            time_budget_ms=float(time_budget_ms),
         ),
     )
     backend = RustBatchBackend(
@@ -162,6 +164,7 @@ def main() -> None:
     parser.add_argument("--seeds", type=int, default=1)
     parser.add_argument("--episode-steps", type=int, default=128)
     parser.add_argument("--act-timeout", type=float, default=1.0)
+    parser.add_argument("--time-budget-ms", type=float, default=150.0)
     parser.add_argument(
         "--opponent-response-mode",
         choices=("cheap", "producer", "none"),
@@ -185,6 +188,7 @@ def main() -> None:
                 enable_comets=not bool(args.disable_comets),
                 act_timeout=float(args.act_timeout),
                 opponent_response_mode=str(args.opponent_response_mode),
+                time_budget_ms=float(args.time_budget_ms),
             )
             records.append(record)
             _merge_profiles(profile_totals, profile_counts, profile)
