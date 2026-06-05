@@ -2,17 +2,23 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
-from python.agents.policy import FlatActorCritic
-from python.train.train_ppo import build_phase0_env
 
-from orbit_wars_gym.backend import RustBatchBackend, RustConfig
-from orbit_wars_gym.encoding import EncoderConfig, observation_dim
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from python.agents.policy import FlatActorCritic  # noqa: E402
+from python.train.train_ppo import build_phase0_env  # noqa: E402
+
+from orbit_wars_gym.backend import RustBatchBackend, RustConfig  # noqa: E402
+from orbit_wars_gym.encoding import EncoderConfig, observation_dim  # noqa: E402
 
 
 def _device(raw: str) -> torch.device:

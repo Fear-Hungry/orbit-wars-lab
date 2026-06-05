@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import random
+import time
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -16,8 +18,8 @@ from python.agents.policy import FlatActorCritic
 from python.agents.registry import get_heuristic_policies
 
 from orbit_wars_gym import OrbitWarsGymEnv
-from orbit_wars_gym.action_decoder import DecoderConfig
-from orbit_wars_gym.backend import RustConfig
+from orbit_wars_gym.action_decoder import DecoderConfig, decode_discrete_action
+from orbit_wars_gym.backend import RustBatchBackend, RustConfig
 from orbit_wars_gym.encoding import observation_dim
 from orbit_wars_gym.entities import fleet_owner, planet_id, planet_owner
 
@@ -35,6 +37,7 @@ class Phase0TrainingConfig:
     num_players: int = 2
     total_timesteps: int = 200_000
     rollout_steps: int = 256
+    rollout_num_envs: int = 1
     update_epochs: int = 4
     minibatch_size: int = 256
     learning_rate: float = 2.5e-4
@@ -179,6 +182,32 @@ def _compute_gae(
     return advantages, returns
 
 
+def _compute_gae_batched(
+    rewards: torch.Tensor,
+    dones: torch.Tensor,
+    values: torch.Tensor,
+    next_value: torch.Tensor,
+    *,
+    gamma: float,
+    gae_lambda: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    advantages = torch.zeros_like(rewards)
+    last_advantage = torch.zeros(rewards.shape[1], device=rewards.device, dtype=rewards.dtype)
+    next_value = next_value.to(rewards.device, dtype=rewards.dtype).view(rewards.shape[1])
+    for idx in range(rewards.shape[0] - 1, -1, -1):
+        if idx == rewards.shape[0] - 1:
+            next_non_terminal = 1.0 - dones[idx]
+            next_values = next_value
+        else:
+            next_non_terminal = 1.0 - dones[idx]
+            next_values = values[idx + 1]
+        delta = rewards[idx] + gamma * next_values * next_non_terminal - values[idx]
+        last_advantage = delta + gamma * gae_lambda * next_non_terminal * last_advantage
+        advantages[idx] = last_advantage
+    returns = advantages + values
+    return advantages, returns
+
+
 def _linear_schedule(start: float, end: float, progress: float) -> float:
     progress = min(max(progress, 0.0), 1.0)
     return float(start + (end - start) * progress)
@@ -256,7 +285,7 @@ def train_phase5_4p(training_cfg: Phase0TrainingConfig | None = None) -> dict[st
     return train_phase0(cfg)
 
 
-def _collect_rollout_segment(
+def _collect_single_env_rollout_segment(
     model: FlatActorCritic,
     *,
     opponent_name: str,
@@ -368,6 +397,236 @@ def _collect_rollout_segment(
     )
 
 
+def _moves_to_flat_rows(env_index: int, player_index: int, moves: Sequence[Sequence[float]]) -> list[list[float]]:
+    rows: list[list[float]] = []
+    for move in moves:
+        if len(move) < 3:
+            continue
+        rows.append([float(env_index), float(player_index), float(move[0]), float(move[1]), float(move[2])])
+    return rows
+
+
+def _batched_rollout_supported(training_cfg: Phase0TrainingConfig) -> bool:
+    return int(training_cfg.rollout_num_envs) > 1 and training_cfg.num_players == 2
+
+
+def _collect_batched_rollout_segment(
+    model: FlatActorCritic,
+    *,
+    opponent_name: str,
+    base_seed: int,
+    rollout_steps: int,
+    sample_limit: int,
+    device: torch.device,
+    training_cfg: Phase0TrainingConfig,
+    progress: float,
+) -> RolloutSegment:
+    if training_cfg.num_players != 2:
+        raise ValueError("batched PPO rollout currently supports only 2-player training")
+    try:
+        opponent_policy = PHASE0_OPPONENTS[opponent_name]
+    except KeyError as exc:
+        raise ValueError(f"unknown phase-0 opponent: {opponent_name}") from exc
+
+    num_envs = max(1, min(int(training_cfg.rollout_num_envs), int(sample_limit)))
+    base_shaping_scale, comet_shaping_scale = shaping_scales(training_cfg, progress)
+    reward_env = build_phase0_env(
+        seed=base_seed,
+        num_players=training_cfg.num_players,
+        opponent_name=opponent_name,
+        enable_comets=training_cfg.enable_comets,
+        decoder_cfg=decoder_config(training_cfg),
+        sun_loss_penalty=training_cfg.sun_loss_penalty,
+        border_loss_penalty=training_cfg.border_loss_penalty,
+        ship_margin_scale=training_cfg.ship_margin_scale,
+        base_shaping_scale=base_shaping_scale,
+        comet_shaping_scale=comet_shaping_scale,
+    )
+    backend = RustBatchBackend(
+        num_envs=num_envs,
+        num_players=training_cfg.num_players,
+        seed=base_seed,
+        config=RustConfig(enable_comets=training_cfg.enable_comets),
+    )
+    current_states = backend.reset(base_seed)
+    obs_np = backend.encoded_states(0)
+    episodes = [EpisodeMetrics(opponent=opponent_name) for _ in range(num_envs)]
+    episode_metrics: list[dict[str, Any]] = []
+    active = np.ones(num_envs, dtype=bool)
+
+    obs_buf = []
+    action_buf = []
+    logprob_buf = []
+    reward_buf = []
+    done_buf = []
+    value_buf = []
+
+    for _ in range(rollout_steps):
+        obs_tensor = torch.as_tensor(obs_np, dtype=torch.float32, device=device)
+        with torch.no_grad():
+            action_tensor, logprob_tensor, _, value_tensor = model.get_action_and_value(obs_tensor)
+        actions_np = action_tensor.cpu().numpy()
+
+        action_rows: list[list[float]] = []
+        player_moves_by_env: list[list[list[float]]] = [[] for _ in range(num_envs)]
+        for env_index, state in enumerate(current_states):
+            if not active[env_index]:
+                continue
+            player_moves = decode_discrete_action(state, 0, actions_np[env_index], decoder_config(training_cfg))
+            opponent_moves = opponent_policy(state, 1)
+            player_moves_by_env[env_index] = player_moves
+            action_rows.extend(_moves_to_flat_rows(env_index, 0, player_moves))
+            action_rows.extend(_moves_to_flat_rows(env_index, 1, opponent_moves))
+
+        flat_actions = (
+            np.asarray(action_rows, dtype=np.float64)
+            if action_rows
+            else np.zeros((0, 5), dtype=np.float64)
+        )
+        previous_states = current_states
+        outcomes, next_obs_np = backend.step_flat_with_encoded_states(flat_actions, 0)
+        next_states = backend.states()
+
+        rewards_np = np.zeros(num_envs, dtype=np.float32)
+        dones_np = np.zeros(num_envs, dtype=np.float32)
+        for env_index, (previous_state, next_state, outcome) in enumerate(
+            zip(previous_states, next_states, outcomes, strict=True)
+        ):
+            if not active[env_index]:
+                dones_np[env_index] = 1.0
+                continue
+            base_reward = reward_env._base_shaping_reward(
+                previous_state,
+                next_state,
+                player=0,
+                player_moves=player_moves_by_env[env_index],
+            )
+            ship_margin_reward = reward_env._ship_margin_reward(previous_state, next_state, player=0)
+            comet_reward = reward_env._comet_auxiliary_reward(previous_state, next_state, player=0)
+            reward = (
+                base_shaping_scale * base_reward
+                + ship_margin_reward
+                + comet_shaping_scale * comet_reward
+            )
+            done = bool(outcome.get("done", False))
+            if done:
+                rewards = outcome.get("rewards", [])
+                reward += float(rewards[0]) if rewards else 0.0
+
+            rewards_np[env_index] = float(reward)
+            dones_np[env_index] = float(done)
+            neutral_captures = _neutral_capture_count(previous_state, next_state, player=0)
+            alive = _player_alive(next_state, player=0)
+            episodes[env_index].record_step(
+                reward=reward,
+                neutral_captures=neutral_captures,
+                alive=alive,
+                early_window=training_cfg.early_survival_window,
+            )
+            if done:
+                episodes[env_index].completed = True
+                episode_metrics.append(episodes[env_index].as_summary())
+                active[env_index] = False
+
+        obs_buf.append(obs_tensor)
+        action_buf.append(action_tensor)
+        logprob_buf.append(logprob_tensor)
+        reward_buf.append(torch.as_tensor(rewards_np, dtype=torch.float32, device=device))
+        done_buf.append(torch.as_tensor(dones_np, dtype=torch.float32, device=device))
+        value_buf.append(value_tensor)
+
+        current_states = next_states
+        obs_np = next_obs_np
+
+    for env_index, episode in enumerate(episodes):
+        if active[env_index] and episode.length > 0:
+            episode_metrics.append(episode.as_summary())
+
+    with torch.no_grad():
+        next_obs_tensor = torch.as_tensor(obs_np, dtype=torch.float32, device=device)
+        _, _, _, next_value = model.get_action_and_value(next_obs_tensor)
+        inactive = torch.as_tensor(~active, dtype=torch.bool, device=device)
+        next_value = next_value.masked_fill(inactive, 0.0)
+
+    observations = torch.stack(obs_buf)
+    actions = torch.stack(action_buf).to(dtype=torch.long)
+    logprobs = torch.stack(logprob_buf)
+    rewards = torch.stack(reward_buf)
+    dones = torch.stack(done_buf)
+    values = torch.stack(value_buf)
+    advantages, returns = _compute_gae_batched(
+        rewards,
+        dones,
+        values,
+        next_value,
+        gamma=training_cfg.gamma,
+        gae_lambda=training_cfg.gae_lambda,
+    )
+
+    flat_observations = observations.reshape(-1, observations.shape[-1])
+    flat_actions = actions.reshape(-1, actions.shape[-1])
+    flat_logprobs = logprobs.reshape(-1)
+    flat_advantages = advantages.reshape(-1)
+    flat_returns = returns.reshape(-1)
+    flat_values = values.reshape(-1)
+    flat_rewards = rewards.reshape(-1)
+    if sample_limit > 0:
+        flat_observations = flat_observations[:sample_limit]
+        flat_actions = flat_actions[:sample_limit]
+        flat_logprobs = flat_logprobs[:sample_limit]
+        flat_advantages = flat_advantages[:sample_limit]
+        flat_returns = flat_returns[:sample_limit]
+        flat_values = flat_values[:sample_limit]
+        flat_rewards = flat_rewards[:sample_limit]
+
+    return RolloutSegment(
+        observations=flat_observations,
+        actions=flat_actions,
+        logprobs=flat_logprobs,
+        advantages=flat_advantages,
+        returns=flat_returns,
+        values=flat_values,
+        rewards=flat_rewards,
+        opponent=opponent_name,
+        episode_metrics=episode_metrics,
+    )
+
+
+def _collect_rollout_segment(
+    model: FlatActorCritic,
+    *,
+    opponent_name: str,
+    base_seed: int,
+    rollout_steps: int,
+    device: torch.device,
+    training_cfg: Phase0TrainingConfig,
+    progress: float,
+    sample_limit: int | None = None,
+) -> RolloutSegment:
+    limit = rollout_steps if sample_limit is None else max(1, int(sample_limit))
+    if _batched_rollout_supported(training_cfg):
+        per_env_steps = max(1, min(int(rollout_steps), math.ceil(limit / max(1, int(training_cfg.rollout_num_envs)))))
+        return _collect_batched_rollout_segment(
+            model,
+            opponent_name=opponent_name,
+            base_seed=base_seed,
+            rollout_steps=per_env_steps,
+            sample_limit=limit,
+            device=device,
+            training_cfg=training_cfg,
+            progress=progress,
+        )
+    return _collect_single_env_rollout_segment(
+        model,
+        opponent_name=opponent_name,
+        base_seed=base_seed,
+        rollout_steps=limit,
+        device=device,
+        training_cfg=training_cfg,
+        progress=progress,
+    )
+
+
 def _concat_segments(segments: Sequence[RolloutSegment]) -> dict[str, torch.Tensor]:
     return {
         "observations": torch.cat([segment.observations for segment in segments], dim=0),
@@ -473,6 +732,7 @@ def _load_checkpoint(path: str, device: torch.device) -> dict[str, Any]:
 
 
 def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
+    started_at = time.perf_counter()
     _set_seed(training_cfg.seed)
     device = torch.device(training_cfg.device)
     opponents = _parse_opponents(training_cfg.opponents)
@@ -509,21 +769,27 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
                 device=device,
                 training_cfg=training_cfg,
                 progress=progress,
+                sample_limit=remaining if _batched_rollout_supported(training_cfg) else segment_steps,
             )
             segments.append(segment)
             opponent_segments[opponent_name] += 1
-            total_timesteps += segment_steps
+            total_timesteps += int(segment.observations.shape[0])
             all_episode_metrics.extend(segment.episode_metrics)
         batch = _concat_segments(segments)
         latest_update_stats = _ppo_update(model, optimizer, batch, training_cfg)
         update_idx += 1
 
+    elapsed_seconds = max(time.perf_counter() - started_at, 1e-9)
     summary = {
         "algorithm": "ppo",
         "policy_track": training_cfg.policy_track,
         "num_players": training_cfg.num_players,
         "timesteps": total_timesteps,
         "updates": update_idx,
+        "rollout_num_envs": int(training_cfg.rollout_num_envs),
+        "rollout_backend": "rust_batch" if _batched_rollout_supported(training_cfg) else "gym_single_env",
+        "training_wall_seconds": elapsed_seconds,
+        "env_steps_per_second": total_timesteps / elapsed_seconds,
         "opponents": list(opponents),
         "opponent_segments": opponent_segments,
         "enable_comets": training_cfg.enable_comets,
@@ -608,6 +874,7 @@ def main():
     parser.add_argument("--opponents", default="greedy,defensive,rush,anti_meta,weak_random")
     parser.add_argument("--total-timesteps", type=int, default=200_000)
     parser.add_argument("--rollout-steps", type=int, default=256)
+    parser.add_argument("--rollout-num-envs", type=int, default=1)
     parser.add_argument("--update-epochs", type=int, default=4)
     parser.add_argument("--minibatch-size", type=int, default=256)
     parser.add_argument("--learning-rate", type=float, default=2.5e-4)
@@ -666,6 +933,7 @@ def main():
         num_players=args.num_players,
         total_timesteps=args.total_timesteps,
         rollout_steps=args.rollout_steps,
+        rollout_num_envs=args.rollout_num_envs,
         update_epochs=args.update_epochs,
         minibatch_size=args.minibatch_size,
         learning_rate=args.learning_rate,

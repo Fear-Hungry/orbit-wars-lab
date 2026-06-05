@@ -245,6 +245,32 @@ def test_phase0_training_runs_real_ppo_loop_and_emits_metrics(tmp_path: Path):
     assert checkpoint.exists()
 
 
+def test_phase0_training_can_collect_batched_rust_rollouts(tmp_path: Path):
+    checkpoint = tmp_path / "phase0_batched.pt"
+    summary = train_phase0(
+        Phase0TrainingConfig(
+            seed=13,
+            total_timesteps=32,
+            rollout_steps=4,
+            rollout_num_envs=4,
+            update_epochs=1,
+            minibatch_size=8,
+            opponents=("greedy", "rush"),
+            checkpoint_out=str(checkpoint),
+            enable_comets=False,
+        )
+    )
+
+    assert summary["algorithm"] == "ppo"
+    assert summary["timesteps"] == 32
+    assert summary["rollout_num_envs"] == 4
+    assert summary["rollout_backend"] == "rust_batch"
+    assert summary["training_wall_seconds"] > 0.0
+    assert summary["env_steps_per_second"] > 0.0
+    assert set(summary["opponents"]) == {"greedy", "rush"}
+    assert checkpoint.exists()
+
+
 def test_phase0_training_can_resume_from_checkpoint(tmp_path: Path):
     initial_checkpoint = tmp_path / "phase0_initial.pt"
     resumed_checkpoint = tmp_path / "phase0_resumed.pt"
