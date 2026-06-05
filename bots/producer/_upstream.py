@@ -2,19 +2,7 @@
 from __future__ import annotations
 
 import dataclasses
-import os
-import sys
 from dataclasses import dataclass
-
-# Make the sibling ``orbit_lite`` package importable wherever this file runs:
-# loaded in place, dropped at a submission-archive root, or exec'd by
-# kaggle_environments with no ``__file__`` (fall back to the working dir).
-try:
-    _HERE = os.path.dirname(os.path.abspath(__file__))
-except NameError:
-    _HERE = os.getcwd()
-if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)
 
 import torch
 from torch import Tensor
@@ -357,12 +345,52 @@ _RUNTIME = ProducerLiteRuntime()
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _planet_row(planet):
+    if not isinstance(planet, dict):
+        return planet
+    return [
+        planet["id"],
+        planet["owner"],
+        planet["x"],
+        planet["y"],
+        planet["radius"],
+        planet["ships"],
+        planet["production"],
+    ]
+
+
+def _fleet_row(fleet):
+    if not isinstance(fleet, dict):
+        return fleet
+    return [
+        fleet["id"],
+        fleet["owner"],
+        fleet["x"],
+        fleet["y"],
+        fleet["angle"],
+        fleet["from_planet_id"],
+        fleet["ships"],
+    ]
+
+
+def _to_list_observation(obs):
+    if not isinstance(obs, dict):
+        return obs
+    converted = dict(obs)
+    converted["planets"] = [_planet_row(planet) for planet in obs.get("planets", [])]
+    converted["initial_planets"] = [
+        _planet_row(planet) for planet in obs.get("initial_planets", [])
+    ]
+    converted["fleets"] = [_fleet_row(fleet) for fleet in obs.get("fleets", [])]
+    return converted
+
+
 def agent(obs):
     """Single-observation entry point for local play and Kaggle."""
+    obs = _to_list_observation(obs)
     player = obs.get("player", 0) if isinstance(obs, dict) else obs.player
     player_id = int(player)
     obs_tensors = single_obs_to_tensor(obs, player_id=player_id)
     with torch.no_grad():
         sparse_row = _RUNTIME.tensor_action(obs_tensors)
     return sparse_action_row_to_moves(sparse_row, obs, player_id=player_id)
-

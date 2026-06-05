@@ -10,8 +10,8 @@ import pytest
 import torch
 from python.orbit_wars_gym.backend import RustBatchBackend, RustConfig
 
-PRODUCER_DIR = Path(__file__).resolve().parent / "opponents/producer/producer"
-sys.path.insert(0, str(PRODUCER_DIR))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 from orbit_lite.adapter import single_obs_to_tensor  # noqa: E402
 from orbit_lite.garrison_launch import _run_exact_recurrence  # noqa: E402

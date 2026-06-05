@@ -3,22 +3,24 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from typing import Any
 
 
-_ROOT = Path(__file__).resolve().parent / "producer"
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-
-_SPEC = importlib.util.spec_from_file_location("_producer_main", _ROOT / "main.py")
-if _SPEC is None or _SPEC.loader is None:
-    raise RuntimeError(f"unable to load Producer agent from {_ROOT}")
-
-_MODULE = importlib.util.module_from_spec(_SPEC)
-sys.modules[_SPEC.name] = _MODULE
-_SPEC.loader.exec_module(_MODULE)
+def _load_upstream():
+    module_path = Path(__file__).with_name("_upstream.py")
+    spec = importlib.util.spec_from_file_location("_orbit_wars_producer_upstream", module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"could not load Producer upstream module: {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
-def _planet_row(planet):
+_UPSTREAM = _load_upstream()
+
+
+def _planet_row(planet: Any) -> Any:
     if not isinstance(planet, dict):
         return planet
     return [
@@ -32,7 +34,7 @@ def _planet_row(planet):
     ]
 
 
-def _fleet_row(fleet):
+def _fleet_row(fleet: Any) -> Any:
     if not isinstance(fleet, dict):
         return fleet
     return [
@@ -46,15 +48,17 @@ def _fleet_row(fleet):
     ]
 
 
-def _to_list_observation(obs):
+def _to_list_observation(obs: Any) -> Any:
     if not isinstance(obs, dict):
         return obs
     converted = dict(obs)
     converted["planets"] = [_planet_row(planet) for planet in obs.get("planets", [])]
-    converted["initial_planets"] = [_planet_row(planet) for planet in obs.get("initial_planets", [])]
+    converted["initial_planets"] = [
+        _planet_row(planet) for planet in obs.get("initial_planets", [])
+    ]
     converted["fleets"] = [_fleet_row(fleet) for fleet in obs.get("fleets", [])]
     return converted
 
 
-def agent(obs):
-    return _MODULE.agent(_to_list_observation(obs))
+def agent(obs: Any):
+    return _UPSTREAM.agent(_to_list_observation(obs))

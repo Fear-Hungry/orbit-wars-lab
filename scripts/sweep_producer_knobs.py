@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_FIXTURE = ROOT / "tests/opponents/producer"
+DEFAULT_FIXTURE = ROOT / "bots/producer"
 DEFAULT_WORK_DIR = ROOT / "artifacts/producer_sweeps"
 
 _FIELD_RE = re.compile(
@@ -22,11 +22,11 @@ _FIELD_RE = re.compile(
 
 
 def _producer_main_path(fixture_dir: Path) -> Path:
-    return fixture_dir / "producer/main.py"
+    return fixture_dir / "_upstream.py"
 
 
 def _agent_path(fixture_dir: Path) -> Path:
-    return fixture_dir / "producer_agent.py"
+    return fixture_dir / "agent.py"
 
 
 def _ensure_fixture(fixture_dir: Path) -> None:

@@ -18,7 +18,7 @@ HEURISTIC_NAMES: tuple[str, ...] = (
 
 _ROOT = Path(__file__).resolve().parents[2]
 PRODUCER_SETUP_COMMAND = "rtk .venv/bin/python -m scripts.prepare_producer_opponent"
-PRODUCER_AGENT_PATH = _ROOT / "tests/opponents/producer/producer_agent.py"
+PRODUCER_AGENT_PATH = _ROOT / "bots/producer/agent.py"
 _PRODUCER_AGENT: Callable[[dict[str, Any]], list[list[float]]] | None = None
 
 
@@ -28,7 +28,7 @@ def _load_producer_agent() -> Callable[[dict[str, Any]], list[list[float]]]:
         return _PRODUCER_AGENT
     if not PRODUCER_AGENT_PATH.exists():
         raise RuntimeError(
-            f"Producer opponent fixture is missing. Restore tests/opponents/producer or run "
+            f"Producer bot is missing. Restore bots/producer or run "
             f"`{PRODUCER_SETUP_COMMAND}`."
         )
     spec = importlib.util.spec_from_file_location("producer_agent", PRODUCER_AGENT_PATH)
@@ -38,7 +38,7 @@ def _load_producer_agent() -> Callable[[dict[str, Any]], list[list[float]]]:
     spec.loader.exec_module(module)
     agent = getattr(module, "agent", None)
     if not callable(agent):
-        raise RuntimeError(f"Producer opponent at {PRODUCER_AGENT_PATH} does not define agent(obs)")
+        raise RuntimeError(f"Producer bot at {PRODUCER_AGENT_PATH} does not define agent(obs)")
     _PRODUCER_AGENT = agent
     return _PRODUCER_AGENT
 

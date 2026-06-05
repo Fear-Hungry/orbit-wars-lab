@@ -7,7 +7,7 @@ from scripts.benchmark_submission import benchmark_two_player_spec
 
 def test_oep_agent_runs_legal_smoke_against_producer() -> None:
     report = benchmark_two_player_spec(
-        Path("tests/opponents/producer/oep_agent.py"),
+        Path("bots/oep/agent.py"),
         "producer",
         seeds=[0],
         episode_steps=32,

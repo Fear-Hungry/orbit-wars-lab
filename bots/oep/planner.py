@@ -1,24 +1,17 @@
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 import torch
-from main import (
-    ProducerLiteConfig,
-    ProducerLiteMemory,
-    _config_for,
-    _movement_config,
-    cheap_enemy_pressure,
-    plan_lite_waves,
-    run_turn,
-)
 from orbit_lite.adapter import single_obs_to_tensor, sparse_action_row_to_moves
 from orbit_lite.distance_cache import build_distance_cache
 from orbit_lite.garrison_launch import LaunchSet, sparse_launch_flow_delta
+from orbit_lite.geometry import fleet_speed
 from orbit_lite.intercept_aim import intercept_angle
-from orbit_lite.movement import PlanetMovement
+from orbit_lite.movement import MovementConfig, PlanetMovement
 from orbit_lite.movement_step import (
     LaunchEntries,
     apply_private_planned_launches,
@@ -43,14 +36,77 @@ from orbit_lite.planner_core import (
 )
 from torch import Tensor
 
+from bots.producer.agent import agent as _producer_policy
+
 COMET_SPAWN_STEPS = (50, 150, 250, 350, 450)
+Policy = Callable[[dict[str, Any]], list[list[float]]]
+
+
+@dataclass(frozen=True)
+class OEPPlannerConfig:
+    horizon: int = 18
+    max_sources_per_lane: int = 12
+    max_offensive_targets: int = 12
+    max_defensive_targets: int = 4
+    max_waves_per_turn: int = 6
+    roi_threshold: float = 1.5
+    min_ships_to_launch: float = 4.0
+    enable_regroup: bool = True
+    max_regroup_time: float = 7.0
+    regroup_pressure_delta_min: float = 0.25
+    max_regroup_sources_per_lane: int = 6
+    max_regroup_targets_per_source: int = 7
+    regroup_pressure_norm: str = "none"
+    regroup_time_penalty_weight: float = 1e-3
+
+
+CONFIG_4P = dataclasses.replace(
+    OEPPlannerConfig(),
+    horizon=13,
+    max_sources_per_lane=6,
+    max_defensive_targets=2,
+    max_regroup_time=6.0,
+    max_regroup_targets_per_source=8,
+)
+
+
+def _config_for(player_count: int) -> OEPPlannerConfig:
+    return CONFIG_4P if int(player_count) >= 4 else OEPPlannerConfig()
+
+
+def _movement_config(config: OEPPlannerConfig, *, player_count: int) -> MovementConfig:
+    return MovementConfig(
+        movement_horizon=int(config.horizon),
+        drift_epsilon=1e-3,
+        track_fleets=True,
+        player_count=int(player_count),
+        max_tracked_fleets=128,
+    )
+
+
+def cheap_enemy_pressure(obs, cache, *, horizon: float, player_id: int) -> Tensor:
+    P = int(obs.P)
+    device = obs.device
+    dtype = obs.ships.dtype
+    if P == 0:
+        return torch.zeros(P, dtype=dtype, device=device)
+    d0 = cache.cross_dist[0].to(dtype)
+    ships = obs.ships.to(dtype)
+    speeds = fleet_speed(ships.clamp(min=1e-6))
+    reach_dist = (speeds.view(P, 1) * float(horizon)).clamp(min=1e-6)
+    enemy = obs.alive & (obs.owner_abs >= 0) & (obs.owner_abs != int(player_id))
+    eye = torch.eye(P, device=device, dtype=torch.bool)
+    valid = enemy.view(P, 1) & obs.alive.view(1, P) & ~eye
+    decay = (1.0 - d0 / reach_dist).clamp(min=0.0)
+    contrib = torch.where(valid, ships.view(P, 1) * decay, torch.zeros_like(decay))
+    return contrib.sum(dim=0)
 
 
 @dataclass(frozen=True)
 class OEPLiteConfig:
     """Experimental one-turn OEP overlay for the tracked Producer fixture."""
 
-    base: ProducerLiteConfig = dataclasses.field(default_factory=ProducerLiteConfig)
+    base: OEPPlannerConfig = dataclasses.field(default_factory=OEPPlannerConfig)
     fractions: tuple[float, ...] = (0.5, 1.0)
     opponent_response: bool = True
     min_advantage: float = 0.0
@@ -60,7 +116,7 @@ class OEPLiteConfig:
     max_waves_per_turn: int = 4
 
 
-def _effective_config(config: ProducerLiteConfig, *, step: int) -> ProducerLiteConfig:
+def _effective_config(config: OEPPlannerConfig, *, step: int) -> OEPPlannerConfig:
     """Cap horizon at the next seeded-comet spawn boundary.
 
     The forward model intentionally does not predict future comet RNG. Existing
@@ -88,24 +144,66 @@ def _with_player(obs: Any, player_id: int) -> Any:
     return copied
 
 
-def _entries_from_sparse_payload(
+def _planet_row(planet: Any) -> Any:
+    if not isinstance(planet, dict):
+        return planet
+    return [
+        planet["id"],
+        planet["owner"],
+        planet["x"],
+        planet["y"],
+        planet["radius"],
+        planet["ships"],
+        planet["production"],
+    ]
+
+
+def _fleet_row(fleet: Any) -> Any:
+    if not isinstance(fleet, dict):
+        return fleet
+    return [
+        fleet["id"],
+        fleet["owner"],
+        fleet["x"],
+        fleet["y"],
+        fleet["angle"],
+        fleet["from_planet_id"],
+        fleet["ships"],
+    ]
+
+
+def _to_list_observation(obs: Any) -> Any:
+    if not isinstance(obs, dict):
+        return obs
+    converted = dict(obs)
+    converted["planets"] = [_planet_row(planet) for planet in obs.get("planets", [])]
+    converted["initial_planets"] = [
+        _planet_row(planet) for planet in obs.get("initial_planets", [])
+    ]
+    converted["fleets"] = [_fleet_row(fleet) for fleet in obs.get("fleets", [])]
+    return converted
+
+
+def _entries_from_moves(
     *,
-    payload: dict[str, Tensor],
+    moves: list[list[float]],
     movement: PlanetMovement,
     obs_tensors: dict,
     player_id: int,
 ) -> LaunchEntries:
-    count = int(payload["counts"].item())
+    count = len(moves)
     if count <= 0:
         return _empty_entries(movement.device, movement.dtype)
-    from_ids = payload["from_planet_id"][:count].to(device=movement.device, dtype=torch.long)
+    from_ids = torch.tensor([int(move[0]) for move in moves], dtype=torch.long, device=movement.device)
     source_slots = torch.full((count,), -1, dtype=torch.long, device=movement.device)
     for idx in range(count):
         matches = torch.where(movement.planet_ids == from_ids[idx])[0]
         if int(matches.numel()) > 0:
             source_slots[idx] = matches[0]
-    angle = payload["angle"][:count].to(device=movement.device, dtype=movement.dtype)
-    ships = payload["num_ships"][:count].to(device=movement.device, dtype=movement.dtype)
+        else:
+            raise ValueError(f"policy emitted move from unknown planet id: {int(from_ids[idx].item())}")
+    angle = torch.tensor([float(move[1]) for move in moves], dtype=movement.dtype, device=movement.device)
+    ships = torch.tensor([float(move[2]) for move in moves], dtype=movement.dtype, device=movement.device)
     provisional = LaunchEntries(
         source_slots=source_slots,
         target_slots=torch.zeros(count, dtype=torch.long, device=movement.device),
@@ -238,7 +336,7 @@ def _build_fraction_candidates(
     status,
     prod: Tensor,
     alive_by_step: Tensor,
-    config: ProducerLiteConfig,
+    config: OEPPlannerConfig,
     fractions: tuple[float, ...],
     player_count: int,
     opponent_entries: LaunchEntries | None,
@@ -405,7 +503,7 @@ def plan_oep_waves(
     status,
     prod: Tensor,
     alive_by_step: Tensor,
-    config: ProducerLiteConfig,
+    config: OEPPlannerConfig,
     fractions: tuple[float, ...],
     player_count: int,
     opponent_entries: LaunchEntries | None,
@@ -465,28 +563,33 @@ def plan_oep_waves(
 class OEPLiteMemory:
     def __init__(self) -> None:
         self.movement = None
-        self.producer_memory = ProducerLiteMemory()
-        self.opponent_memory = ProducerLiteMemory()
         self.cached_player_count: int | None = None
         self.last_sparse_action_row: dict | None = None
 
     def reset(self) -> None:
         self.movement = None
-        self.producer_memory.reset()
-        self.opponent_memory.reset()
         self.cached_player_count = None
         self.last_sparse_action_row = None
 
 
 class OEPLiteRuntime:
-    def __init__(self, config: OEPLiteConfig | None = None, memory: OEPLiteMemory | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        seed_policy: Policy,
+        opponent_policy: Policy | None = None,
+        config: OEPLiteConfig | None = None,
+        memory: OEPLiteMemory | None = None,
+    ) -> None:
+        self.seed_policy = seed_policy
+        self.opponent_policy = opponent_policy if opponent_policy is not None else seed_policy
         self.config = config if config is not None else OEPLiteConfig()
         self.memory = memory if memory is not None else OEPLiteMemory()
 
     def reset(self) -> None:
         self.memory.reset()
 
-    def _oep_config(self, base_config: ProducerLiteConfig) -> ProducerLiteConfig:
+    def _oep_config(self, base_config: OEPPlannerConfig) -> OEPPlannerConfig:
         return dataclasses.replace(
             base_config,
             max_sources_per_lane=min(
@@ -509,6 +612,8 @@ class OEPLiteRuntime:
 
     def tensor_action(self, obs_tensors: dict, raw_obs: Any | None = None):
         mem = self.memory
+        if raw_obs is None:
+            raise ValueError("OEPLiteRuntime.tensor_action requires raw_obs for policy injection")
         if bool((obs_tensors["step"] == 0).all()):
             mem.reset()
         if mem.cached_player_count is None:
@@ -531,35 +636,23 @@ class OEPLiteRuntime:
         status = movement.garrison_status(max_horizon=H)
         alive_by_step = movement.alive_by_step[: H + 1]
 
-        producer_entries = plan_lite_waves(
+        producer_moves = self.seed_policy(_with_player(raw_obs, int(obs.player_id)))
+        producer_entries = _entries_from_moves(
+            moves=producer_moves,
             movement=movement,
-            obs=obs,
             obs_tensors=obs_tensors,
-            cache=cache,
-            garrison_status=status,
-            prod=movement.planet_prod,
-            alive_by_step=alive_by_step,
-            config=base_config,
-            player_count=player_count,
+            player_id=int(obs.player_id),
         )
         opponent_entries = None
         opp_id = _opponent_id(int(obs.player_id), player_count)
-        if bool(self.config.opponent_response) and raw_obs is not None and opp_id is not None:
-            opp_tensors = single_obs_to_tensor(_with_player(raw_obs, opp_id), player_id=opp_id)
-            opp_row = run_turn(
-                opp_tensors,
-                config=base_config,
-                player_count=player_count,
-                memory=mem.opponent_memory,
-            )
-            opponent_entries = _entries_from_sparse_payload(
-                payload=opp_row,
+        if bool(self.config.opponent_response) and opp_id is not None:
+            opponent_moves = self.opponent_policy(_with_player(raw_obs, opp_id))
+            opponent_entries = _entries_from_moves(
+                moves=opponent_moves,
                 movement=movement,
                 obs_tensors=obs_tensors,
                 player_id=opp_id,
             )
-        elif bool(self.config.opponent_response) and opp_id is not None:
-            raise ValueError("OEPLiteRuntime.tensor_action requires raw_obs for opponent response")
 
         opponent_launch_set = (
             _launch_set_from_entries(
@@ -624,11 +717,11 @@ class OEPLiteRuntime:
         mem.last_sparse_action_row = row
         return row
 
-
-_RUNTIME = OEPLiteRuntime()
+_RUNTIME = OEPLiteRuntime(seed_policy=_producer_policy, opponent_policy=_producer_policy)
 
 
 def agent(obs):
+    obs = _to_list_observation(obs)
     player = obs.get("player", 0) if isinstance(obs, dict) else obs.player
     player_id = int(player)
     obs_tensors = single_obs_to_tensor(obs, player_id=player_id)

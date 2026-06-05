@@ -40,7 +40,7 @@ Antes de rejeitar mudanças de abertura, hammer, reserva, lookahead ou fase, rod
 
 ```bash
 rtk .venv/bin/python -m scripts.benchmark_submission \
-  --submission tests/opponents/producer/producer_agent.py \
+  --submission bots/producer/agent.py \
   --opponents producer \
   --seeds 96 --episode-steps 500 --jobs 4 --skip-4p \
   --out artifacts/producer_mirror_96seed.json

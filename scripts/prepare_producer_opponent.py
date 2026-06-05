@@ -6,27 +6,29 @@ import subprocess
 import tarfile
 from pathlib import Path
 
-WRAPPER = """from __future__ import annotations
+WRAPPER = '''from __future__ import annotations
 
 import importlib.util
 import sys
 from pathlib import Path
+from typing import Any
 
 
-_ROOT = Path(__file__).resolve().parent / "producer"
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-
-_SPEC = importlib.util.spec_from_file_location("_producer_main", _ROOT / "main.py")
-if _SPEC is None or _SPEC.loader is None:
-    raise RuntimeError(f"unable to load Producer agent from {_ROOT}")
-
-_MODULE = importlib.util.module_from_spec(_SPEC)
-sys.modules[_SPEC.name] = _MODULE
-_SPEC.loader.exec_module(_MODULE)
+def _load_upstream():
+    module_path = Path(__file__).with_name("_upstream.py")
+    spec = importlib.util.spec_from_file_location("_orbit_wars_producer_upstream", module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"could not load Producer upstream module: {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
-def _planet_row(planet):
+_UPSTREAM = _load_upstream()
+
+
+def _planet_row(planet: Any) -> Any:
     if not isinstance(planet, dict):
         return planet
     return [
@@ -40,7 +42,7 @@ def _planet_row(planet):
     ]
 
 
-def _fleet_row(fleet):
+def _fleet_row(fleet: Any) -> Any:
     if not isinstance(fleet, dict):
         return fleet
     return [
@@ -54,19 +56,21 @@ def _fleet_row(fleet):
     ]
 
 
-def _to_list_observation(obs):
+def _to_list_observation(obs: Any) -> Any:
     if not isinstance(obs, dict):
         return obs
     converted = dict(obs)
     converted["planets"] = [_planet_row(planet) for planet in obs.get("planets", [])]
-    converted["initial_planets"] = [_planet_row(planet) for planet in obs.get("initial_planets", [])]
+    converted["initial_planets"] = [
+        _planet_row(planet) for planet in obs.get("initial_planets", [])
+    ]
     converted["fleets"] = [_fleet_row(fleet) for fleet in obs.get("fleets", [])]
     return converted
 
 
-def agent(obs):
-    return _MODULE.agent(_to_list_observation(obs))
-"""
+def agent(obs: Any):
+    return _UPSTREAM.agent(_to_list_observation(obs))
+'''
 
 
 def _safe_extract(archive: Path, target: Path) -> None:
@@ -84,7 +88,8 @@ def main() -> None:
         description="Prepare Slawek Biel's Producer as a local benchmark opponent."
     )
     parser.add_argument("--kernel", default="slawekbiel/the-producer-agent")
-    parser.add_argument("--out-dir", type=Path, default=Path("tests/opponents/producer"))
+    parser.add_argument("--bot-dir", type=Path, default=Path("bots/producer"))
+    parser.add_argument("--orbit-lite-dir", type=Path, default=Path("orbit_lite"))
     parser.add_argument(
         "--tmp-dir", type=Path, default=Path("/tmp/orbit_wars_public/the-producer-agent-output")
     )
@@ -100,15 +105,28 @@ def main() -> None:
     if not archive.exists():
         raise FileNotFoundError(f"kernel output did not include {archive}")
 
-    producer_dir = args.out_dir / "producer"
-    if producer_dir.exists():
-        shutil.rmtree(producer_dir)
-    producer_dir.mkdir(parents=True, exist_ok=True)
-    _safe_extract(archive, producer_dir)
+    extracted_dir = args.tmp_dir / "extracted"
+    if extracted_dir.exists():
+        shutil.rmtree(extracted_dir)
+    extracted_dir.mkdir(parents=True, exist_ok=True)
+    _safe_extract(archive, extracted_dir)
 
-    wrapper_path = args.out_dir / "producer_agent.py"
-    wrapper_path.write_text(WRAPPER, encoding="utf-8")
-    print({"producer_dir": str(producer_dir), "wrapper": str(wrapper_path)})
+    main_py = extracted_dir / "main.py"
+    orbit_lite = extracted_dir / "orbit_lite"
+    if not main_py.exists() or not orbit_lite.is_dir():
+        raise FileNotFoundError(f"kernel archive missing main.py or orbit_lite in {extracted_dir}")
+
+    args.bot_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(main_py, args.bot_dir / "_upstream.py")
+    (args.bot_dir / "agent.py").write_text(WRAPPER, encoding="utf-8")
+    if args.orbit_lite_dir.exists():
+        shutil.rmtree(args.orbit_lite_dir)
+    shutil.copytree(orbit_lite, args.orbit_lite_dir)
+    print({
+        "producer_agent": str(args.bot_dir / "agent.py"),
+        "producer_upstream": str(args.bot_dir / "_upstream.py"),
+        "orbit_lite": str(args.orbit_lite_dir),
+    })
 
 
 if __name__ == "__main__":
