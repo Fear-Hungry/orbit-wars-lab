@@ -3,7 +3,7 @@
 Foco atual: **gerar candidatos que batam o Producer** (régua real). Micro-tuning está
 saturado (old=0.656 / greedy=0.937 / rush=0.937 em todos os experimentos 73–99) — parado.
 Tudo abaixo serve à tese: tornar a versão ampla do OEP, que já vence (win=0.5625,
-margin=+0.125), **legal sob orçamento de tempo**.
+margin=+0.125), **legal sob orçamento de tempo sem fallback silencioso**.
 
 ## Thread 1 — Tornar o OEP forte legal sob orçamento (PRIORIDADE)
 
@@ -26,7 +26,7 @@ margin=+0.125), **legal sob orçamento de tempo**.
   - [x] 1a-ii. Persistir o estado: adicionar campo `last_lanes` (ou `last_plan_entries:
         LaunchEntries | None`) em `OEPLiteMemory` (classe L563) e zerá-lo em
         `OEPLiteMemory.reset()` (L569). Reset por-episódio já acontece no `step==0` (L617-618).
-  - [x] 1a-iii. Gravar o incumbente: após escolher `chosen` (L697-701), extrair as lanes
+- [x] 1a-iii. Gravar o incumbente: após escolher `chosen` (L697-701), extrair as lanes
         (source,target,fração) e guardar em `mem.last_lanes` junto de `mem.last_sparse_action_row`
         (L717), descontando o que já foi lançado (one-shot).
   - [x] 1a-iv. Consumir o incumbente: no início de `tensor_action`, reprojetar as lanes de
@@ -38,24 +38,25 @@ margin=+0.125), **legal sob orçamento de tempo**.
   - [x] verificar: sem regressão de legalidade — crash=0, invalid_action_rate=0 (lanes
         inválidas filtradas corretamente após mudança de dono de planeta)
         RESULTADO: 16 seeds/32 jogos vs Producer, crash=0.0, invalid_action_rate=0.0.
-- [ ] 1b. Adicionar corte anytime por ESTÁGIOS com fallback legal (lit. do conceito forte:
-      Gaina et al. 2017, arXiv:1704.07075 — adaptação: a busca aqui é vetorizada S×T×G em
-      `_build_fraction_candidates` L501, NÃO um loop interrompível; logo o corte é por
-      fronteira de estágio, não por candidato).
-      DESIGN: o plano do Producer (`producer_entries`, L640) já é computado primeiro e é
-      legal/barato — ele é o best-so-far/fallback. O refino OEP é o custo caro a ser gated.
-  - [ ] 1b-i. Marcar deadline no início de `tensor_action` (L613): `deadline = perf_counter()
-        + budget`. Budget ~150ms (folga sobre actTimeout=1000ms; ler do obs se exposto, senão
-        constante). Usar `time.perf_counter` (monotônico).
-  - [ ] 1b-ii. Gatear o rollout do oponente (L648-655) e `plan_oep_waves` (L666): se
-        `perf_counter() > deadline` antes de cada um, PULAR e manter `chosen = producer_entries`.
-  - [ ] 1b-iii. Tornar a seleção de waves incremental e interrompível: dentro de
-        `plan_oep_waves`/`_greedy_select`, checar o deadline ANTES de cada wave extra
-        (`max_waves_per_turn`, W) — parar de adicionar waves quando o tempo acabar e usar o
-        conjunto já selecionado (que é legal por construção). Esse é o checkpoint mais fino
-        disponível sem quebrar o batch S×T×G.
-  - [ ] 1b-iv. Gatear o estágio de regroup (`enable_regroup`) atrás do mesmo deadline — é
-        refino opcional, primeiro a ser cortado sob pressão de tempo.
+      OBS 2026-06-05: o incumbente como terceiro candidato foi removido da seleção corrente
+      para cumprir o contrato novo: torneio estrito OEP vs Producer. O histórico 1a fica como
+      experimento registrado, não como comportamento atual.
+- [ ] 1b. Dimensionar o custo do OEP sem fallback temporal. A busca atual é um passe vetorizado
+      S×T×G em `_build_fraction_candidates`, não uma EA iterativa interrompível; portanto o
+      conserto correto é reduzir/parametrizar C e falhar no gate se o pior caso estourar o teto.
+      DESIGN: o plano do Producer (`producer_entries`) é candidato de seleção por fitness, não
+      fallback. O runtime não deve pular `plan_oep_waves`, não deve retornar Producer por timeout
+      e não deve usar `OEP_TIME_BUDGET_MS`.
+  - [x] 1b-i. Remover o deadline/fallback temporal do runtime OEP.
+        RESULTADO: `OEP_TIME_BUDGET_MS`, `_deadline*` e `should_stop` removidos em 2026-06-05.
+  - [x] 1b-ii. Tornar a seleção um torneio único de plano inteiro:
+        `chosen = oep_entries if fit(oep) > fit(producer)+min_advantage else producer_entries`.
+        RESULTADO: 16 seeds/32 jogos vs Producer, win=0.50000, margin=0.00000,
+        mean_ms=287.48, crash=0.0, timeout=0.0, invalid=0.0.
+  - [ ] 1b-iii. Reduzir C por configuração (shortlist/frações/waves/regroup) até o pior caso
+        medido ficar sob o teto com margem, sem alterar a regra de seleção por fitness.
+  - [ ] 1b-iv. Se um dia virar EA iterativa real, reintroduzir anytime como output legítimo
+        best-so-far da busca, nunca como fallback por exceção/timeout.
   - [ ] verificar: config ampla (a que deu win=0.5625) rodar vs Producer 96 seeds →
         timeout_rate=0, crash=0, invalid=0, mean_ms dentro do orçamento, margin ≥ 0 preservada
   - [ ] verificar: o corte NUNCA produz ação ilegal — sob deadline apertado força fallback
@@ -65,6 +66,9 @@ margin=+0.125), **legal sob orçamento de tempo**.
         Se um único batch S×T×G já estoura o budget, 1b não salva — aí o gargalo é a Thread 2
         (modelo mais barato) ou shortlist menor (1c). Medir a distribuição de mean_ms, não só
         a média, para saber se 1b basta ou se Thread 2 é obrigatória.
+        TENTATIVA 2026-06-05: deadline por estágios é legal (`OEP_TIME_BUDGET_MS=20`
+        teve crash/timeout/invalid=0), mas `150ms` em 16 seeds regrediu margin
+        0.00000→-0.18750; rejeitado e removido para cumprir a regra sem fallback.
 - [ ] 1c. Trocar o candidato único guloso por BUSCA sobre população de genomas multi-lançamento
       (OEP de verdade). (Lit. forte: Justesen, Mahlmann & Togelius 2016)
       ACHADO: hoje há UM só candidato OEP, montado guloso em `_greedy_select` (L697), comparado
@@ -110,6 +114,8 @@ fase perf = MEDIR antes de consertar. Os candidatos abaixo são suspeitas a conf
       leve (ex. reusar `cheap_enemy_pressure`, L717) e reservar o Producer completo só pro seed.
   - [ ] verificar: mean_ms cai materialmente (profile 2a antes/depois) E margin vs Producer
         ≥16 seeds não regride (o modelo de oponente barato não pode cegar o lookahead)
+        TENTATIVA 2026-06-05: `opponent_response_mode=cheap` reduziu 16-seed mean_ms
+        289.99→205.53, mas regrediu margin 0.00000→-0.12500; rejeitado como default.
 - [ ] 2c. (suspeito #2) `_fill_garrison_trajectory` (L899): loop Python `for k in range(...)`
       (L1070) sobre o horizonte. Confirmar se a projeção é reconstruída do zero a cada step ou
       se o cache incremental (`_roll_garrison_projection` L1150, `_mark_garrison_dirty` L1210)
@@ -180,7 +186,42 @@ fase perf = MEDIR antes de consertar. Os candidatos abaixo são suspeitas a conf
       caso em que o fitness do planner contradiz o resultado real da partida.
   - [ ] verificar: repro de divergência sim-interno vs motor, ou decisão explícita de manter deferido
 
+## Thread 5 — Correções de higiene encontradas na auditoria (2026-06-05)
+
+- [ ] 5a. Fallback silencioso no agente submetido viola a regra "Forbid silent fallbacks"
+      (commit b94819c). Em `python/submission/submission_template.py:1442`, `agent()` envolve
+      tudo em `except Exception: return fallback_greedy(obs)`; em `:1429` o próprio
+      `fallback_greedy` engole erro e retorna `[]`. Se a política degradar todo step, o agente
+      vira greedy sem sinal — e isso corrompe a correlação local↔leaderboard. NÃO remover a
+      rede de segurança (crash no Kaggle = 0); torná-la BARULHENTA.
+  - [ ] Instrumentar: contar `fallback_rate` / `illegal_move_rate` por episódio na avaliação local.
+  - [ ] Falhar o gate de submissão se `fallback_rate > 0` em seeds técnicas.
+  - [ ] verificar: rodar 16+ seeds vs Producer e confirmar `fallback_rate == 0.0` na régua atual;
+        se >0, o número aparece no relatório do gate em vez de passar silencioso.
+- [ ] 5b. `scripts/parity_probe.py:15` é um stub (`print("TODO: ...")`) — a paridade
+      Rust↔motor oficial NÃO é checada. Como toda a régua de backtest depende da fidelidade do
+      motor (modelo de 3 camadas), implementar a sonda real OU registrar decisão explícita de
+      deferir com justificativa.
+  - [ ] verificar: probe instancia `kaggle_environments.make('orbit_wars')`, dá step do Rust a
+        partir do snapshot oficial e compara planets/fleets/comets dentro de tolerância — ou
+        EXPERIMENTS.md registra por que fica deferido.
+- [ ] 5c. Blindar a fronteira Rust/Python (invariante D11 em DECISIONS.md): teste de arquitetura
+      `test_no_native_in_submission` que falha se `artifacts/submission.py` (e o tarball de
+      submissão) importarem `orbit_wars_core` / `orbit_wars_py`. Impede regressão silenciosa que
+      quebraria a submissão no Kaggle.
+  - [ ] verificar: o teste passa hoje (nenhum import nativo) e falha de propósito ao injetar um
+        `import orbit_wars_py` no template de submissão.
+
 ## Parado / não fazer agora
 
 - [x] Micro-tuning de heurística (reservas, aberturas, hammer, pressão por ratio) — saturado
       contra bots locais; não separa mais candidatos. Ver experimentos 73–99.
+- [x] Aceleração por GPU (avaliado 2026-06-05) — NÃO fazer. (1) Agente submetido roda CPU-only
+      com `actTimeout=1s` (test_official_spec.py:26) e problema minúsculo (24–52 planetas,
+      A=2); planner já tensorizado roda 177–290ms/step na CPU — GPU seria mais lenta
+      (small-batch underutilization). (2) Treino: perfil `lab-gpu` já existe, mas a MLP é
+      pequena; gargalo provável é o rollout em CPU, não a rede — perfilar antes. (3) Sim
+      batcheado em GPU exigiria reescrever o motor Rust: esforço enorme p/ jogo 2p. Veredito do
+      próprio EXPERIMENTS.md (l.61): gargalo é modelo de estado/valor, não orçamento de compute.
+      Lit. forte: Isaac Gym (arXiv:2108.10470), EnvPool (arXiv:2206.10558) — ganho de GPU exige
+      milhares de envs paralelos; o ROI aqui é paralelismo de ambiente em CPU.
