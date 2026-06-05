@@ -106,6 +106,27 @@ impl PyBatchSimulator {
         Ok(PyBytes::new(py, &encoded))
     }
 
+    fn reset_from_states_json(&mut self, states_json: &str) -> PyResult<String> {
+        let states: Vec<GameState> = serde_json::from_str(states_json)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let states = self.inner.reset_from_states(states);
+        serde_json::to_string(&states)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
+    fn reset_from_states_msgpack<'py>(
+        &mut self,
+        py: Python<'py>,
+        states_bytes: &[u8],
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let states: Vec<GameState> = rmp_serde::from_slice(states_bytes)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let states = py.detach(|| self.inner.reset_from_states(states));
+        let encoded = rmp_serde::to_vec_named(&states)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(PyBytes::new(py, &encoded))
+    }
+
     fn states_json(&self) -> PyResult<String> {
         serde_json::to_string(&self.inner.states())
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))

@@ -80,6 +80,28 @@ def test_backend_step_with_states_returns_outcomes_and_next_state():
     assert "planets" in states[0]
 
 
+def test_backend_can_reset_from_materialized_state():
+    try:
+        source = RustBatchBackend(num_envs=1, num_players=2, seed=0)
+        clone = RustBatchBackend(num_envs=1, num_players=2, seed=999)
+    except BackendUnavailable as exc:
+        pytest.skip(str(exc))
+    if not hasattr(clone.sim, "reset_from_states_json") and not hasattr(
+        clone.sim, "reset_from_states_msgpack"
+    ):
+        pytest.skip("local Rust extension does not expose reset_from_states")
+
+    state = source.reset(123)[0]
+    loaded = clone.reset_from_states([state])[0]
+
+    assert loaded == state
+    actions = [[[], []]]
+    source_outcomes, source_states = source.step_with_states(actions)
+    clone_outcomes, clone_states = clone.step_with_states(actions)
+    assert clone_outcomes == source_outcomes
+    assert clone_states == source_states
+
+
 def test_backend_fast_step_matches_json_step_and_states():
     try:
         fast = RustBatchBackend(num_envs=1, num_players=2, seed=0)

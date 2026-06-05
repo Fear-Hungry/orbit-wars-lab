@@ -37,6 +37,25 @@ impl BatchSimulator {
         self.states()
     }
 
+    pub fn reset_from_states(&mut self, states: Vec<GameState>) -> Vec<GameState> {
+        assert_eq!(
+            states.len(),
+            self.games.len(),
+            "reset_from_states requires exactly one state per environment"
+        );
+        for state in &states {
+            assert_eq!(
+                state.num_players, self.num_players,
+                "state player count must match simulator player count"
+            );
+        }
+        self.games = states
+            .into_iter()
+            .map(|state| Game::from_state(self.cfg.clone(), state))
+            .collect();
+        self.states()
+    }
+
     pub fn states(&self) -> Vec<GameState> {
         self.games.iter().map(|g| g.state.clone()).collect()
     }

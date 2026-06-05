@@ -64,6 +64,23 @@ class RustBatchBackend:
             return msgpack.unpackb(self.sim.reset_msgpack(seed), raw=False, strict_map_key=False)
         return json.loads(self.sim.reset_json(seed))
 
+    def reset_from_states(self, states: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if len(states) != self.num_envs:
+            raise ValueError("reset_from_states requires exactly one state per environment")
+        if hasattr(self.sim, "reset_from_states_msgpack"):
+            payload = msgpack.packb(states, use_bin_type=True)
+            return msgpack.unpackb(
+                self.sim.reset_from_states_msgpack(payload),
+                raw=False,
+                strict_map_key=False,
+            )
+        if not hasattr(self.sim, "reset_from_states_json"):
+            raise BackendUnavailable(
+                "Rust backend does not expose reset_from_states. Rebuild with: "
+                "maturin develop --release -m crates/orbit_wars_py/Cargo.toml"
+            )
+        return json.loads(self.sim.reset_from_states_json(json.dumps(states)))
+
     def states(self) -> list[dict[str, Any]]:
         if hasattr(self.sim, "states_msgpack"):
             return msgpack.unpackb(self.sim.states_msgpack(), raw=False, strict_map_key=False)

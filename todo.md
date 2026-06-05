@@ -205,13 +205,24 @@ fase perf = MEDIR antes de consertar. Os candidatos abaixo são suspeitas a conf
         RESULTADO: `artifacts/gates/fallback_metrics/template_vs_producer_16seed.json`,
         32 jogos vs Producer, `fallback_rate=0.0`, `policy_illegal_move_rate=0.0`,
         `fallback_error_rate=0.0`, crash/timeout/invalid=0.0.
-- [ ] 5b. `scripts/parity_probe.py:15` é um stub (`print("TODO: ...")`) — a paridade
+- [x] 5b. `scripts/parity_probe.py:15` é um stub (`print("TODO: ...")`) — a paridade
       Rust↔motor oficial NÃO é checada. Como toda a régua de backtest depende da fidelidade do
       motor (modelo de 3 camadas), implementar a sonda real OU registrar decisão explícita de
       deferir com justificativa.
-  - [ ] verificar: probe instancia `kaggle_environments.make('orbit_wars')`, dá step do Rust a
+  - [x] verificar: probe instancia `kaggle_environments.make('orbit_wars')`, dá step do Rust a
         partir do snapshot oficial e compara planets/fleets/comets dentro de tolerância — ou
         EXPERIMENTS.md registra por que fica deferido.
+        RESULTADO: `scripts/parity_probe.py` agora carrega o snapshot oficial via
+        `reset_from_states`, stepa os dois motores com ações vazias e compara estado completo.
+        A sonda é real e falha hoje em `seed=0 step=1 planet=12 x`:
+        oficial não rotaciona o planeta, Rust rotaciona. Ver 5d.
+- [ ] 5d. Corrigir divergência Rust↔motor oficial revelada pelo parity probe.
+      Primeiro mismatch reproduzível: `rtk .venv/bin/python -m scripts.parity_probe --episodes 1
+      --steps 8 --disable-comets` retorna `[PARITY-PLANETS] seed=0 step=1 id=12 field=x
+      official=73.44162950284988 rust=72.32234662124957`. Antes de confiar no backtest
+      Rust como régua absoluta, decidir se a rotação orbital do Rust está errada, se o oficial
+      expõe posições pré-rotação, ou se a comparação precisa alinhar subfase.
+  - [ ] verificar: parity probe passa em pelo menos 2 seeds × 64 steps, com e sem cometas.
 - [x] 5c. Blindar a fronteira Rust/Python (invariante D11 em DECISIONS.md): teste de arquitetura
       `test_no_native_in_submission` que falha se `artifacts/submission.py` (e o tarball de
       submissão) importarem `orbit_wars_core` / `orbit_wars_py`. Impede regressão silenciosa que
