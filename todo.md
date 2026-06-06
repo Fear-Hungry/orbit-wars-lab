@@ -25,7 +25,9 @@ análogo já existe no Rust: `geometry::swept_pair_hit`).
 Histórico 2b já achou que *"não é só o OEP nunca ser escolhido"* — atacar **calibração do fitness** ou
 **composição de candidatos**, com análise POR-PARTIDA. Agora, com sim+world-model fiéis, é confiável.
 - [x] B1. FEITO (diag faithful, 8 seeds): `mean_fitness_delta_oep_minus_producer=+3.74` (o OEP ACHA seu plano melhor) e desvia 14% (`min_advantage`=0 default → desvia em QUALQUER delta>0), mas a 96 seeds PERDE (−0.128). **Causa: o fitness SUPERESTIMA os desvios** — como o world-model agora é fiel, a superestimação vem do **lookahead 1-ply** (best-response a uma resposta prevista do Producer, que na verdade re-planeja todo turno). Desvios de delta pequeno = ruído.
-  - [x] C-exp1: `OEP_MIN_ADVANTAGE` filtra desvios de baixa confiança. 96 seeds: `0→margin −0.128`, `15→−0.045` (win 0.474, timeout 0). Tendência sobe para 0 com o filtro. Testando 40 para ver se cruza 0 (= bate o Producer). Eval: `OMP_NUM_THREADS=1 jobs=8` (load ~6.5, sem thrashing).
+  - [x] C-exp1: `OEP_MIN_ADVANTAGE` (96 seeds, jobs=8/OMP=1): `0→−0.128`, **`15→−0.045 (ÓTIMO)`**, `40→−0.108`. Curva NÃO-monotônica → sweet spot ~15 (desvios de delta 15–40 são bons; <15 é ruído). Melhor OEP até agora = **min_advantage≈15 (−0.045)**, partindo de −0.21. Mas não cruza 0: seleção sozinha satura perto do empate.
+  - [ ] C-exp2 (em teste): config WIDER (12/12/4/6 via env) + min_advantage=15 → mais candidatos podem gerar desvios melhores e cruzar 0. Runtime default é narrow (6/6/2/4).
+  - Próximo se C-exp2 não cruzar: fix estrutural 2-ply (oponente responde ao plano do OEP) — ataca a superestimação 1-ply na raiz.
 
 ## C. [#3 — O SALTO] Busca real OU melhoria dirigida pelo diagnóstico (só após A+B)
 Escolher o ramo pelo que B apontar:
