@@ -24,8 +24,8 @@ análogo já existe no Rust: `geometry::swept_pair_hit`).
 ## B. [#2] Diagnosticar POR QUE o OEP perde (−0.21) no stack corrigido
 Histórico 2b já achou que *"não é só o OEP nunca ser escolhido"* — atacar **calibração do fitness** ou
 **composição de candidatos**, com análise POR-PARTIDA. Agora, com sim+world-model fiéis, é confiável.
-- [ ] B1. `scripts.profile_oep_step` + `scripts.trace_submission_actions` em 96 seeds; isolar as partidas PERDIDAS e nomear a causa dominante (fitness mal calibrado? candidato OEP pior? timeout residual?).
-  - [ ] verificar: relatório por-partida das derrotas com causa identificada por número.
+- [x] B1. FEITO (diag faithful, 8 seeds): `mean_fitness_delta_oep_minus_producer=+3.74` (o OEP ACHA seu plano melhor) e desvia 14% (`min_advantage`=0 default → desvia em QUALQUER delta>0), mas a 96 seeds PERDE (−0.128). **Causa: o fitness SUPERESTIMA os desvios** — como o world-model agora é fiel, a superestimação vem do **lookahead 1-ply** (best-response a uma resposta prevista do Producer, que na verdade re-planeja todo turno). Desvios de delta pequeno = ruído.
+  - [x] C-exp1: `OEP_MIN_ADVANTAGE` filtra desvios de baixa confiança. 96 seeds: `0→margin −0.128`, `15→−0.045` (win 0.474, timeout 0). Tendência sobe para 0 com o filtro. Testando 40 para ver se cruza 0 (= bate o Producer). Eval: `OMP_NUM_THREADS=1 jobs=8` (load ~6.5, sem thrashing).
 
 ## C. [#3 — O SALTO] Busca real OU melhoria dirigida pelo diagnóstico (só após A+B)
 Escolher o ramo pelo que B apontar:
