@@ -47,9 +47,9 @@ régua infiel = perseguir ruído): **todas as margens OEP-vs-Producer medidas no
 estão SUSPEITAS** — foram obtidas sobre combate buggado. Precisam re-validar no stack corrigido
 ANTES de retomar a otimização do OEP:
 
-- [x] Re-medir o baseline da ETAPA 0 (`margin=-0.18750`) — FEITO no sim corrigido: OEP vs Producer 16 seeds = **win=0.656, margin=+0.31250**, crash/timeout/invalid=0. ⇒ **A MARGEM VIROU de −0.19 → +0.31: o OEP JÁ VENCE o Producer.** A premissa "OEP perde, recuperar margem" era artefato do combate buggado.
-- [ ] Re-rodar o promotion gate 3a (`mean_score_margin=-0.099316`, 96 seeds) — EM ANDAMENTO no sim corrigido (background); com o 16-seed em +0.3125 é provável que PROMOVA. Saída em `/tmp/oep_revalidate_96seed.json` → `make oep-promotion-gate`.
-- [ ] Re-testar as conclusões da Thread 2b: as regressões "corte X regrediu margem" (cheap/inline/tensor/shared/min_advantage/max_sources) eram quase certamente ARTEFATO do combate buggado (o baseline virou +0.31) — re-medir cada corte antes de descartá-lo.
+- [x] Re-medir o baseline da ETAPA 0 (`margin=-0.18750`) — FEITO no sim corrigido. ⚠️ O 16-seed deu +0.31250 (win 0.656) mas era **RUÍDO de amostra pequena**; a **96 seeds (192 jogos, o limiar de decisão) = margin=−0.21137, win=0.391, timeout≈0.00046**. O combate fix corrigiu a FIDELIDADE mas NÃO inverteu a posição competitiva: o OEP AINDA perde para o Producer ao escalar (parecido com o −0.18750 antigo). A premissa do roadmap (OEP < Producer, melhorar) CONTINUA válida. **Meta-lição: 16-seed é perigosamente ruidoso (+0.31 vs −0.21) — não decidir por ele.**
+- [x] Re-rodar o promotion gate 3a (`mean_score_margin=-0.099316`, 96 seeds) — FEITO no sim corrigido: margin=−0.21137 < 0 → o OEP **NÃO promove** (mesma conclusão qualitativa do gate antigo; na verdade ligeiramente PIOR que o −0.099 buggy). Saída: `/tmp/oep_revalidate_96seed.json`.
+- [ ] Re-testar as conclusões da Thread 2b no sim corrigido: as regressões "corte X regrediu margem" precisam ser re-medidas — MAS sempre a 96 seeds (o 16/4-seed smoke usado lá é ruído, como acabamos de ver). O combate fix mudou os números exatos; o ranking dos cortes pode ter mudado.
 - [ ] Marcar em `EXPERIMENTS.md` que experimentos anteriores a este fix foram medidos em régua infiel (combate + obs).
 - [x] Verdict sobre a melhor submissão (Producer empacotado) na régua FIEL: roda limpo (0 crash/timeout/invalid) e vence greedy/rush 1.00 (margem +1.0, 4 seeds). Ela própria não regrediu.
 
@@ -135,10 +135,11 @@ mesmo processo/worker). Baselines anteriores contra o Producer stateful ficam su
 régua corrigida, o OEP default 16 seeds/jobs=4 está em margin=-0.18750, timeout_rate=0.003676.
 Antes de otimizar custo, é preciso recuperar margem contra o Producer corrigido.
 ⚠️ REVISTO 2026-06-05: esse −0.18750 ainda era no combate BUGGADO (só o vazamento de memória
-do Producer estava corrigido). No simulador com paridade de COMBATE (parity_probe_actions),
-OEP vs Producer 16 seeds = **margin=+0.31250 / win=0.656 / timeout=0**. A ETAPA 0 ("recuperar
-margem") está provavelmente RESOLVIDA — o OEP já vence o Producer. Reavaliar se o "nó real"
-(custo/timeout) ainda bloqueia algo, agora que a margem não é mais negativa.
+do Producer estava corrigido). No simulador com paridade de COMBATE (parity_probe_actions):
+16 seeds deu +0.31250 (RUÍDO), mas **96 seeds (decisão) = margin=−0.21137 / win=0.391 /
+timeout≈0.00046** — o OEP AINDA perde ao escalar. A ETAPA 0 ("recuperar margem") CONTINUA
+aberta: o combate fix corrigiu a fidelidade, não a margem. ⚠️ 16-seed é ruído — decidir só
+a 96 seeds.
 - [ ] 0.1 `[Thread 2b]` Baratear o 2º Producer (oponente do lookahead) sem cegar o 1-ply.
   - [ ] verificar: profile 2a antes/depois mostra queda material de mean_ms E margin vs Producer
         16 seeds NÃO regride (todas as tentativas até hoje regrediram — ver histórico 2b;
