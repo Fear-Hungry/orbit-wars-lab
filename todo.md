@@ -11,38 +11,106 @@ Producer = a melhor que temos (o piso). Meta: candidato com **margin > 0 vs Prod
 crash/timeout/invalid = 0**. Ordem fixa (motor→backtest→bot; corrigir CORREÇÃO antes de otimizar).
 ⚠️ Decidir **só a 96 seeds** — 16/4-seed é ruído (vimos +0.31 vs −0.21 no MESMO agente).
 
-## A. [#1 — PRÉ-REQUISITO] Corrigir o world-model do orbit_lite (sair do xfail)
-Regra do próprio repo: *"orbit_lite vermelho invalida tudo acima"* — L3/L5a estão xfail. O OEP otimiza
-um fitness calculado por esse world-model; com colisão-fantasma (planeta rotacionando) e timing de
-cometa errados, a busca persegue alvo torto. Embasamento **forte** (correção vs spec oficial; o fix
-análogo já existe no Rust: `geometry::swept_pair_hit`).
-- [x] A1. FEITO: trocada a colisão de 2 passadas (`direct`+`sweep`, posição velha → colisão-fantasma) por `_swept_pair_hit_mask` único em `_estimate_new_fleet_arrivals` (`movement.py`), planeta antes de bounds/sol. Corrigiu L3 E L5a (a captura de cometa do L5a era colisão frota×cometa).
-  - [x] verificar: `xfail` de `test_movement_l3_*` e `test_movement_l5a_*` removidos → `test_movement_fidelity.py` 9 passed.
-- [x] A2. NÃO era bug: o orbit_lite já usa a condição oficial de expiração de cometa (`future_idx < path_len` em `_apply_comet_paths`), não o off-by-one do Rust. (Minha suposição inicial estava errada.)
-- [x] A3. FEITO: OEP vs Producer **96 seeds** com world-model fiel = **margin=−0.12810, win=0.432** (timeout 0.001). Progressão real: −0.21137 → −0.12810 (+0.083). Mas ainda PERDE (< 0) — o fix ajudou, não bastou. O OEP escolhe o Producer ~82% e desvia ~18% net-negativo: a busca atual PREJUDICA. → item B.
+## ✅ A — world-model do orbit_lite fiel novamente (motor/lookahead verde)
+- [x] **A. `test_movement_l3` saiu do xfail sem mudança de lógica no `orbit_lite`:** o repro seed=37 era efeito de extensão nativa `orbit_wars_rs` stale em relação ao fonte Rust atual. Após rebuild real do binding (`rtk .venv/bin/python -m maturin develop --release -m crates/orbit_wars_py/Cargo.toml`), `test_movement_l3_matches_rust_with_random_valid_launches --runxfail` passou 200/200 e a suíte de movimento passou 9/9.
+  - **Correção de honestidade:** lag uniforme e `normal OR lag` foram hipóteses falsas; não entraram no motor. O fix válido é garantir que o binding Rust local esteja reconstruído contra o fonte atual.
+  - **Validação adicional:** `tests/test_parity_actions.py` passou 4/4 depois do rebuild, confirmando que o Rust carregado voltou a bater o oficial nas janelas de ação.
+- [x] **A-parcial (o que de fato ficou fiel):** swept-pair cobre origem/destino, cometas e terceiro planeta quando o backend nativo está atualizado.
+- [x] **B. Diagnóstico OEP (6 evals 96 seeds):** o OEP satura no **empate (−0.045)** e NÃO bate o Producer por tweak. Knobs exaustados — todos regrediram vs −0.045: `min_advantage` (curva NÃO-monotônica: ótimo em 15), WIDER (−0.080), banda (−0.274), horizon=28 (−0.271). **Causa-raiz inicial medida: o fitness 1-ply SUPERESTIMA e é RUIDOSO** (best-response a um Producer ESTÁTICO que na verdade re-planeja; as maiores vantagens projetadas são as mais ILUSÓRIAS). E1/E2 testaram a camada de seleção/diagnóstico; revisão E0 conclui que o próximo salto precisa melhorar **plano-candidato**, não só re-pontuar planos existentes.
+- [x] **Submissão Producer (1231.9) Kaggle-safe:** `NameError: __file__` resolvido em `_load_upstream` (tenta `import _upstream` primeiro). Validado por `get_last_callable`.
 
-## B. [#2] Diagnosticar POR QUE o OEP perde (−0.21) no stack corrigido
-Histórico 2b já achou que *"não é só o OEP nunca ser escolhido"* — atacar **calibração do fitness** ou
-**composição de candidatos**, com análise POR-PARTIDA. Agora, com sim+world-model fiéis, é confiável.
-- [x] B1. FEITO (diag faithful, 8 seeds): `mean_fitness_delta_oep_minus_producer=+3.74` (o OEP ACHA seu plano melhor) e desvia 14% (`min_advantage`=0 default → desvia em QUALQUER delta>0), mas a 96 seeds PERDE (−0.128). **Causa: o fitness SUPERESTIMA os desvios** — como o world-model agora é fiel, a superestimação vem do **lookahead 1-ply** (best-response a uma resposta prevista do Producer, que na verdade re-planeja todo turno). Desvios de delta pequeno = ruído.
-  - [x] C-exp1: `OEP_MIN_ADVANTAGE` (96 seeds, jobs=8/OMP=1): `0→−0.128`, **`15→−0.045 (ÓTIMO)`**, `40→−0.108`. Curva NÃO-monotônica → sweet spot ~15 (desvios de delta 15–40 são bons; <15 é ruído). Melhor OEP até agora = **min_advantage≈15 (−0.045)**, partindo de −0.21. Mas não cruza 0: seleção sozinha satura perto do empate.
-  - [x] C-exp2: config WIDER (12/12/4/6) + min_advantage=15 = −0.080 (PIOR que narrow −0.045). Mais candidatos não ajudam.
-  - [x] ANÁLISE das curvas (96 seeds): delta∈(0,15] net −0.083 (ruído); delta∈(15,40] net **+0.063 (BONS)**; delta>40 net −0.108 (over-confiança — as maiores vantagens projetadas são as mais ilusórias). Os desvios bons estão numa BANDA média.
-  - [x] C-exp3: filtro de BANDA (`max_advantage`, novo knob) 15<delta<40 = **−0.274 (MUITO PIOR)**. Hipótese de banda FALHOU: as contribuições dos desvios são não-lineares/interagentes (tirar delta>40 piorou drástico). Não dá para isolar bandas.
-  - [x] C-exp4: horizon=28 + min_advantage=15 = **−0.271 (MUITO PIOR)**. Hipótese do intel (horizonte longo) NÃO vale no OEP — mais projeção → mais superestimação acumulada. Revertido para 18.
-  - **CONCLUSÃO OEP (6 evals 96 seeds):** melhor = horizon=18 + min_advantage=15 (**−0.045**, de −0.21). TODO o resto regrediu (min_adv 0/40, wider, banda, horizon=28). **O OEP NÃO bate o Producer por tweak** — satura em −0.045 (empate quase). Gargalo = o FITNESS de 1-ply SUPERESTIMA e é RUIDOSO (não-monotônico ⇒ não é viés thresholdável; é imprecisão). Mais candidatos PIORAM (wider/banda). Logo busca real (C1) provavelmente também piora. O fix de raiz é um fitness mais preciso: **2-ply** (oponente responde ao plano do OEP — Justesen 2016) ou rebuild do scoring. Ambos são builds substanciais com payoff incerto (provável teto ≈ empate, a menos que existam planos robustamente melhores que o Producer perde — e existem, pois o topo do leaderboard > 1228).
-  - OEP NÃO submetido (perde o Producer). MAS: o fix do world-model do orbit_lite corrige o modelo que o PRÓPRIO Producer usa para planejar (o Producer 1228 planejava sobre o modelo buggy). Risco mínimo (Kaggle mantém a melhor submissão).
-  - [x] SUBMETIDO `53408639` → **ERROR no Kaggle** (inofensivo; 1231.9 segue como melhor). PREMISSA ERRADA: o tarball 1231.9 JÁ tinha o swept-pair (`movement.py` idêntico ao meu fix). Meu fix corrigiu uma REGRESSÃO no REPO (WIP reverteu p/ 2-passadas), NÃO a submissão. A submissão errou porque o `main.py` do 1231.9 é AUTOCONTIDO (422 linhas ≠ do `bots/producer/agent.py` que carrega `_upstream.py` via importlib — falha no Kaggle). ⚠️ **`scripts/package_producer_submission.py` gera submissão QUEBRADA** (estrutura agent.py+_upstream vs main.py autocontido do 1231.9).
-  - **CONCLUSÃO:** nada melhor que 1231.9 foi encontrado. O Producer já é o melhor E já tem o fix de colisão. Bater 1231.9 exige build substancial (busca real / 2-ply), payoff incerto. Espaço barato esgotado.
-  - [x] CONSERTADO: a submissão errava por `NameError: __file__`. O Kaggle roda o agente via `compile()+exec()` com globals VAZIO (`kaggle_environments/agent.py:48,57`) — `__file__` é indefinido — e adiciona o dir do tarball ao `sys.path`. O `bots/producer/agent.py` usava `Path(__file__)` no nível do módulo → crash. Fix: `_load_upstream` tenta `import _upstream` primeiro (Kaggle-safe; o dir está no path), com fallback `__file__` (repo). Validado pelo MECANISMO exato do Kaggle (`get_last_callable`): carrega + roda. test_oep_agent 12 passed.
-  - [ ] (follow-up menor) Packaging do OEP: `bots/oep/agent.py` faz `from bots.oep.planner import agent` — num tarball flat precisa empacotar `bots/` + `orbit_lite/` na raiz (o `get_last_callable` põe o dir no path). Não bloqueia nada hoje (OEP perde do Producer).
+---
 
-## C. [#3 — O SALTO] Busca real OU melhoria dirigida pelo diagnóstico (só após A+B)
-Escolher o ramo pelo que B apontar:
-- [ ] C1 (candidato fraco): busca sobre população de genomas multi-lançamento (ex-Thread 1c). Embasamento **forte**: Justesen, Mahlmann & Togelius 2016 (rolling-horizon EA). Semear pop com guloso + Producer + incumbente.
-- [ ] C2 (fitness): risco de timeline curta — penalizar launches bons-por-produção que abrem colapso local em 7–20 turnos. Embasamento **parcial** (intel do fórum).
-- [ ] C3 (alternativa do topo): redistribuição por dominância como candidato de plano. Embasamento **fraco** (1 notebook).
-  - [ ] verificar (qualquer C): **margin > 0 vs Producer a 96 seeds, crash/timeout/invalid = 0** ← GATE: SUPEROU O PRODUCER.
+# 🔬 E. NOVAS SOLUÇÕES — explorar para CRUZAR o 0 (pós-diagnóstico, fundamentado)
+
+> **Insight central (do diagnóstico B + revisão E0):** o avaliador 1-ply era ruidoso e inflava vantagem,
+> mas E1/E2 só mexeram na **camada de seleção** entre os mesmos planos e não criaram plano melhor que o
+> Producer. A próxima geração precisa atacar **qualidade do plano-candidato**: gerar `oep_entries` por
+> um mecanismo diferente, dentro do orçamento de 1s, e só então medir a 96 seeds.
+
+## ⚠️ E0. REVISÃO do que o codex implementou (2026-06-06) — o que está errado e POR QUÊ
+O codex implementou E1a (variantes ordinais do oponente) **e** E2a (`reactive_reply` 2-ply) no `planner.py`,
+mais o fix de reset do Producer. Revisão honesta:
+- [x] **Acertou (não mexer):** (a) fix de reset do Producer (`_upstream.py`: `mem.reset()` no step 0) — era **memory-leak real** (`movement`/`last_sparse_action_row` vazavam entre jogos no mesmo worker, contaminando a régua e explicando a divergência jobs=1 vs jobs=4). (b) `_debit_entry_sources` **não** é débito-duplo — `apply_private_planned_launches` só semeia arrivals/stash, não debita o source (docstring confirma). (c) Rodou o **gate 96 seeds** de verdade: margin=−0.099, win=0.448, `passed=False`.
+- [x] **ERRO #1 (ESTRATÉGICO — aceito):** E1a e E2a são **mudanças na CAMADA DE SELEÇÃO** — só escolhem melhor entre os MESMOS dois planos (OEP vs Producer); **nenhum melhora os planos-candidatos do OEP**. A réplica E2a desinflou o diagnóstico de fitness no profile serial (`mean_fitness_delta≈0.138`), mas a margem de 16 seeds continua só triagem e não mede promoção. POR QUÊ: se o novo trabalho só re-pontua `oep_entries` já existentes, ele pode reduzir ilusão, mas não cria plano melhor que o Producer. A alavanca que cruza 0 é **plano-candidato melhor** (busca real C1 / MCTS E3 / valor aprendido E4), não mais um chooser.
+  - [x] DECISÃO acionável: parar de afinar seleção (E1/E2) e pivotar para **qualidade do plano** (C1 ou E3). Verificar: o novo trabalho gera `oep_entries` por um mecanismo diferente do atual, não só re-pontua os mesmos.
+- [x] **ERRO #2 (METODOLÓGICO — CORRIGIDO):** o `reactive_reply` recomputava só o `oep_fitness` contra a réplica reativa e deixava o `producer_fitness` contra a previsão estática → comparava OEP-sob-adversário-reativo vs Producer-sob-oponente-passivo (limiar enviesado contra desviar). **Fix (2-ply simétrico, Justesen):** `_reactive_reply_entries` foi generalizada (param `our_entries`) e agora é chamada TAMBÉM para o `producer_entries`; o `producer_fitness` é recomputado contra a réplica do oponente AO PLANO DO PRODUCER. Cada plano é pontuado contra a resposta a ELE.
+  - [x] verificado: profile serial 1 seed/128 — as duas réplicas rodam **59/59 vezes** (`producer_reactive_reply` e `producer_reactive_reply_baseline`, simétrico); custo extra ~12,5ms só nos turnos gated (`advantage>prune`); `max_decision_ms=118`, `timeout=0.0`. ruff + `test_oep_agent.py` 24 passed. Knob off-by-default → agente padrão inalterado.
+- [x] **ERRO #3 (corrigido no registro):** E2a JÁ foi benchmarkado (16 seeds: margin=−0.0326, timeout_rate=0.000701; E2b prune0: margin=−0.0625, timeout_rate=0.01257). **MAS a rejeição não pode depender da margem 16-seed nem do timeout paralelo isolado:** o profile SERIAL tem `max=119ms` (E2a) / `91ms` (E2b), ~8× de folga, timeout=0.0. O motivo honesto de não promover agora é: comparação 2-ply ainda assimétrica (ERRO #2), margem não gate-confirmada e E1/E2 não melhoram o plano-candidato.
+  - [ ] (opcional) E2a é o ÚNICO candidato que (a) conserta a inflação diagnosticada E (b) é numericamente o melhor a 16 seeds → merece **UMA** rodada 96 seeds **serial** (jobs=1) pra cravar o teto. Mas mesmo se der empate, não basta pro TOP-5 → pivotar pra C1/E3 de qualquer forma.
+- [x] **ERRO #4 (confirmado e corrigido no artefato):** o fix de reset **muda o baseline do Producer** → toda margem medida ANTES dele é suspeita. Verificação inicial de `artifacts/submission_producer.tar.gz`: o `main.py` autocontido antigo só zerava `cached_player_count` no step 0; não chamava `mem.reset()` e nem continha `_upstream.py` separado. O tarball foi reconstruído com o script versionado e agora contém `_upstream.py` com `mem.reset()` no step 0.
+  - [x] ação: reconstruir/validar o tarball Producer antes de usá-lo como régua ou artefato de submissão.
+  - [ ] re-rodar qualquer baseline pré-fix antes de citar.
+- [x] **Nit menor:** validação `reactive_reply + ordinal_variants>1` movida para `OEPLiteConfig.__post_init__`, com teste de env/config. Agora falha na construção da config, não dentro do turno.
+
+## C1. [PRIMEIRO DEGRAU] Qualidade do plano-candidato antes de MCTS completo
+Objetivo: gerar `oep_entries` por mecanismo diferente do guloso atual. Não é mais tuning de seleção;
+o candidato precisa existir como plano alternativo antes da comparação OEP-vs-Producer.
+- [x] **C1a. Plano-memória temporal — IMPLEMENTADO E REJEITADO COMO DEFAULT.**
+  - [x] `OEP_PLAN_MEMORY_VARIANTS=N` reconstrói até N lanes do último plano OEP executado no estado atual e escolhe entre plano guloso atual vs plano-memória por fitness de plano inteiro.
+  - [x] Default preservado (`OEP_PLAN_MEMORY_VARIANTS=0`); validação/env/testes cobrem o knob.
+  - [x] Verificação: profile 1 seed/128 teve `timeout=0.0`, `max_decision_ms=82.24`, `mean_decision_ms=45.41`; a variante de memória foi candidata 43 vezes e venceu só 1 (`choice_rate=0.023`). Smoke 4 seeds/500: crash/invalid/timeout=0, `mean_score_margin=-0.25` (ruído, não gate), `mean_decision_ms≈360` no runner.
+  - [x] Decisão: não promover nem rodar 96 seeds. O mecanismo gera plano alternativo real, mas quase nunca supera o guloso e adiciona custo. Próximo C1/E3 precisa gerar variações por rollout/beam efetivo, não só persistência de lanes antigas.
+- [x] **C1b. Beam do primeiro lance — IMPLEMENTADO E REJEITADO COMO DEFAULT.**
+  - [x] `OEP_BEAM_FIRST_WIDTH=N` força cada um dos top-N primeiros lances elegíveis, completa o restante com o greedy atual, inclui regroup e escolhe o melhor plano inteiro por fitness.
+  - [x] Default preservado (`OEP_BEAM_FIRST_WIDTH=0`); validação/env/testes cobrem o knob.
+  - [x] Verificação: profile 1 seed/128 teve `timeout=0.0`, `max_decision_ms=88.44`, `mean_decision_ms=47.55`; o beam gerou 358 candidatos em 232 decisões e escolheu alternativa só 3 vezes (`choice_rate=0.013`). Smoke 4 seeds/500: crash/invalid/timeout=0, `mean_score_margin=-0.25` (ruído, não gate), `mean_decision_ms≈381` no runner.
+  - [x] Decisão: não promover nem rodar 96 seeds. Gerar variações só no primeiro lance quase sempre confirma o guloso; próximo C1/E3 precisa de rollout multi-turn ou avaliação de nó que altere a árvore, não só beam raso.
+
+## E1. [FECHADO] Avaliador ordinal: parar de confiar na MAGNITUDE do fitness
+**Diagnóstico que sustenta:** a curva de `min_advantage` é **não-monotônica** e os desvios delta>40
+(maiores vantagens projetadas) são os mais ILUSÓRIOS → a *magnitude* do fitness é não-confiável, mas a
+*ordenação* relativa pode ainda carregar sinal. É exatamente o cenário do paper.
+**Embasamento FORTE** — Joppen & Fürnkranz, *Ordinal Monte Carlo Tree Search* (arXiv:1901.04274):
+recompensas numéricas handcrafted são "necessariamente enviesadas"; o comportamento do agente muda com
+o *encoding* da recompensa; o tratamento **ordinal** (comparação por ranking, invariante a transformação
+monotônica) supera. Casa 1:1 com nosso fitness handcrafted superestimando.
+**Onde mexer:** seleção em `planner.py:1519-1533` (hoje `_advantage = oep_fitness − producer_fitness` comparado a `min_advantage`); fitness determinístico em `_plan_fitness` (`planner.py:409`, um ÚNICO `opponent_launch_set` estático); knobs em `OEPPlannerConfig` (`planner.py:~134`).
+- [x] **E1a. Avaliação multi-seed do oponente — IMPLEMENTADA E REJEITADA COMO DEFAULT.**
+  - [x] Gerou variantes determinísticas de `opponent_launch_set` (base, fração 0.75/0.50, atraso +1, top-K) via `OEP_ORDINAL_OPPONENT_VARIANTS`.
+  - [x] Para cada variante, compara `s_oep[k]` vs `s_prod[k]` e seleciona por `wins/K >= OEP_ORDINAL_WIN_THRESHOLD`; `wins/K` entra no `record_selection`/`profile_oep_step`.
+  - [x] Verificação de custo/cauda: K=3 profile serial 4 seeds/500 teve `mean=38.76ms`, `max=138.94ms`, `max_match_p95=84.08ms`, `timeout=0.0`; K=5 profile serial 4 seeds/500 teve `mean=50.62ms`, `max=156.21ms`, `max_match_p95=103.41ms`, `timeout=0.0`. No runner paralelo, K=3 smoke 4 seeds teve `mean_decision_ms=343.99`, `timeout=0.0`; K=5/16 seeds teve `mean_decision_ms=347.72`, 3 timeouts (`timeout_rate=0.000584`), possivelmente com contenda local. A métrica decisiva é cauda (`p99`/`max`/`timeout_count`), não média nem margem pequena-seed. Detalhe em `EXPERIMENTS.md` (2026-06-06).
+  - [x] Decisão: não promover nem rodar 96 seeds; default permanece no avaliador escalar anterior (`OEP_ORDINAL_OPPONENT_VARIANTS=1`). Margem de K=3/K=5 é inconclusiva porque 4-seed é ruído e 16-seed não é gate; não registrar "empatou no 4-seed" como achado. A rejeição é de **custo/design**: K=3/5 é pequeno demais para denoising ordinal forte; K alto o bastante para o efeito do paper teria custo linear e precisaria provar p99/max/timeout_count antes de qualquer gate. A hipótese ordinal simples também só perturba o mesmo plano estático, sem modelar a resposta reativa do Producer.
+- [x] **E1b. CANCELADO por escopo atual:** torneio ordinal par-a-par ainda re-pontua os mesmos candidatos. Não atacar enquanto o próximo trabalho precisar gerar planos melhores, não só escolher melhor entre planos saturados.
+
+## E2. [FECHADO] Best-response 2-ply (oponente responde ao plano do OEP)
+**Diagnóstico que sustenta:** a superestimação vem do 1-ply best-response a uma resposta ESTÁTICA do
+Producer; o Producer real re-planeja. Fechar isso é o conserto direto da causa.
+**Embasamento FORTE** — Justesen, Mahlmann & Togelius 2016 (*Online Evolution / rolling-horizon contra
+oponente que reage*): modelar a réplica do oponente reduz a ilusão de vantagem.
+**Onde mexer:** o `opponent_launch_set` passado a `_plan_fitness` (`planner.py:1497-1517`) é hoje uma previsão ESTÁTICA (`_cheap_opponent_entries`/`opponent_entries` de `plan_oep_waves`). O 2-ply troca essa previsão por uma RÉPLICA reativa ao plano do OEP.
+- [x] **E2a. Réplica reativa do Producer ao plano do OEP — IMPLEMENTADA E REJEITADA COMO DEFAULT.**
+  - [x] Clona o `PlanetMovement`, aplica as chegadas futuras do plano OEP, debita explicitamente as fontes do OEP no clone e chama o Producer inline como réplica (`OEP_REACTIVE_REPLY=1`).
+  - [x] Pontua o OEP contra `opp_reply_launch_set`; o Producer baseline continua com a previsão estática atual. Isso torna E2a **diagnóstico assimétrico**, não seletor promovível.
+  - [x] Verificação: o profile serial confirma o diagnóstico — `mean_fitness_delta` caiu para perto de zero (4 seeds/500: **0.138**, vs deltas inflados anteriores), sem cauda perto de 1s (`max=119.62ms`, `timeout=0.0`).
+  - [x] Decisão: não promover. Margem 16-seed é só triagem, não gate; o bloqueio correto é comparação assimétrica + ausência de plano-candidato novo.
+- [x] **E2b. Poda por custo — IMPLEMENTADA E REJEITADA COMO DEFAULT.**
+  - [x] Curto-circuito por vantagem 1-ply (`OEP_REACTIVE_REPLY_PRUNE_ADVANTAGE`, default experimental 0): se o OEP já não vence no avaliador barato, não chama a réplica.
+  - [x] Verificação serial: chamadas reativas caíram **469→177** em ~1k decisões; `mean_decision_ms=38.45`, `max=91.05`, `timeout=0.0`.
+  - [x] Decisão: não promover. A poda reduziu custo serial, mas não muda o problema estrutural: E2b continua selecionando entre os mesmos planos e ainda herda a comparação assimétrica.
+
+## E3. [ATACAR AGORA — TETO MAIS ALTO, prazo maior] MCTS de simulação sobre o simulador AGORA fiel
+**Por que só agora:** MCTS precisa de um modelo confiável p/ rollouts; o simulador acabou de ficar fiel
+(parity ~40k steps, 0 divergências). O valor vem de **simular de verdade** múltiplos passos → não há a
+projeção 1-ply que superestima.
+**Embasamento PARCIAL→FORTE** — MCTS/UCT clássico (Browne et al. 2012, survey) + **playouts informados**
+usando o **Producer como política default** (rollouts fortes em vez de aleatórios). Combinar com E1
+(backup ordinal — O-UCT do 1901.04274) ataca o viés de magnitude DENTRO da árvore.
+- [ ] E3. **ATACAR AGORA:** protótipo MCTS/busca no espaço de planos (não de micro-ações): nós = decisões de lançamento; rollout = Producer joga ambos os lados até horizonte; backup ordinal só dentro da árvore se couber no orçamento. Comparar contra o OEP −0.045.
+  - [ ] verificar: margin 96 seeds vs Producer > −0.045; custo dentro do `actTimeout=1s` (orçar nº de simulações por turno).
+  - ⚠️ Build substancial. E1/E2 não são mais próximos alvos; o critério de sucesso aqui é gerar `oep_entries` por um mecanismo diferente, não só re-pontuar o plano atual.
+
+## E4. [LONGO PRAZO — só se E1–E3 saturarem] Valor APRENDIDO via self-play (AlphaZero-lite)
+A infra PPO já roda fim-a-fim (treino→checkpoint→export single-file Python puro→roda no env oficial,
+500 steps DONE). Um **valor aprendido** substitui o fitness handcrafted de vez e guia o MCTS de E3.
+**Embasamento FORTE** (AlphaZero/Expert Iteration) mas **custo/ROI altos** e fora do gargalo atual.
+- [ ] E4. DEFERIDO. Reabrir só se E1–E3 saturarem OU surgir oponente externo forte. Critério em `docs/TRAINING.md`.
+
+> **Honestidade sobre a evidência (postura tech-lead):** E1 e E2 tinham embasamento forte para corrigir
+> diagnóstico/seleção, mas nesta forma não geram plano-candidato melhor e ficam rejeitados como default.
+> E3/E4 têm teto maior, mas são builds grandes com payoff incerto (o topo do leaderboard > 1228 prova
+> que existem planos robustamente melhores que o Producer; o OEP local satura no empate). Nenhum
+> knob/tweak adicional de seleção deve ser priorizado — isso já foi exaustado em B/E1/E2.
 
 ## D. [PARALELO — ganho barato] Ligar o lookahead em 4p (ex-F1)
 Leaderboard pontua 2p E 4p; hoje o OEP é guloso em 4p (`_opponent_id` → None, sem 1-ply). Princípio
@@ -51,28 +119,27 @@ Leaderboard pontua 2p E 4p; hoje o OEP é guloso em 4p (`_opponent_id` → None,
 
 ---
 
-# Estado atual (2026-06-05, pós-fixes de fidelidade)
+# Estado atual (2026-06-06, pós-fixes de fidelidade + diagnóstico OEP)
 
-- **Simulador FIEL ao Kaggle** (combate/cometa/gerador/obs corrigidos) e régua confiável — travado por `parity_probe_actions` + `tests/test_parity_actions.py` (~40k steps, 0 divergências).
-- **OEP vs Producer 96 seeds = margin −0.21137, win 0.391**, timeout≈0.0005 → ainda **perde**. (O 16-seed +0.31 era ruído.)
-- As margens antigas do roadmap foram medidas em **régua infiel** (combate buggado + obs dict) — re-validar SEMPRE a 96 seeds antes de confiar.
-- **Débito aberto:** world-model do `orbit_lite` ainda diverge (xfail L3/L5a) → é o item **A** acima.
+- **Régua/SIMULADOR (Rust) FIEL ao Kaggle** — `parity_probe_actions` + `tests/test_parity_actions.py` (~40k steps, 0 div). Margens 96 seeds confiáveis.
+- ✅ **World-model do orbit_lite (lookahead) fiel com binding Rust atualizado:** `test_movement_l3` não está mais em xfail; suíte de movimento esperada é 9 passed.
+- **Melhor OEP local = −0.045 vs Producer (96 seeds)** — empate quase; satura por tweak. E1/E2 reduziram ilusão de avaliação, mas não geram plano melhor. Gargalo = **qualidade do plano-candidato** (E3/C1).
+- **Submissão Producer (1231.9) Kaggle-safe contra `NameError` e tarball reconstruído com reset completo**; ainda revalidar baselines antigos antes de citar margem medida pré-fix.
+- As margens antigas do roadmap foram medidas em **régua infiel** — re-validar SEMPRE a 96 seeds.
 
-# Feito nesta passada (detalhe no git/EXPERIMENTS/tests)
+# Feito (detalhe no git/EXPERIMENTS/tests)
 
-- Fidelidade do simulador Rust: 3 bugs de combate (ordem de colisão / swept-pair / timing de cometa) + gerador de treino (naves infladas) + formato de obs da régua (dict→lista oficial).
-- Reavaliação do roadmap: margens OEP eram suspeitas; re-validadas a 96 seeds (−0.21).
-- Infra/portfólio: `conftest.py` (parity não-silencioso), scripts de diagnóstico versionados, reorganização de `docs/`, docstrings de papel.
-- OEP base (ex-1a/1b): seeding por incumbente, torneio único OEP-vs-Producer, deadline temporal removido — **números de margem precisam re-validar a 96 seeds** (eram em sim buggy).
-- Perf (ex-2a/2c): hot-path = as 2 chamadas Producer (~51%); cache de garrison incremental. Cortes de custo da 2b (cheap/inline/tensor/shared/min_advantage/max_sources): **re-medir** — eram em sim buggy.
-- Hygiene (ex-5/6): gate no-silent-fallback, guard no-native-import (D11), parity probe real.
+- Fidelidade do simulador Rust: combate (ordem de colisão / swept-pair / timing de cometa) + gerador + obs.
+- Diagnóstico OEP completo (6 evals 96 seeds): o OEP satura no empate; mais knob/horizonte PIORA; E1/E2 indicam que re-pontuar os mesmos planos não basta.
+- Submissão Producer Kaggle-safe (`NameError: __file__` resolvido em `_load_upstream`).
+- Infra/portfólio: `conftest.py`, scripts de diagnóstico versionados, reorganização de `docs/`.
 
 # Roadmap remanescente (condensado)
 
-- **2º oponente-régua** (ex-ETAPA 1 / 3b): adicionar um oponente forte do fórum (Producer~1200 / timeline-sim) ao gate, para não overfitar só o Producer. Obrigatório para top 5.
-- **PPO/self-play** (ex-ETAPA 4 / F2): DEFERIDO. Reabre só se o OEP esgotar ganho contra o Producer ou surgir oponente externo forte. Critério em `docs/TRAINING.md`.
-- **Marcar `EXPERIMENTS.md`** que experimentos anteriores aos fixes foram em régua infiel. (Deixei p/ você: seu log tem mudanças não commitadas.)
-- **Screenshots `artifacts/kaggle_*.png`**: decidir se entram no portfólio ou saem (`git rm --cached`). Decisão sua.
+- **2º oponente-régua**: adicionar um oponente forte do fórum ao gate, para não overfitar só o Producer. Obrigatório para top 5.
+- **PPO/self-play**: seção E4 (DEFERIDO).
+- **Marcar `EXPERIMENTS.md`** que experimentos anteriores aos fixes foram em régua infiel.
+- **Screenshots `artifacts/kaggle_*.png`**: decidir se entram no portfólio (decisão sua).
 
 ---
 
@@ -85,8 +152,7 @@ Leaderboard pontua 2p E 4p; hoje o OEP é guloso em 4p (`_opponent_id` → None,
 
 ## Ordem de conserto INEGOCIÁVEL: motor → backtest → bot
 Bot errado? → confirmar régua fiel. Régua errada? → confirmar motor no parity. Otimizar bot sobre
-régua/world-model infiel = perseguir ruído (corrompe a correlação local↔leaderboard). Foi exatamente
-o que aconteceu antes destes fixes.
+régua/world-model infiel = perseguir ruído (corrompe a correlação local↔leaderboard).
 
 ## Invariantes
 - **D10/D11** — submissão é Python puro/leve; nenhum `bots/`/`artifacts/` importa o crate Rust. Travado por `test_no_native_in_submission`.
@@ -103,4 +169,5 @@ o que aconteceu antes destes fixes.
 
 ## Parado / não fazer
 - Micro-tuning de heurística (reservas/aberturas/hammer) — saturado contra bots locais (exp. 73–99).
-- GPU — agente roda CPU-only com `actTimeout=1s` e problema minúsculo; gargalo é qualidade do modelo, não compute (EXPERIMENTS.md l.61). ROI seria paralelismo de ambiente em CPU.
+- Tweak de knob no OEP (min_advantage/horizon/wider/banda) — EXAUSTADO em B (tudo regrediu vs −0.045).
+- GPU — agente roda CPU-only com `actTimeout=1s` e problema minúsculo; gargalo é qualidade do modelo, não compute.

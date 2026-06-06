@@ -68,6 +68,8 @@ Voce e o executor verificavel chamado pelo Claude Orchestrator. Voce nao decide 
 
 - Inspecione antes de editar. Se incerto, reporte antes de mudar.
 - Diff minimo. Nao altere arquivos nao relacionados.
+- Nao mexa em `tests/`, fixtures ou marcadores como `xfail`/`skip` para mascarar ou "limpar" falhas sem pedido explicito do usuario. Em bugs de motor/paridade, preserve o teste vermelho/xfail existente como rastreador do debito; corrija a causa no motor ou reporte o bloqueio.
+- Nunca use `git checkout`, `git restore`, `git reset`, `git stash` ou comandos equivalentes para apagar mudancas nao commitadas do usuario. Se precisar desfazer uma tentativa propria, faca patch manual e preserve mudancas existentes, especialmente em testes.
 - Nao introduza dependencias novas sem necessidade estrita.
 - Preserve APIs publicas, salvo instrucao explicita.
 - Nao modifique gates de validacao ja criados (limiares, seeds, oponentes, ordem, criterios ou remocao/adicao de gates) a menos que o usuario peca explicitamente.
