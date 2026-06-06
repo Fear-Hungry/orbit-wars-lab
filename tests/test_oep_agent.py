@@ -404,6 +404,43 @@ def test_oep_config_rejects_negative_plan_memory_variants() -> None:
         OEPLiteConfig(plan_memory_variants=-1)
 
 
+def test_oep_rollout_search_generates_variant_list() -> None:
+    obs = producer_upstream._to_list_observation(_initial_official_obs(seed=0, player=0))
+    obs_tensors = single_obs_to_tensor(obs, player_id=0)
+    movement = oep_planner.PlanetMovement.from_obs_tensors(
+        obs_tensors,
+        config=oep_planner._movement_config(oep_planner.OEPPlannerConfig(), player_count=2),
+    )
+    parsed = oep_planner.parse_obs(obs_tensors)
+    cache = oep_planner.build_distance_cache(movement, max_k=18)
+    status = movement.garrison_status(max_horizon=18)
+    alive_by_step = movement.alive_by_step[:19]
+
+    variants = oep_planner._oep_plan_variant_list(
+        movement=movement,
+        obs=parsed,
+        obs_tensors=obs_tensors,
+        cache=cache,
+        status=status,
+        prod=movement.planet_prod,
+        alive_by_step=alive_by_step,
+        config=oep_planner.OEPPlannerConfig(),
+        fractions=(0.5, 1.0),
+        player_count=2,
+        opponent_entries=None,
+        beam_width=3,
+    )
+
+    assert len(variants) >= 2
+    assert all(isinstance(v, oep_planner.LaunchEntries) for v in variants)
+    assert bool(variants[0].valid.any().item())
+
+
+def test_oep_config_rejects_negative_rollout_search_width() -> None:
+    with pytest.raises(ValueError, match="OEP_ROLLOUT_SEARCH_WIDTH"):
+        OEPLiteConfig(rollout_search_width=-1)
+
+
 def test_oep_config_rejects_negative_beam_first_width() -> None:
     with pytest.raises(ValueError, match="OEP_BEAM_FIRST_WIDTH"):
         OEPLiteConfig(beam_first_width=-1)
