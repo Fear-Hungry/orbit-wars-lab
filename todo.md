@@ -20,9 +20,43 @@ Pendente — **decisão/ação sua** (não mexi: é código com risco ou conteú
 - [x] ~~Remover o shim redundante `orbit_wars_gym/__init__.py`~~ — CORRIGIDO: o shim NÃO é redundante. Ele é load-bearing (faz `import_module("python.orbit_wars_gym")` e permite `import orbit_wars_gym` a partir da raiz sem `python/` no PYTHONPATH — usado por scripts/bots/agents). Mantido e documentado com docstring de papel.
 - [ ] Decidir se os 4 screenshots `artifacts/kaggle_*.png` (signin/home/flow) entram no portfólio ou saem (`git rm --cached`); parecem scratch de automação, não asset.
   - [ ] verificar: `git ls-files artifacts/` lista só os deliverables que você quer mostrar
-- [ ] Versionar ou ignorar os scripts novos não rastreados (`scripts/compare_oep_opponent_models.py`, `scripts/trace_submission_actions.py`).
-  - [ ] verificar: `git status --short` não mostra `??` em `scripts/`
+- [x] Versionar os scripts de diagnóstico não rastreados (`scripts/compare_oep_opponent_models.py`, `scripts/trace_submission_actions.py`) — são ferramentas reais referenciadas na Thread 2b (sonda de fidelidade de lanes / trace de ações). Compilam OK; commitados.
+  - [x] verificar: `git status --short` não mostra `??` em `scripts/`
 - [x] Reduzir ambiguidade de nomes/papéis (sem renomear/apagar): docstrings de papel em `orbit_lite/__init__.py` (Python puro, SUBMETIDO), `python/orbit_wars_gym/__init__.py` (Rust-backed, só TREINO) e no shim da raiz, todas apontando para `docs/ARCHITECTURE.md` + D10/D11. Rename foi descartado: `orbit_lite` é importado pela submissão/bots/tests e o gym pelo shim — renomear quebraria empacotamento e imports.
+
+---
+
+# ⚠️ REAVALIAÇÃO — a régua/simulador eram INFIÉIS quando o roadmap abaixo foi medido (2026-06-05)
+
+Nesta passada descobrimos que a régua de avaliação — que decide TUDO no roadmap abaixo —
+NÃO era fiel ao Kaggle em três pontos, todos consertados agora:
+
+1. **Dinâmica de combate do Rust** — o `parity_probe` antigo (itens 5b/5d) só usava ações
+   VAZIAS, então combate/movimento de frota NUNCA foram testados. O harness novo
+   `scripts/parity_probe_actions.py` achou 3 bugs reais (ordem de colisão; swept-pair vs
+   posição única → colisão-fantasma em planeta rotacionando; timing de expiração de cometa).
+   ⇒ **O item 5d ("Rust alinhado à semântica oficial") cobria só a dinâmica passiva; estava
+   INCOMPLETO.** A régua de combate divergia do Kaggle o tempo todo.
+2. **Formato do obs na régua** — `to_official_observation` emitia `dict` em vez do formato
+   `list` do Kaggle. (NÃO afetou OEP/Producer: ambos têm `_to_list_observation` privado; só
+   quebrava agentes sem esse wrapper, como o tarball empacotado — que crashava 455/455 na régua.)
+3. **Gerador de treino** — inflava as naves iniciais (já corrigido).
+
+**CONSEQUÊNCIA** (aplicando a própria regra das linhas ~158-163: nunca otimizar o BOT sobre
+régua infiel = perseguir ruído): **todas as margens OEP-vs-Producer medidas no roadmap abaixo
+estão SUSPEITAS** — foram obtidas sobre combate buggado. Precisam re-validar no stack corrigido
+ANTES de retomar a otimização do OEP:
+
+- [x] Re-medir o baseline da ETAPA 0 (`margin=-0.18750`) — FEITO no sim corrigido: OEP vs Producer 16 seeds = **win=0.656, margin=+0.31250**, crash/timeout/invalid=0. ⇒ **A MARGEM VIROU de −0.19 → +0.31: o OEP JÁ VENCE o Producer.** A premissa "OEP perde, recuperar margem" era artefato do combate buggado.
+- [ ] Re-rodar o promotion gate 3a (`mean_score_margin=-0.099316`, 96 seeds) — EM ANDAMENTO no sim corrigido (background); com o 16-seed em +0.3125 é provável que PROMOVA. Saída em `/tmp/oep_revalidate_96seed.json` → `make oep-promotion-gate`.
+- [ ] Re-testar as conclusões da Thread 2b: as regressões "corte X regrediu margem" (cheap/inline/tensor/shared/min_advantage/max_sources) eram quase certamente ARTEFATO do combate buggado (o baseline virou +0.31) — re-medir cada corte antes de descartá-lo.
+- [ ] Marcar em `EXPERIMENTS.md` que experimentos anteriores a este fix foram medidos em régua infiel (combate + obs).
+- [x] Verdict sobre a melhor submissão (Producer empacotado) na régua FIEL: roda limpo (0 crash/timeout/invalid) e vence greedy/rush 1.00 (margem +1.0, 4 seeds). Ela própria não regrediu.
+
+**NÃO afetado** (continua válido): D1–D11, o modelo de 3 camadas, a regra no-silent-fallback,
+os próprios fixes de paridade/gerador/obs desta passada, e os gates de arquitetura (5a/5c/6a/6b).
+Pendência separada: o `orbit_lite` (planner da submissão) ainda tem os 2 bugs de world-model
+(ver DÉBITO abaixo) — o Producer roda, mas planeja sobre um modelo levemente errado.
 
 ---
 
@@ -67,8 +101,8 @@ paridade em modo *parity* (snapshots oficiais — `test_official_spec`,
   - [x] verificar: `pytest tests/test_training_generator_distribution.py -q` passa (após `maturin develop --release`)
   - [x] verificar: `cargo test -p orbit_wars_core` passa (18); suíte de paridade `38 passed`
   - Nota: o teste foi de 16→256 seeds. Não dá para casar per-seed (ChaCha8 vs Mersenne Twister — `docs/PARITY.md` proíbe reproduzir o RNG Python); 16 seeds eram subdimensionados p/ comparar dois RNGs a ±4 naves. Tolerâncias mantidas; só o tamanho da amostra subiu (fortalece o gate).
-- [ ] (Infra) Tornar a paridade não-silenciosa: sem o extra `kaggle` instalado, os 11 testes de paridade dão ImportError e não rodam. Garantir que o ambiente de validação tem `uv sync --extra kaggle` (ou marcar skip explícito vs. erro mudo).
-  - [ ] verificar: `pytest tests/test_official_spec.py -q` coleta sem ImportError no ambiente de validação
+- [x] (Infra) Tornar a paridade não-silenciosa: sem o extra `kaggle`, os testes de paridade davam ImportError de COLETA e abortavam a suíte inteira. Adicionado `tests/conftest.py` que ignora os módulos dependentes do Kaggle (`test_official_spec`, `test_official_snapshots`, `test_parity_tolerances`, `test_training_generator_distribution`, `test_submission_pipeline`) com um `warnings.warn` explícito quando o extra falta — skip barulhento, não erro mudo. No-op quando o extra está presente (CI/validação roda tudo). `test_parity_actions` já se auto-protege com `importorskip`.
+  - [x] verificar: `pytest --collect-only tests/test_official_spec.py` coleta sem erro com o extra; sem o extra, conftest emite warning e ignora os módulos em vez de abortar a suíte.
 
 ---
 
@@ -100,6 +134,11 @@ memória no Producer (`movement`/`last_sparse_action_row` não eram limpos em `s
 mesmo processo/worker). Baselines anteriores contra o Producer stateful ficam suspeitos; com a
 régua corrigida, o OEP default 16 seeds/jobs=4 está em margin=-0.18750, timeout_rate=0.003676.
 Antes de otimizar custo, é preciso recuperar margem contra o Producer corrigido.
+⚠️ REVISTO 2026-06-05: esse −0.18750 ainda era no combate BUGGADO (só o vazamento de memória
+do Producer estava corrigido). No simulador com paridade de COMBATE (parity_probe_actions),
+OEP vs Producer 16 seeds = **margin=+0.31250 / win=0.656 / timeout=0**. A ETAPA 0 ("recuperar
+margem") está provavelmente RESOLVIDA — o OEP já vence o Producer. Reavaliar se o "nó real"
+(custo/timeout) ainda bloqueia algo, agora que a margem não é mais negativa.
 - [ ] 0.1 `[Thread 2b]` Baratear o 2º Producer (oponente do lookahead) sem cegar o 1-ply.
   - [ ] verificar: profile 2a antes/depois mostra queda material de mean_ms E margin vs Producer
         16 seeds NÃO regride (todas as tentativas até hoje regrediram — ver histórico 2b;
@@ -212,10 +251,10 @@ Sempre consertar de BAIXO para CIMA, nunca o contrário.
   - [x] 1a-iv. Consumir o incumbente: no início de `tensor_action`, reprojetar as lanes de
         `mem.last_lanes` sobre o estado atual (origens/alvos podem ter mudado de dono → filtrar
         lanes inválidas) e injetar como candidato/semente na chamada de `plan_oep_waves` (L666).
-  - [x] verificar: com seeding ligado e o MESMO orçamento por step que hoje dá win=0.375,
+  - [ ] verificar (⚠️ RE-VALIDAR — régua infiel, ver topo): com seeding ligado e o MESMO orçamento por step que hoje dá win=0.375,
         rodar vs Producer 16+ seeds → margin média ≥ 0.0 e timeout_rate = 0.0
         RESULTADO: 16 seeds/32 jogos vs Producer, margin=0.00000, timeout_rate=0.0.
-  - [x] verificar: sem regressão de legalidade — crash=0, invalid_action_rate=0 (lanes
+  - [ ] verificar (⚠️ RE-VALIDAR — régua infiel, ver topo): sem regressão de legalidade — crash=0, invalid_action_rate=0 (lanes
         inválidas filtradas corretamente após mudança de dono de planeta)
         RESULTADO: 16 seeds/32 jogos vs Producer, crash=0.0, invalid_action_rate=0.0.
       OBS 2026-06-05: o incumbente como terceiro candidato foi removido da seleção corrente
@@ -229,7 +268,7 @@ Sempre consertar de BAIXO para CIMA, nunca o contrário.
       e não deve usar `OEP_TIME_BUDGET_MS`.
   - [x] 1b-i. Remover o deadline/fallback temporal do runtime OEP.
         RESULTADO: `OEP_TIME_BUDGET_MS`, `_deadline*` e `should_stop` removidos em 2026-06-05.
-  - [x] 1b-ii. Tornar a seleção um torneio único de plano inteiro:
+  - [ ] 1b-ii. ⚠️ código FEITO; a margem (margin=0.00000) foi medida em régua infiel — RE-VALIDAR (ver topo). Tornar a seleção um torneio único de plano inteiro:
         `chosen = oep_entries if fit(oep) > fit(producer)+min_advantage else producer_entries`.
         RESULTADO: 16 seeds/32 jogos vs Producer, win=0.50000, margin=0.00000,
         mean_ms=287.48, crash=0.0, timeout=0.0, invalid=0.0.
@@ -426,7 +465,7 @@ fase perf = MEDIR antes de consertar. Os candidatos abaixo são suspeitas a conf
       (L1070) sobre o horizonte. Confirmar se a projeção é reconstruída do zero a cada step ou
       se o cache incremental (`_roll_garrison_projection` L1150, `_mark_garrison_dirty` L1210)
       está sendo de fato aproveitado; vetorizar a recorrência se o profile apontar custo aqui.
-  - [x] verificar: custo da projeção cai (microbench) E gates L1–L5a verdes
+  - [ ] verificar (⚠️ L3/L5a agora xfail pelo débito orbit_lite — RE-VALIDAR, ver topo): custo da projeção cai (microbench) E gates L1–L5a verdes
         (tests/test_movement_fidelity.py sem regressão — fidelidade é inegociável)
         RESULTADO: `scripts/benchmark_garrison_cache.py` separa update/status e confirma que o
         cache incremental era invalidado desde o passo 1 pelo roll vazio de `fleet_buckets`.
@@ -442,7 +481,7 @@ fase perf = MEDIR antes de consertar. Os candidatos abaixo são suspeitas a conf
 
 ## Thread 3 — Régua de promoção honesta (parar de decidir por greedy/rush)
 
-- [x] 3a. Formalizar o gate de promoção do OEP: margin ≥ 0 vs Producer em ≥96 seeds,
+- [ ] 3a. ⚠️ infra do gate FEITA; o resultado do candidato (margin=-0.099316, "não promove") foi em régua infiel — RE-VALIDAR (ver topo). Formalizar o gate de promoção do OEP: margin ≥ 0 vs Producer em ≥96 seeds,
       timeout/crash/invalid = 0, via scripts.compare_benchmark_significance.
       PROGRESSO 2026-06-05: `scripts/oep_promotion_gate.py` formaliza a regra sobre
       relatórios JSON de `benchmark_submission`: default exige `192` jogos (`96` seeds × 2
@@ -455,7 +494,7 @@ fase perf = MEDIR antes de consertar. Os candidatos abaixo são suspeitas a conf
       `artifacts/gates/oep/promotion_gate.json` e FALHOU como esperado para este candidato:
       `mean_score_margin=-0.099316`, `timeout_rate=0.000383`, `win_rate=0.447917`,
       crash/invalid/fallback=0. O gate está formalizado e executado; OEP atual não promove.
-  - [x] verificar: gate documentado (EXPERIMENTS.md/DECISIONS.md) e 1 run de promoção produz
+  - [ ] verificar (⚠️ RE-VALIDAR — régua infiel, ver topo): gate documentado (EXPERIMENTS.md/DECISIONS.md) e 1 run de promoção produz
         veredito paired ≥ baseline G2
         SMOKE 2026-06-05: usando o relatório OEP 16 seeds já existente e `--min-games 32`,
         o gate passou: `mean_score_margin=0.0`, crash/timeout/invalid=0.0,
@@ -574,6 +613,10 @@ fase perf = MEDIR antes de consertar. Os candidatos abaixo são suspeitas a conf
       mostra fase inicial; fase orbital pública é `max(step-1, 0)`) e à expiração oficial
       dos cometas (removidos antes de avançar para fora do último ponto válido). O
       `PlanetMovement` usa a mesma fase orbital.
+      ⚠️ REVISTO 2026-06-05: este alinhamento cobria só a dinâmica PASSIVA (ações vazias do
+      `parity_probe`). Com ações reais (`parity_probe_actions`), 3 bugs de combate/colisão
+      swept/expiração-no-lançamento ainda divergiam e foram corrigidos depois. Ver a seção
+      ⚠️ REAVALIAÇÃO no topo. Não confiar em "Rust = oficial" só por este item.
   - [x] verificar: parity probe passa em janela sem spawn futuro e com cometas ativos.
         RESULTADO: `rtk .venv/bin/python -m scripts.parity_probe --episodes 2 --steps 49`
         passa (`checked_steps=98`), cobrindo a janela inicial antes do spawn oculto do
