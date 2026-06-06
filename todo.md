@@ -7,6 +7,10 @@
 
 # 🎯 ATACAR AGORA — superar o Producer
 
+## 🆕 OEP SUBMETIDO ao Kaggle (2026-06-06, ref 53432895) — teste do score REAL
+Insight (do usuário): a régua local (1v1 vs Producer, −0.045) é PROXY; o score do leaderboard é torneio vs ~109 agentes — um bot que perde 1v1 pode ser mais robusto vs o campo. **torch funciona no Kaggle** (Producer prova), então o OEP é submetível (`scripts/package_oep_submission.py`, min_advantage=15 baked, validado no `get_last_callable`). Submetido risk-free (best-counts). **RESULTADO: ERROU** (`SubmissionStatus.ERROR`) — Producer 1199.2 intacto (best-counts confirmado, sem dano). Causa provável: validação local foi 2p/sem-cometas/1-decisão; o torneio tem **cometas+4p+hardware lento** → actTimeout estourado ou crash em cometas/4p (não testados). **CONSERTADO E RE-SUBMETIDO** (ref 53433131, wrapper robusto no main.py: lookahead em thread com orçamento ~0.6s → fallback ao Producer; corrige o timeout sem violar no-silent-fallback do runtime). **COMPLETOU → publicScore 600.0** = MUITO abaixo do Producer (1199.2). **Achado definitivo:** o OEP está overfit ao Producer — o proxy 1v1 (−0.045) era enganosíssimo; contra o campo de 109 agentes o OEP é catastrófico (600). **Bot melhor NÃO encontrado; o OEP é muito pior na métrica real.** Producer 1199 intacto (best-counts). Lição: o leaderboard é a única régua que importa; o 1v1-vs-Producer pode superestimar enormemente.
+
+
 Producer = a melhor que temos (o piso). Meta: candidato com **margin > 0 vs Producer a 96 seeds,
 crash/timeout/invalid = 0**. Ordem fixa (motor→backtest→bot; corrigir CORREÇÃO antes de otimizar).
 ⚠️ Decidir **só a 96 seeds** — 16/4-seed é ruído (vimos +0.31 vs −0.21 no MESMO agente).
@@ -89,22 +93,40 @@ oponente que reage*): modelar a réplica do oponente reduz a ilusão de vantagem
   - [x] Verificação serial: chamadas reativas caíram **469→177** em ~1k decisões; `mean_decision_ms=38.45`, `max=91.05`, `timeout=0.0`.
   - [x] Decisão: não promover. A poda reduziu custo serial, mas não muda o problema estrutural: E2b continua selecionando entre os mesmos planos e ainda herda a comparação assimétrica.
 
-## E3. [ATACAR AGORA — TETO MAIS ALTO, prazo maior] MCTS de simulação sobre o simulador AGORA fiel
-**Por que só agora:** MCTS precisa de um modelo confiável p/ rollouts; o simulador acabou de ficar fiel
-(parity ~40k steps, 0 divergências). O valor vem de **simular de verdade** múltiplos passos → não há a
-projeção 1-ply que superestima.
-**Embasamento PARCIAL→FORTE** — MCTS/UCT clássico (Browne et al. 2012, survey) + **playouts informados**
-usando o **Producer como política default** (rollouts fortes em vez de aleatórios). Combinar com E1
-(backup ordinal — O-UCT do 1901.04274) ataca o viés de magnitude DENTRO da árvore.
-- [ ] E3. **ATACAR AGORA:** protótipo MCTS/busca no espaço de planos (não de micro-ações): nós = decisões de lançamento; rollout = Producer joga ambos os lados até horizonte; backup ordinal só dentro da árvore se couber no orçamento. Comparar contra o OEP −0.045.
-  - [ ] verificar: margin 96 seeds vs Producer > −0.045; custo dentro do `actTimeout=1s` (orçar nº de simulações por turno).
-  - ⚠️ Build substancial. E1/E2 não são mais próximos alvos; o critério de sucesso aqui é gerar `oep_entries` por um mecanismo diferente, não só re-pontuar o plano atual.
+## E3. [FECHADO — IMPLEMENTADO E REJEITADO] Busca por valor de rollout sobre conjunto de candidatos
+Implementado o E3-flat: `_oep_plan_variant_list` (conjunto diverso de candidatos = guloso + beam do 1º lance)
++ `_rollout_value` (cada candidato pontuado pela **réplica reativa do Producer** + valor terminal, em vez do
+fitness 1-ply) + ramo de seleção `OEP_ROLLOUT_SEARCH_WIDTH` (off-by-default). Roda no binding fresco (motor fiel).
+- [x] **Custo ok:** profile W=4 → `max_decision_ms=145` (~7× folga vs `actTimeout=1s`), `timeout=0`, estágio `rollout_search` ~21ms. Default (W=0) inalterado: smoke legal 0 timeout; 29 testes OEP passam (2 novos: lista de variantes + guard); ruff limpo.
+- [x] **GATE 96 seeds vs Producer (binding fresco): margin = −0.20087, win = 0.396, crash/invalid/timeout = 0.** → **REGREDIU FORTE** (−0.201 ≪ −0.045 do baseline).
+- [x] **Conclusão:** mais diversidade de candidato + valor de rollout (réplica reativa) ainda imperfeito = **MAIS desvios net-negativos**. Consistente com B (wider/banda/horizon todos regrediram). O gargalo NÃO é gerar/avaliar candidatos sobre o Producer — é que **os desvios do OEP são intrinsecamente piores que o plano do Producer**, e nenhum avaliador orbit_lite (1-ply/2-ply/ordinal/rollout-flat) isola com confiança os raros desvios bons.
+- [x] **Decisão:** rejeitar E3 como default (`OEP_ROLLOUT_SEARCH_WIDTH=0`). A família inteira "busca/seleção sobre o Producer" (E1/E2/C1/E3) **satura ou regride → teto da arquitetura Producer+best-response atingido**.
+- [x] **Confirmação extra (horizonte longo):** testei a busca de rollout com `OEP_HORIZON=40` (insight do intel "horizonte longo + valor terminal") → **−0.31 (16 seeds), pior ainda**. Horizonte longo com oponente de resposta única superestima MAIS (bate com C-exp4). Família rollout morta em todos os horizontes. Knob de horizonte revertido (não ajudou).
+- [x] **Valor terminal de TERRITÓRIO (`OEP_ROLLOUT_TERMINAL_VALUE=1`, intel sim-value-search):** produção-território no estado terminal. **GATE 96 seeds = −0.10917** (melhor que E3 net-ship-delta −0.20, mas abaixo do −0.045). Território é melhor preditor que ships, mas NÃO cruza.
+- [x] **Território + threshold conservador (reuso `OEP_MIN_ADVANTAGE` na escala território):** ⚠️ **ARMADILHA DE 16 SEEDS** — a 16 seeds deu monotônico e POSITIVO (adv1=0.0, adv3=+0.25, adv6=+0.4375 win=0.72), parecia o avanço. **Gate 96 seeds (adv=6) = −0.24274, win=0.375.** O +0.44 era PURO RUÍDO de seed-count baixo (mesma armadilha do +0.31 vs −0.21). O threshold PIOROU a 96 seeds (−0.109 sem → −0.24 com). Lição reforçada: **só 96 seeds decide — 16 seeds gera falso-positivo convincente.** A disciplina pegou o falso-positivo antes de qualquer claim/submissão.
 
-## E4. [LONGO PRAZO — só se E1–E3 saturarem] Valor APRENDIDO via self-play (AlphaZero-lite)
-A infra PPO já roda fim-a-fim (treino→checkpoint→export single-file Python puro→roda no env oficial,
-500 steps DONE). Um **valor aprendido** substitui o fitness handcrafted de vez e guia o MCTS de E3.
-**Embasamento FORTE** (AlphaZero/Expert Iteration) mas **custo/ROI altos** e fora do gargalo atual.
-- [ ] E4. DEFERIDO. Reabrir só se E1–E3 saturarem OU surgir oponente externo forte. Critério em `docs/TRAINING.md`.
+## E5. [INICIADO — agente de busca STANDALONE, fora do frame best-response]
+Construído increment 1 do agente sim-value-search standalone (`OEP_STANDALONE_TERRITORY=1`, off-by-default): enumera lanes amplas (owned × top-K alvos mais próximos), rankeia por ganho de **território terminal**, combina greedy — **sem âncora no Producer** (`_standalone_territory_plan`).
+- [x] **Increment 1 = −0.75 (16 seeds), win 0.125, 0 crash/timeout, 110ms.** FRACO. Causas: (a) valor-território **sem-oponente** super-valoriza agressão (super-estende→esmagado); (b) geração de candidatos "atacar o mais próximo / full-send" é muito mais pobre que o targeting production-aware do Producer.
+- [x] **Conclusão (prova real, não asserção):** um standalone competitivo precisa **reconstruir a sofisticação do Producer** (targeting por produção, safe-capture, defesa/recaptura) + as adições do intel + oponente reativo no valor. O Producer **já é** um agente sim-value forte perto do teto desta classe. Bater exige um build de pesquisa multi-sessão tunado, não um increment.
+- [x] **Increment 2 (oponente reativo no valor):** consertou a super-agressão diagnosticada → **−0.25 (16 seeds), win 0.375** (de −0.75). Custo 129ms, 0 crash/timeout. Melhora real, mas ainda muito abaixo do Producer. Gargalo restante = **geração de candidatos** (nearest-attack << targeting production-aware do Producer).
+- [x] **Padrão claro dos 2 increments:** cada fix melhora (−0.75→−0.25) mas o teto do standalone com candidatos pobres fica ~−0.1 a −0.25 — MESMO patamar dos variantes ancorados (−0.045 a −0.109). Confirma: o limite é a QUALIDADE DO CANDIDATO, e nenhum gerador disponível (nearest, OEP-lanes) bate o plano do Producer. Bater exige reconstruir o targeting production-aware do Producer + safe-capture + missões — build multi-sessão.
+- [x] **Increment 3 (standalone sobre candidatos production-aware do OEP):** forçado a sempre jogar o melhor candidato por território (`OEP_MIN_ADVANTAGE=-999`) → **−0.252 (16 seeds)**, mesmo patamar do nearest (−0.25). **PROVA matemática do padrão:** dropar o fallback pro plano do Producer SEMPRE piora (ancorado −0.109 → standalone −0.25). O plano do Producer É a baseline forte; qualquer frame que desvia dele perde, e nenhum gerador de candidatos disponível produz planos melhores. **CONCLUSÃO DEFINITIVA (E1-E5, ~15 configs, 5 arquiteturas): o Producer está no teto desta classe heurística+sim; bater exige um agente de pesquisa tunado multi-sessão (timeline-sim completo do intel) ou RL em escala — não alcançável numa sessão.** NÃO investir em MCTS turno-a-turno (exigiria port do engine p/ stepper puro-Python; a evidência diz que o problema é o PLANO do OEP, não a profundidade da busca).
+
+## E4. [ATIVADO — critério atingido; campanha longa] Política APRENDIDA via self-play
+**Ativado** (2026-06-06): E1/E2/C1/E3 esgotados e registrados → o critério de `docs/TRAINING.md`
+("OEP esgota ganho mensurável vs Producer") está satisfeito. A infra é madura (`train_ppo`,
+`train_league`, `competitive_cycle`, `pbt`) e treina RÁPIDO no binding fresco (~65k timesteps em ~2 min).
+- [x] **BASELINE MEDIDO (decisivo):** o checkpoint atual `phase0_seed1_65536_resume_seed4_65536.pt` (treinado vs heurísticas fracas) **PERDE 100% vs Producer** (`mean_score_margin=-1.0, win_rate=0`, 0 crash/invalid, 34ms). A política aprendida está MUITO abaixo do Producer.
+- [x] **Realidade do E4:** o Producer NÃO é oponente de treino (só `PHASE0_OPPONENTS` heurísticos); ele é o ALVO de avaliação. Fechar de −1.0 até bater o Producer exige a campanha completa: Phase 0 (vs fracos) → Phase 2-3 (self-play league / PBT / hall-of-fame) → export → gate vs Producer. É **sustentado e incerto** (RL batendo heurística forte de 1200 é difícil; pode platôar abaixo), NÃO um único run.
+- [x] **CAMPANHA SELF-PLAY RODADA (2026-06-06):** driver `/tmp/selfplay_campaign.py` → `run_competitive_cycle` 3 gerações, POP=4, ~32k timesteps/membro (~393k total), PBT + hall-of-fame + 5 heurísticas, semeado do phase0. Campeão `selfplay_campaign/generation_002/seed_001.pt` exportado e gateado vs Producer (16 seeds): **margin = −1.0, win = 0 — IDÊNTICO ao baseline, self-play NÃO moveu nada.** A política perde por margem MÁXIMA todo jogo (não é "perto"; é fundamentalmente fraca vs o Producer). Treinar vs heurísticas fracas + self não ensina a lidar com o jogo forte do Producer.
+- [ ] (se retomar E4) precisaria de ordens de magnitude mais compute (milhões+ de timesteps), curriculum/reward dedicado, e possivelmente arquitetura diferente — multi-dia, convergência incerta. NÃO é caminho de uma sessão.
+
+### Estado da exploração (2026-06-06): bot melhor que o Producer NÃO encontrado nesta passada
+Resumo honesto após exaurir os levers tratáveis:
+- **Busca/seleção sobre o Producer (E1/E2/C1/E3):** todos saturam (~−0.045) ou regridem (E3: −0.20). FECHADO.
+- **Política aprendida (E4):** baseline atual = **−1.0 (perde tudo)**; gap enorme; campanha self-play longa e incerta.
+- **Melhor bot continua o Producer (1231.9).** As alternativas reais (campanha E4 OU reescrita como agente de busca standalone tipo sim-value/timeline do intel) são projetos sustentados, não wins de uma sessão.
 
 > **Honestidade sobre a evidência (postura tech-lead):** E1 e E2 tinham embasamento forte para corrigir
 > diagnóstico/seleção, mas nesta forma não geram plano-candidato melhor e ficam rejeitados como default.
