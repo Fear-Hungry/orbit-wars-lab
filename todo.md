@@ -16,11 +16,10 @@ Regra do próprio repo: *"orbit_lite vermelho invalida tudo acima"* — L3/L5a e
 um fitness calculado por esse world-model; com colisão-fantasma (planeta rotacionando) e timing de
 cometa errados, a busca persegue alvo torto. Embasamento **forte** (correção vs spec oficial; o fix
 análogo já existe no Rust: `geometry::swept_pair_hit`).
-- [ ] A1. Usar swept-pair na projeção de colisão/chegada do `PlanetMovement` (o `orbit_lite/movement_aiming.py::_swept_pair_hit_mask` já existe e está certo — falta aplicá-lo no lugar certo da projeção de garrison/arrivals).
-  - [ ] verificar: remover `xfail` de `test_movement_l3_*` → passa.
-- [ ] A2. Alinhar a expiração de cometa do `orbit_lite` (remover após movimento, antes do combate; `path_index >= len`).
-  - [ ] verificar: remover `xfail` de `test_movement_l5a_*` → passa.
-- [ ] A3. Re-medir OEP vs Producer **96 seeds** com o world-model corrigido; registrar em `EXPERIMENTS.md` vs o −0.21137 atual.
+- [x] A1. FEITO: trocada a colisão de 2 passadas (`direct`+`sweep`, posição velha → colisão-fantasma) por `_swept_pair_hit_mask` único em `_estimate_new_fleet_arrivals` (`movement.py`), planeta antes de bounds/sol. Corrigiu L3 E L5a (a captura de cometa do L5a era colisão frota×cometa).
+  - [x] verificar: `xfail` de `test_movement_l3_*` e `test_movement_l5a_*` removidos → `test_movement_fidelity.py` 9 passed.
+- [x] A2. NÃO era bug: o orbit_lite já usa a condição oficial de expiração de cometa (`future_idx < path_len` em `_apply_comet_paths`), não o off-by-one do Rust. (Minha suposição inicial estava errada.)
+- [ ] A3. Re-medir OEP vs Producer **96 seeds** com o world-model corrigido; registrar em `EXPERIMENTS.md` vs o −0.21137 atual. (EM ANDAMENTO.)
 
 ## B. [#2] Diagnosticar POR QUE o OEP perde (−0.21) no stack corrigido
 Histórico 2b já achou que *"não é só o OEP nunca ser escolhido"* — atacar **calibração do fitness** ou

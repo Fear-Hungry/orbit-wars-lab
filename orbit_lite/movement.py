@@ -15,6 +15,7 @@ from torch import Tensor
 from .aiming import orbit_phase_index_from_obs_step
 from .constants import BOARD_SIZE, CENTER, SUN_RADIUS
 from .geometry import fleet_speed
+from .movement_aiming import _swept_pair_hit_mask
 from .obs import parse_obs
 
 DEFAULT_MOVEMENT_HORIZON = 20
@@ -1687,36 +1688,27 @@ def _estimate_new_fleet_arrivals(
     new_py = planet_y[:, 1:, :]
     alive_old = planet_alive[:, :-1, :]
     check_collision = alive_old & (old_px >= 0.0) & (old_py >= 0.0)
-    # Engine ordering is discrete, not fully continuous relative motion:
-    # 1. fleets move and collide against pre-rotation planet positions;
-    # 2. out-of-bounds / sun kills remove non-colliding fleets;
-    # 3. rotated planets sweep over the surviving fleet endpoint.
-    direct_collides = (
-        _point_to_segment_distance_sq(
-            old_px,
-            old_py,
+    # Continuous swept-pair collision, matching the official interpreter and the
+    # Rust core (geometry::swept_pair_hit): a fleet hits a planet iff the fleet
+    # segment (old -> new) and the planet segment (old -> new) come within the
+    # planet radius for some t in [0, 1]. Accounting for the planet's own motion
+    # is what keeps a rotating planet from registering a phantom hit at the
+    # position it has already left. Planets are tested before bounds/sun, so a
+    # planet hit is NOT gated by env_kill.
+    swept_collides = (
+        _swept_pair_hit_mask(
             old_x.unsqueeze(2),
             old_y.unsqueeze(2),
-            new_x.unsqueeze(2),
-            new_y.unsqueeze(2),
-        )
-        < radii.view(N, 1, P).pow(2)
-    ) & check_collision
-    direct_step_has_hit = direct_collides.any(dim=2)
-
-    sweep_collides = (
-        _point_to_segment_distance_sq(
             new_x.unsqueeze(2),
             new_y.unsqueeze(2),
             old_px,
             old_py,
             new_px,
             new_py,
+            radii.view(N, 1, P),
         )
-        < radii.view(N, 1, P).pow(2)
-    ) & check_collision & ~direct_step_has_hit.unsqueeze(2) & ~env_kill.unsqueeze(2)
-
-    swept_collides = direct_collides | sweep_collides
+        & check_collision
+    )
     step_raw_has_hit = swept_collides.any(dim=2)
     hit_rank = swept_collides.to(torch.int32).cumsum(dim=2)
     first_hit = swept_collides & (hit_rank == 1)
