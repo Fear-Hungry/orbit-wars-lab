@@ -91,10 +91,42 @@ def test_safe_submission_agent_accepts_dict_entities():
         "player": 0,
         "angular_velocity": 0.03,
         "planets": [
-            {"id": 0, "owner": 0, "x": 20.0, "y": 20.0, "radius": 2.0, "ships": 24, "production": 3},
-            {"id": 1, "owner": 0, "x": 26.0, "y": 24.0, "radius": 2.0, "ships": 12, "production": 2},
-            {"id": 2, "owner": -1, "x": 40.0, "y": 35.0, "radius": 2.0, "ships": 8, "production": 3},
-            {"id": 3, "owner": 1, "x": 76.0, "y": 72.0, "radius": 2.0, "ships": 20, "production": 4},
+            {
+                "id": 0,
+                "owner": 0,
+                "x": 20.0,
+                "y": 20.0,
+                "radius": 2.0,
+                "ships": 24,
+                "production": 3,
+            },
+            {
+                "id": 1,
+                "owner": 0,
+                "x": 26.0,
+                "y": 24.0,
+                "radius": 2.0,
+                "ships": 12,
+                "production": 2,
+            },
+            {
+                "id": 2,
+                "owner": -1,
+                "x": 40.0,
+                "y": 35.0,
+                "radius": 2.0,
+                "ships": 8,
+                "production": 3,
+            },
+            {
+                "id": 3,
+                "owner": 1,
+                "x": 76.0,
+                "y": 72.0,
+                "radius": 2.0,
+                "ships": 20,
+                "production": 4,
+            },
         ],
         "fleets": [],
     }
@@ -176,10 +208,42 @@ def test_submission_template_accepts_dict_entities(tmp_path: Path):
         "player": 0,
         "angular_velocity": 0.03,
         "planets": [
-            {"id": 0, "owner": 0, "x": 20.0, "y": 20.0, "radius": 2.0, "ships": 24, "production": 3},
-            {"id": 1, "owner": 0, "x": 26.0, "y": 24.0, "radius": 2.0, "ships": 12, "production": 2},
-            {"id": 2, "owner": -1, "x": 40.0, "y": 35.0, "radius": 2.0, "ships": 8, "production": 3},
-            {"id": 3, "owner": 1, "x": 76.0, "y": 72.0, "radius": 2.0, "ships": 20, "production": 4},
+            {
+                "id": 0,
+                "owner": 0,
+                "x": 20.0,
+                "y": 20.0,
+                "radius": 2.0,
+                "ships": 24,
+                "production": 3,
+            },
+            {
+                "id": 1,
+                "owner": 0,
+                "x": 26.0,
+                "y": 24.0,
+                "radius": 2.0,
+                "ships": 12,
+                "production": 2,
+            },
+            {
+                "id": 2,
+                "owner": -1,
+                "x": 40.0,
+                "y": 35.0,
+                "radius": 2.0,
+                "ships": 8,
+                "production": 3,
+            },
+            {
+                "id": 3,
+                "owner": 1,
+                "x": 76.0,
+                "y": 72.0,
+                "radius": 2.0,
+                "ships": 20,
+                "production": 4,
+            },
         ],
         "fleets": [],
     }
@@ -543,7 +607,9 @@ def test_exported_submission_prefers_nearby_neutral_in_opening(tmp_path: Path):
     source_xy = (80.0, 50.0)
     near_angle = module._angle(source_xy, (70.0, 50.0))
     far_angle = module._angle(source_xy, (20.0, 80.0))
-    assert module._angle_delta(moves[0][1], near_angle) < module._angle_delta(moves[0][1], far_angle)
+    assert module._angle_delta(moves[0][1], near_angle) < module._angle_delta(
+        moves[0][1], far_angle
+    )
 
 
 def test_exported_submission_prioritizes_safe_high_production_opening_neutral(tmp_path: Path):
@@ -571,7 +637,9 @@ def test_exported_submission_prioritizes_safe_high_production_opening_neutral(tm
     source_xy = (20.0, 20.0)
     weak_angle = module._angle(source_xy, (28.0, 28.0))
     strong_angle = module._angle(source_xy, (45.0, 20.0))
-    assert module._angle_delta(moves[0][1], strong_angle) < module._angle_delta(moves[0][1], weak_angle)
+    assert module._angle_delta(moves[0][1], strong_angle) < module._angle_delta(
+        moves[0][1], weak_angle
+    )
 
 
 def test_exported_submission_rejects_opening_neutral_with_enemy_snipe_eta(tmp_path: Path):
@@ -608,7 +676,9 @@ def test_exported_submission_skips_snipable_opening_neutral_when_no_safe_neutral
     source_xy = (20.0, 20.0)
     snipable_angle = module._angle(source_xy, (42.0, 20.0))
     fallback_angle = module._angle(source_xy, (20.0, 34.0))
-    assert module._angle_delta(moves[0][1], fallback_angle) < module._angle_delta(moves[0][1], snipable_angle)
+    assert module._angle_delta(moves[0][1], fallback_angle) < module._angle_delta(
+        moves[0][1], snipable_angle
+    )
 
 
 def test_exported_submission_scores_opening_safety_with_snipe_eta(tmp_path: Path):
@@ -708,9 +778,9 @@ def test_exported_submission_explores_safe_orbital_neutral_during_opening_window
     source_xy = (20.0, 20.0)
     orbital_xy = module._predict_target_xy(obs, source_xy, obs["planets"][1], moves[0][2])
     weak_xy = module._predict_target_xy(obs, source_xy, obs["planets"][2], moves[0][2])
-    assert module._angle_delta(moves[0][1], module._angle(source_xy, orbital_xy)) < module._angle_delta(
-        moves[0][1], module._angle(source_xy, weak_xy)
-    )
+    assert module._angle_delta(
+        moves[0][1], module._angle(source_xy, orbital_xy)
+    ) < module._angle_delta(moves[0][1], module._angle(source_xy, weak_xy))
     assert 19 <= moves[0][2] <= 22
 
 
@@ -732,8 +802,12 @@ def test_exported_submission_penalizes_exposed_depth_two_response(tmp_path: Path
     source, target, enemy = obs["planets"]
     target_xy = module._predict_target_xy(obs, (20.0, 20.0), target, 24)
 
-    exposed_penalty = module._opponent_response_penalty(obs, source, target, 24, target_xy, action, [enemy], 10)
-    safe_penalty = module._opponent_response_penalty(obs, source, target, 12, target_xy, action, [enemy], 22)
+    exposed_penalty = module._opponent_response_penalty(
+        obs, source, target, 24, target_xy, action, [enemy], 10
+    )
+    safe_penalty = module._opponent_response_penalty(
+        obs, source, target, 12, target_xy, action, [enemy], 22
+    )
 
     assert exposed_penalty > 0.0
     assert safe_penalty == 0.0
@@ -834,17 +908,35 @@ def test_exported_submission_classifies_adaptive_reserve_phases(tmp_path: Path):
     enemies = [[1, 1, 82.0, 82.0, 2.0, 60, 5]]
 
     mid_obs = {"player": 0, "step": 160, "planets": [source, *enemies], "fleets": []}
-    mid_action = {"ffa": False, "expand": False, "pressure": False, "total_war": False, "fsm_state": "BASELINE"}
+    mid_action = {
+        "ffa": False,
+        "expand": False,
+        "pressure": False,
+        "total_war": False,
+        "fsm_state": "BASELINE",
+    }
     assert module._reserve_phase_for_source(source, 5, mid_action, mid_obs, 0) == "MID"
     assert module._reserve_for_source(source, 5, enemies, mid_action, mid_obs, 0) >= 15
 
     late_obs = {"player": 0, "step": 370, "planets": [source, *enemies], "fleets": []}
-    late_action = {"ffa": False, "expand": False, "pressure": False, "total_war": False, "fsm_state": "BASELINE"}
+    late_action = {
+        "ffa": False,
+        "expand": False,
+        "pressure": False,
+        "total_war": False,
+        "fsm_state": "BASELINE",
+    }
     assert module._reserve_phase_for_source(source, 5, late_action, late_obs, 0) == "LATE"
     assert module._reserve_for_source(source, 5, enemies, late_action, late_obs, 0) >= 30
 
     war_obs = {"player": 0, "step": 260, "planets": [source, *enemies], "fleets": []}
-    war_action = {"ffa": False, "expand": False, "pressure": False, "total_war": True, "fsm_state": "BASELINE"}
+    war_action = {
+        "ffa": False,
+        "expand": False,
+        "pressure": False,
+        "total_war": True,
+        "fsm_state": "BASELINE",
+    }
     assert module._reserve_phase_for_source(source, 5, war_action, war_obs, 0) == "TOTAL_WAR"
     assert module._reserve_for_source(source, 5, enemies, war_action, war_obs, 0) == 0
 
@@ -1024,10 +1116,14 @@ def test_no_native_imports_in_submission_artifacts_and_producer_tarball(tmp_path
         capture_output=True,
     )
     with tarfile.open(tarball, "r:gz") as tar:
+        names = {member.name for member in tar.getmembers()}
+        assert "_upstream.py" in names
+        upstream = tar.extractfile("_upstream.py")
+        assert upstream is not None
+        upstream_source = upstream.read().decode("utf-8")
+        assert "mem.reset()" in upstream_source
         python_members = [
-            member
-            for member in tar.getmembers()
-            if member.isfile() and member.name.endswith(".py")
+            member for member in tar.getmembers() if member.isfile() and member.name.endswith(".py")
         ]
         assert python_members
         for member in python_members:
@@ -1051,7 +1147,9 @@ def test_submission_agent_falls_back_on_illegal_output(monkeypatch: pytest.Monke
     def _illegal_decode(*_args, **_kwargs):
         return [[999, float("nan"), -5]]
 
-    monkeypatch.setattr("python.agents.submission_adapter.decode_submission_action", _illegal_decode)
+    monkeypatch.setattr(
+        "python.agents.submission_adapter.decode_submission_action", _illegal_decode
+    )
     moves = safe_submission_agent(SAMPLE_OBS)
     assert isinstance(moves, list)
     _assert_moves_are_legal(SAMPLE_OBS, moves)
