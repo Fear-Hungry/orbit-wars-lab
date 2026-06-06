@@ -19,7 +19,7 @@ análogo já existe no Rust: `geometry::swept_pair_hit`).
 - [x] A1. FEITO: trocada a colisão de 2 passadas (`direct`+`sweep`, posição velha → colisão-fantasma) por `_swept_pair_hit_mask` único em `_estimate_new_fleet_arrivals` (`movement.py`), planeta antes de bounds/sol. Corrigiu L3 E L5a (a captura de cometa do L5a era colisão frota×cometa).
   - [x] verificar: `xfail` de `test_movement_l3_*` e `test_movement_l5a_*` removidos → `test_movement_fidelity.py` 9 passed.
 - [x] A2. NÃO era bug: o orbit_lite já usa a condição oficial de expiração de cometa (`future_idx < path_len` em `_apply_comet_paths`), não o off-by-one do Rust. (Minha suposição inicial estava errada.)
-- [ ] A3. Re-medir OEP vs Producer **96 seeds** com o world-model corrigido; registrar em `EXPERIMENTS.md` vs o −0.21137 atual. (EM ANDAMENTO.)
+- [x] A3. FEITO: OEP vs Producer **96 seeds** com world-model fiel = **margin=−0.12810, win=0.432** (timeout 0.001). Progressão real: −0.21137 → −0.12810 (+0.083). Mas ainda PERDE (< 0) — o fix ajudou, não bastou. O OEP escolhe o Producer ~82% e desvia ~18% net-negativo: a busca atual PREJUDICA. → item B.
 
 ## B. [#2] Diagnosticar POR QUE o OEP perde (−0.21) no stack corrigido
 Histórico 2b já achou que *"não é só o OEP nunca ser escolhido"* — atacar **calibração do fitness** ou
