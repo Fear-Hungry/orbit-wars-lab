@@ -7,6 +7,17 @@ from typing import Any
 
 
 def _load_upstream():
+    # Kaggle runs the agent via compile()+exec() with empty globals (so `__file__`
+    # is NOT defined) and appends the agent's directory to sys.path. A flat-tarball
+    # submission therefore resolves its sibling `_upstream.py` with a plain import.
+    # Prefer that path; fall back to the `__file__`-relative load used when this
+    # module runs inside the repo package (where a bare `import _upstream` fails).
+    try:
+        import _upstream  # type: ignore[import-not-found]
+
+        return _upstream
+    except ImportError:
+        pass
     module_path = Path(__file__).with_name("_upstream.py")
     spec = importlib.util.spec_from_file_location("_orbit_wars_producer_upstream", module_path)
     if spec is None or spec.loader is None:
