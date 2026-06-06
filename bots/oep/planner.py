@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import dataclasses
+import importlib.util
 import os
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from time import perf_counter
 from typing import Any
 
@@ -47,7 +50,6 @@ from bots.producer._upstream import (
 from bots.producer._upstream import (
     plan_lite_waves as _producer_plan_lite_waves,
 )
-from bots.producer.agent import agent as _producer_policy
 
 COMET_SPAWN_STEPS = (50, 150, 250, 350, 450)
 Policy = Callable[[dict[str, Any]], list[list[float]]]
@@ -130,10 +132,14 @@ class OEPLiteConfig:
     opponent_response_mode: str = "producer"
     producer_plan_mode: str = "policy"
     min_advantage: float = 0.0
+    max_advantage: float = float("inf")
     max_sources_per_lane: int = 6
     max_offensive_targets: int = 6
     max_defensive_targets: int = 2
     max_waves_per_turn: int = 4
+    enable_regroup: bool = True
+    late_config_step: int = -1
+    late_max_sources_per_lane: int = 0
     profile_stages: bool = False
 
 
@@ -341,6 +347,26 @@ def _launch_set_from_entries(
         eta=eta.view(1, -1).expand(candidates, -1),
         owner=owner.view(1, -1).expand(candidates, -1),
         valid=valid.view(1, -1).expand(candidates, -1),
+    )
+
+
+def _top_entries_by_ships(entries: LaunchEntries, *, max_entries: int) -> LaunchEntries:
+    valid = entries.valid & (entries.ships >= 1.0)
+    valid_slots = torch.where(valid)[0]
+    if int(max_entries) <= 0 or int(valid_slots.numel()) <= int(max_entries):
+        return entries
+    keep_valid_slots = valid_slots[
+        torch.argsort(entries.ships[valid_slots], descending=True)[: int(max_entries)]
+    ]
+    keep = torch.zeros_like(entries.valid)
+    keep[keep_valid_slots] = True
+    return LaunchEntries(
+        source_slots=entries.source_slots,
+        target_slots=entries.target_slots,
+        ships=torch.where(keep, entries.ships, torch.zeros_like(entries.ships)),
+        angle=entries.angle,
+        eta=entries.eta,
+        valid=entries.valid & keep,
     )
 
 
@@ -912,8 +938,15 @@ class OEPLiteMemory:
         self.last_sparse_action_row: dict | None = None
         self.last_lanes: tuple[LaneIntent, ...] = ()
         self.producer_runtimes: dict[int, _ProducerLiteRuntime] = {}
+        self.producer_shared_runtime = _ProducerLiteRuntime()
         self.profile_totals: dict[str, float] = {}
         self.profile_counts: dict[str, int] = {}
+        self.selection_counts: dict[str, int] = {}
+        self.selection_delta_sum = 0.0
+        self.selection_delta_min: float | None = None
+        self.selection_delta_max: float | None = None
+        self.selection_phase_counts: dict[str, int] = {}
+        self.selection_phase_delta_sum: dict[str, float] = {}
 
     def reset(self) -> None:
         self.movement = None
@@ -921,14 +954,57 @@ class OEPLiteMemory:
         self.last_sparse_action_row = None
         self.last_lanes = ()
         self.producer_runtimes = {}
+        self.producer_shared_runtime = _ProducerLiteRuntime()
 
     def reset_profile(self) -> None:
         self.profile_totals = {}
         self.profile_counts = {}
+        self.selection_counts = {}
+        self.selection_delta_sum = 0.0
+        self.selection_delta_min = None
+        self.selection_delta_max = None
+        self.selection_phase_counts = {}
+        self.selection_phase_delta_sum = {}
 
     def record_profile(self, name: str, elapsed: float) -> None:
         self.profile_totals[name] = self.profile_totals.get(name, 0.0) + float(elapsed)
         self.profile_counts[name] = self.profile_counts.get(name, 0) + 1
+
+    def record_selection(
+        self,
+        *,
+        step: int,
+        chose_oep: bool,
+        oep_fitness: float,
+        producer_fitness: float,
+        oep_entries: LaunchEntries,
+        producer_entries: LaunchEntries,
+    ) -> None:
+        choice = "oep" if bool(chose_oep) else "producer"
+        self.selection_counts[choice] = self.selection_counts.get(choice, 0) + 1
+        if bool(oep_entries.valid.any().item()):
+            self.selection_counts["oep_nonempty"] = self.selection_counts.get("oep_nonempty", 0) + 1
+        if bool(producer_entries.valid.any().item()):
+            self.selection_counts["producer_nonempty"] = self.selection_counts.get("producer_nonempty", 0) + 1
+        delta = float(oep_fitness) - float(producer_fitness)
+        self.selection_delta_sum += delta
+        self.selection_delta_min = delta if self.selection_delta_min is None else min(self.selection_delta_min, delta)
+        self.selection_delta_max = delta if self.selection_delta_max is None else max(self.selection_delta_max, delta)
+        phase = self._selection_phase(int(step))
+        phase_prefix = f"{phase}_{choice}"
+        self.selection_phase_counts[phase] = self.selection_phase_counts.get(phase, 0) + 1
+        self.selection_phase_counts[phase_prefix] = self.selection_phase_counts.get(phase_prefix, 0) + 1
+        self.selection_phase_delta_sum[phase] = self.selection_phase_delta_sum.get(phase, 0.0) + delta
+
+    @staticmethod
+    def _selection_phase(step: int) -> str:
+        if int(step) < 50:
+            return "early"
+        if int(step) < 150:
+            return "mid"
+        if int(step) < 350:
+            return "late"
+        return "endgame"
 
     def profile_summary(self) -> dict[str, dict[str, float]]:
         return {
@@ -939,6 +1015,38 @@ class OEPLiteMemory:
             }
             for name, total in sorted(self.profile_totals.items())
         }
+
+    def selection_summary(self) -> dict[str, float]:
+        oep = float(self.selection_counts.get("oep", 0))
+        producer = float(self.selection_counts.get("producer", 0))
+        total = oep + producer
+        summary = {
+            "decisions": total,
+            "oep_choices": oep,
+            "producer_choices": producer,
+            "oep_choice_rate": oep / max(1.0, total),
+            "producer_choice_rate": producer / max(1.0, total),
+            "oep_nonempty_rate": float(self.selection_counts.get("oep_nonempty", 0)) / max(1.0, total),
+            "producer_nonempty_rate": float(self.selection_counts.get("producer_nonempty", 0)) / max(1.0, total),
+            "mean_fitness_delta_oep_minus_producer": self.selection_delta_sum / max(1.0, total),
+            "min_fitness_delta_oep_minus_producer": (
+                0.0 if self.selection_delta_min is None else float(self.selection_delta_min)
+            ),
+            "max_fitness_delta_oep_minus_producer": (
+                0.0 if self.selection_delta_max is None else float(self.selection_delta_max)
+            ),
+        }
+        for phase in ("early", "mid", "late", "endgame"):
+            phase_decisions = float(self.selection_phase_counts.get(phase, 0))
+            phase_oep = float(self.selection_phase_counts.get(f"{phase}_oep", 0))
+            phase_producer = float(self.selection_phase_counts.get(f"{phase}_producer", 0))
+            summary[f"{phase}_decisions"] = phase_decisions
+            summary[f"{phase}_oep_choice_rate"] = phase_oep / max(1.0, phase_decisions)
+            summary[f"{phase}_producer_choice_rate"] = phase_producer / max(1.0, phase_decisions)
+            summary[f"{phase}_mean_fitness_delta_oep_minus_producer"] = (
+                float(self.selection_phase_delta_sum.get(phase, 0.0)) / max(1.0, phase_decisions)
+            )
+        return summary
 
 
 class OEPLiteRuntime:
@@ -969,12 +1077,25 @@ class OEPLiteRuntime:
     def profile_summary(self) -> dict[str, dict[str, float]]:
         return self.memory.profile_summary()
 
-    def _oep_config(self, base_config: OEPPlannerConfig) -> OEPPlannerConfig:
+    def selection_summary(self) -> dict[str, float]:
+        return self.memory.selection_summary()
+
+    def _oep_config(self, base_config: OEPPlannerConfig, *, step: int) -> OEPPlannerConfig:
+        max_sources_per_lane = int(self.config.max_sources_per_lane)
+        if (
+            int(self.config.late_config_step) >= 0
+            and int(step) >= int(self.config.late_config_step)
+            and int(self.config.late_max_sources_per_lane) > 0
+        ):
+            max_sources_per_lane = min(
+                max_sources_per_lane,
+                int(self.config.late_max_sources_per_lane),
+            )
         return dataclasses.replace(
             base_config,
             max_sources_per_lane=min(
                 int(base_config.max_sources_per_lane),
-                int(self.config.max_sources_per_lane),
+                max_sources_per_lane,
             ),
             max_offensive_targets=min(
                 int(base_config.max_offensive_targets),
@@ -988,6 +1109,7 @@ class OEPLiteRuntime:
                 int(base_config.max_waves_per_turn),
                 int(self.config.max_waves_per_turn),
             ),
+            enable_regroup=bool(base_config.enable_regroup) and bool(self.config.enable_regroup),
         )
 
     def _producer_entries_inline(
@@ -1002,11 +1124,12 @@ class OEPLiteRuntime:
         base_config: OEPPlannerConfig,
         player_count: int,
     ) -> LaunchEntries:
-        obs = parse_obs(obs_tensors, player_id=int(owner_id))
+        owner_tensors = _with_tensor_player(obs_tensors, int(owner_id))
+        obs = parse_obs(owner_tensors, player_id=int(owner_id))
         entries = _producer_plan_lite_waves(
             movement=movement,
             obs=obs,
-            obs_tensors=obs_tensors,
+            obs_tensors=owner_tensors,
             cache=cache,
             garrison_status=status,
             prod=movement.planet_prod,
@@ -1034,6 +1157,80 @@ class OEPLiteRuntime:
             movement=movement,
             obs_tensors=obs_tensors,
             player_id=int(owner_id),
+        )
+
+    def _producer_entries_shared_tensor(
+        self,
+        *,
+        owner_id: int,
+        obs_tensors: dict,
+        movement: PlanetMovement,
+    ) -> LaunchEntries:
+        with torch.no_grad():
+            row = self.memory.producer_shared_runtime.tensor_action(
+                _with_tensor_player(obs_tensors, int(owner_id))
+            )
+        return _entries_from_sparse_row(
+            row=row,
+            movement=movement,
+            obs_tensors=obs_tensors,
+            player_id=int(owner_id),
+        )
+
+    def _seed_shared_tensor_memory_from_entries(
+        self,
+        *,
+        entries: LaunchEntries,
+        obs_tensors: dict,
+    ) -> None:
+        runtime = self.memory.producer_shared_runtime
+        mem = runtime.memory
+        if bool((obs_tensors["step"] == 0).all()):
+            mem.cached_player_count = None
+        if mem.cached_player_count is None:
+            mem.cached_player_count = largest_initial_player_count(obs_tensors)
+        mem.last_sparse_action_row = entries_to_sparse_payload(
+            entries,
+            planet_ids=obs_tensors["planets"][..., 0].long(),
+        )
+
+    def _sync_shared_tensor_movement_from_entries(
+        self,
+        *,
+        entries: LaunchEntries,
+        obs_tensors: dict,
+        base_config: OEPPlannerConfig,
+        player_count: int,
+        owner_id: int,
+    ) -> None:
+        runtime = self.memory.producer_shared_runtime
+        mem = runtime.memory
+        if bool((obs_tensors["step"] == 0).all()):
+            mem.cached_player_count = None
+            mem.movement = None
+        if mem.cached_player_count is None:
+            mem.cached_player_count = largest_initial_player_count(obs_tensors)
+        movement = ensure_planet_movement(
+            obs_tensors=obs_tensors,
+            expected_cfg=_movement_config(base_config, player_count=int(player_count)),
+            cached_movement=mem.movement,
+        )
+        launches = infer_planned_launches_from_entries(
+            obs_tensors=obs_tensors,
+            movement=movement,
+            entries=entries,
+            player_id=int(owner_id),
+        )
+        apply_private_planned_launches(
+            movement=movement,
+            launches=launches,
+            owner_id=int(owner_id),
+            obs_tensors=obs_tensors,
+        )
+        mem.movement = movement
+        mem.last_sparse_action_row = entries_to_sparse_payload(
+            entries,
+            planet_ids=obs_tensors["planets"][..., 0].long(),
         )
 
     def tensor_action(self, obs_tensors: dict, raw_obs: Any | None = None):
@@ -1102,6 +1299,31 @@ class OEPLiteRuntime:
                 player_id=int(obs.player_id),
             )
             self._profile_record("producer_entries", stage_start)
+            if str(self.config.opponent_response_mode) == "producer_shared_tensor":
+                stage_start = self._profile_start()
+                self._producer_entries_shared_tensor(
+                    owner_id=int(obs.player_id),
+                    obs_tensors=obs_tensors,
+                    movement=movement,
+                )
+                self._profile_record("producer_seed_shared_tensor_shadow", stage_start)
+            elif str(self.config.opponent_response_mode) == "producer_seeded_shared_tensor":
+                stage_start = self._profile_start()
+                self._seed_shared_tensor_memory_from_entries(
+                    entries=producer_entries,
+                    obs_tensors=obs_tensors,
+                )
+                self._profile_record("producer_seed_shared_tensor_memory", stage_start)
+            elif str(self.config.opponent_response_mode) == "producer_synced_shared_tensor":
+                stage_start = self._profile_start()
+                self._sync_shared_tensor_movement_from_entries(
+                    entries=producer_entries,
+                    obs_tensors=obs_tensors,
+                    base_config=base_config,
+                    player_count=player_count,
+                    owner_id=int(obs.player_id),
+                )
+                self._profile_record("producer_seed_shared_tensor_sync", stage_start)
         elif producer_plan_mode == "tensor":
             stage_start = self._profile_start()
             producer_entries = self._producer_entries_tensor(
@@ -1154,6 +1376,78 @@ class OEPLiteRuntime:
                         player_id=opp_id,
                     )
                     self._profile_record("opponent_entries", stage_start)
+            elif mode == "producer_inline":
+                stage_start = self._profile_start()
+                opponent_entries = self._producer_entries_inline(
+                    owner_id=opp_id,
+                    obs_tensors=obs_tensors,
+                    movement=movement,
+                    cache=cache,
+                    status=status,
+                    alive_by_step=alive_by_step,
+                    base_config=base_config,
+                    player_count=player_count,
+                )
+                self._profile_record("producer_opponent_inline", stage_start)
+            elif mode == "producer_inline_top3":
+                stage_start = self._profile_start()
+                opponent_entries = _top_entries_by_ships(
+                    self._producer_entries_inline(
+                        owner_id=opp_id,
+                        obs_tensors=obs_tensors,
+                        movement=movement,
+                        cache=cache,
+                        status=status,
+                        alive_by_step=alive_by_step,
+                        base_config=base_config,
+                        player_count=player_count,
+                    ),
+                    max_entries=3,
+                )
+                self._profile_record("producer_opponent_inline_top3", stage_start)
+            elif mode == "producer_tensor":
+                stage_start = self._profile_start()
+                opponent_entries = self._producer_entries_tensor(
+                    owner_id=opp_id,
+                    obs_tensors=obs_tensors,
+                    movement=movement,
+                )
+                self._profile_record("producer_opponent_tensor", stage_start)
+            elif mode == "producer_tensor_top3":
+                stage_start = self._profile_start()
+                opponent_entries = _top_entries_by_ships(
+                    self._producer_entries_tensor(
+                        owner_id=opp_id,
+                        obs_tensors=obs_tensors,
+                        movement=movement,
+                    ),
+                    max_entries=3,
+                )
+                self._profile_record("producer_opponent_tensor_top3", stage_start)
+            elif mode == "producer_shared_tensor":
+                stage_start = self._profile_start()
+                opponent_entries = self._producer_entries_shared_tensor(
+                    owner_id=opp_id,
+                    obs_tensors=obs_tensors,
+                    movement=movement,
+                )
+                self._profile_record("producer_opponent_shared_tensor", stage_start)
+            elif mode == "producer_seeded_shared_tensor":
+                stage_start = self._profile_start()
+                opponent_entries = self._producer_entries_shared_tensor(
+                    owner_id=opp_id,
+                    obs_tensors=obs_tensors,
+                    movement=movement,
+                )
+                self._profile_record("producer_opponent_seeded_shared_tensor", stage_start)
+            elif mode == "producer_synced_shared_tensor":
+                stage_start = self._profile_start()
+                opponent_entries = self._producer_entries_shared_tensor(
+                    owner_id=opp_id,
+                    obs_tensors=obs_tensors,
+                    movement=movement,
+                )
+                self._profile_record("producer_opponent_synced_shared_tensor", stage_start)
             elif mode == "cheap":
                 stage_start = self._profile_start()
                 opponent_entries = _cheap_opponent_entries(
@@ -1181,7 +1475,7 @@ class OEPLiteRuntime:
             else None
         )
         self._profile_record("opponent_launch_set", stage_start)
-        oep_config = self._oep_config(base_config)
+        oep_config = self._oep_config(base_config, step=int(obs_tensors["step"].item()))
 
         stage_start = self._profile_start()
         oep_entries = plan_oep_waves(
@@ -1222,11 +1516,21 @@ class OEPLiteRuntime:
             player_id=int(obs.player_id),
         )
         self._profile_record("fitness_oep", stage_start)
-        chosen = (
-            oep_entries
-            if oep_fitness > producer_fitness + float(self.config.min_advantage)
-            else producer_entries
+        _advantage = oep_fitness - producer_fitness
+        chose_oep = (
+            _advantage > float(self.config.min_advantage)
+            and _advantage < float(self.config.max_advantage)
         )
+        if bool(self.config.profile_stages):
+            mem.record_selection(
+                step=int(obs_tensors["step"].item()),
+                chose_oep=bool(chose_oep),
+                oep_fitness=float(oep_fitness),
+                producer_fitness=float(producer_fitness),
+                oep_entries=oep_entries,
+                producer_entries=producer_entries,
+            )
+        chosen = oep_entries if chose_oep else producer_entries
 
         chosen = disambiguate_duplicate_launches(chosen)
 
@@ -1277,6 +1581,17 @@ def _env_config() -> OEPLiteConfig:
             return float(default)
         return float(raw)
 
+    def _env_bool(name: str, default: bool) -> bool:
+        raw = os.getenv(name)
+        if raw is None or raw.strip() == "":
+            return bool(default)
+        value = raw.strip().lower()
+        if value in {"1", "true", "yes", "on"}:
+            return True
+        if value in {"0", "false", "no", "off"}:
+            return False
+        raise ValueError(f"{name} must be a boolean value")
+
     def _env_fractions(default: tuple[float, ...]) -> tuple[float, ...]:
         raw = os.getenv("OEP_FRACTIONS")
         if raw is None or raw.strip() == "":
@@ -1298,6 +1613,7 @@ def _env_config() -> OEPLiteConfig:
         ),
         fractions=_env_fractions(defaults.fractions),
         min_advantage=_env_float("OEP_MIN_ADVANTAGE", defaults.min_advantage),
+        max_advantage=_env_float("OEP_MAX_ADVANTAGE", defaults.max_advantage),
         max_sources_per_lane=_env_int(
             "OEP_MAX_SOURCES_PER_LANE",
             defaults.max_sources_per_lane,
@@ -1314,12 +1630,32 @@ def _env_config() -> OEPLiteConfig:
             "OEP_MAX_WAVES_PER_TURN",
             defaults.max_waves_per_turn,
         ),
+        enable_regroup=_env_bool("OEP_ENABLE_REGROUP", defaults.enable_regroup),
+        late_config_step=_env_int("OEP_LATE_CONFIG_STEP", defaults.late_config_step),
+        late_max_sources_per_lane=_env_int(
+            "OEP_LATE_MAX_SOURCES_PER_LANE",
+            defaults.late_max_sources_per_lane,
+        ),
     )
 
 
+def _load_private_producer_policy(name: str) -> Policy:
+    module_path = Path(__file__).resolve().parents[1] / "producer" / "agent.py"
+    spec = importlib.util.spec_from_file_location(f"_oep_private_producer_{name}", module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"could not load private Producer policy: {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    policy = getattr(module, "agent", None)
+    if not callable(policy):
+        raise ImportError(f"private Producer policy at {module_path} does not define agent(obs)")
+    return policy
+
+
 _RUNTIME = OEPLiteRuntime(
-    seed_policy=_producer_policy,
-    opponent_policy=_producer_policy,
+    seed_policy=_load_private_producer_policy("seed"),
+    opponent_policy=_load_private_producer_policy("opponent"),
     config=_env_config(),
 )
 

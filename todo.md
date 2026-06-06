@@ -26,8 +26,10 @@ Histórico 2b já achou que *"não é só o OEP nunca ser escolhido"* — atacar
 **composição de candidatos**, com análise POR-PARTIDA. Agora, com sim+world-model fiéis, é confiável.
 - [x] B1. FEITO (diag faithful, 8 seeds): `mean_fitness_delta_oep_minus_producer=+3.74` (o OEP ACHA seu plano melhor) e desvia 14% (`min_advantage`=0 default → desvia em QUALQUER delta>0), mas a 96 seeds PERDE (−0.128). **Causa: o fitness SUPERESTIMA os desvios** — como o world-model agora é fiel, a superestimação vem do **lookahead 1-ply** (best-response a uma resposta prevista do Producer, que na verdade re-planeja todo turno). Desvios de delta pequeno = ruído.
   - [x] C-exp1: `OEP_MIN_ADVANTAGE` (96 seeds, jobs=8/OMP=1): `0→−0.128`, **`15→−0.045 (ÓTIMO)`**, `40→−0.108`. Curva NÃO-monotônica → sweet spot ~15 (desvios de delta 15–40 são bons; <15 é ruído). Melhor OEP até agora = **min_advantage≈15 (−0.045)**, partindo de −0.21. Mas não cruza 0: seleção sozinha satura perto do empate.
-  - [ ] C-exp2 (em teste): config WIDER (12/12/4/6 via env) + min_advantage=15 → mais candidatos podem gerar desvios melhores e cruzar 0. Runtime default é narrow (6/6/2/4).
-  - Próximo se C-exp2 não cruzar: fix estrutural 2-ply (oponente responde ao plano do OEP) — ataca a superestimação 1-ply na raiz.
+  - [x] C-exp2: config WIDER (12/12/4/6) + min_advantage=15 = −0.080 (PIOR que narrow −0.045). Mais candidatos não ajudam.
+  - [x] ANÁLISE das curvas (96 seeds): delta∈(0,15] net −0.083 (ruído); delta∈(15,40] net **+0.063 (BONS)**; delta>40 net −0.108 (over-confiança — as maiores vantagens projetadas são as mais ilusórias). Os desvios bons estão numa BANDA média.
+  - [x] C-exp3: filtro de BANDA (`max_advantage`, novo knob) 15<delta<40 = **−0.274 (MUITO PIOR)**. Hipótese de banda FALHOU: as contribuições dos desvios são não-lineares/interagentes (tirar delta>40 piorou drástico). Não dá para isolar bandas.
+  - **RESUMO OEP:** melhor = min_advantage≈15 (**−0.045**, de −0.21). Tuning de seleção/config ESGOTADO — satura perto do empate, não cruza 0. Para BATER o Producer falta mudança ESTRUTURAL (candidatos genuinamente melhores ou horizonte/fitness melhor), não mais tuning. O knob `max_advantage` fica (default inf = no-op).
 
 ## C. [#3 — O SALTO] Busca real OU melhoria dirigida pelo diagnóstico (só após A+B)
 Escolher o ramo pelo que B apontar:
