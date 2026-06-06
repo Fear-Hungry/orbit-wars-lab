@@ -16,7 +16,7 @@ from orbit_lite.distance_cache import build_distance_cache
 from orbit_lite.garrison_launch import LaunchSet, sparse_launch_flow_delta
 from orbit_lite.geometry import fleet_speed
 from orbit_lite.intercept_aim import intercept_angle
-from orbit_lite.movement import MovementConfig, PlanetMovement
+from orbit_lite.movement import MovementConfig, PlanetGarrisonStatus, PlanetMovement
 from orbit_lite.movement_step import (
     LaunchEntries,
     apply_private_planned_launches,
@@ -140,7 +140,26 @@ class OEPLiteConfig:
     enable_regroup: bool = True
     late_config_step: int = -1
     late_max_sources_per_lane: int = 0
+    ordinal_opponent_variants: int = 1
+    ordinal_win_threshold: float = 0.6
+    reactive_reply: bool = False
+    reactive_reply_prune_advantage: float = 0.0
+    plan_memory_variants: int = 0
+    beam_first_width: int = 0
+    beam_pair_width: int = 0
     profile_stages: bool = False
+
+    def __post_init__(self) -> None:
+        if int(self.plan_memory_variants) < 0:
+            raise ValueError("OEP_PLAN_MEMORY_VARIANTS must be non-negative")
+        if int(self.beam_first_width) < 0:
+            raise ValueError("OEP_BEAM_FIRST_WIDTH must be non-negative")
+        if int(self.beam_pair_width) < 0:
+            raise ValueError("OEP_BEAM_PAIR_WIDTH must be non-negative")
+        if bool(self.reactive_reply) and int(self.ordinal_opponent_variants) > 1:
+            raise ValueError(
+                "OEP_REACTIVE_REPLY cannot be combined with OEP_ORDINAL_OPPONENT_VARIANTS > 1"
+            )
 
 
 def _effective_config(config: OEPPlannerConfig, *, step: int) -> OEPPlannerConfig:
@@ -247,16 +266,24 @@ def _entries_from_moves(
     count = len(moves)
     if count <= 0:
         return _empty_entries(movement.device, movement.dtype)
-    from_ids = torch.tensor([int(move[0]) for move in moves], dtype=torch.long, device=movement.device)
+    from_ids = torch.tensor(
+        [int(move[0]) for move in moves], dtype=torch.long, device=movement.device
+    )
     source_slots = torch.full((count,), -1, dtype=torch.long, device=movement.device)
     for idx in range(count):
         matches = torch.where(movement.planet_ids == from_ids[idx])[0]
         if int(matches.numel()) > 0:
             source_slots[idx] = matches[0]
         else:
-            raise ValueError(f"policy emitted move from unknown planet id: {int(from_ids[idx].item())}")
-    angle = torch.tensor([float(move[1]) for move in moves], dtype=movement.dtype, device=movement.device)
-    ships = torch.tensor([float(move[2]) for move in moves], dtype=movement.dtype, device=movement.device)
+            raise ValueError(
+                f"policy emitted move from unknown planet id: {int(from_ids[idx].item())}"
+            )
+    angle = torch.tensor(
+        [float(move[1]) for move in moves], dtype=movement.dtype, device=movement.device
+    )
+    ships = torch.tensor(
+        [float(move[2]) for move in moves], dtype=movement.dtype, device=movement.device
+    )
     provisional = LaunchEntries(
         source_slots=source_slots,
         target_slots=torch.zeros(count, dtype=torch.long, device=movement.device),
@@ -298,7 +325,9 @@ def _entries_from_sparse_row(
         if int(matches.numel()) > 0:
             source_slots[idx] = matches[0]
         else:
-            raise ValueError(f"policy emitted move from unknown planet id: {int(from_ids[idx].item())}")
+            raise ValueError(
+                f"policy emitted move from unknown planet id: {int(from_ids[idx].item())}"
+            )
     angle = row["angle"][:counts].to(device=movement.device, dtype=movement.dtype)
     ships = row["num_ships"][:counts].to(device=movement.device, dtype=movement.dtype)
     provisional = LaunchEntries(
@@ -350,6 +379,84 @@ def _launch_set_from_entries(
     )
 
 
+def _scale_launch_set(launch_set: LaunchSet, *, factor: float) -> LaunchSet:
+    ships = (launch_set.ships * float(factor)).floor()
+    valid = launch_set.valid & (ships >= 1.0)
+    return dataclasses.replace(
+        launch_set,
+        ships=torch.where(valid, ships, torch.zeros_like(ships)),
+        valid=valid,
+    )
+
+
+def _delay_launch_set(launch_set: LaunchSet, *, turns: int) -> LaunchSet:
+    return dataclasses.replace(
+        launch_set,
+        eta=(launch_set.eta + int(turns)).clamp(min=1),
+    )
+
+
+def _top_launch_set(launch_set: LaunchSet, *, max_entries: int) -> LaunchSet:
+    if int(max_entries) <= 0:
+        return dataclasses.replace(
+            launch_set,
+            ships=torch.zeros_like(launch_set.ships),
+            valid=torch.zeros_like(launch_set.valid),
+        )
+    valid = launch_set.valid & (launch_set.ships >= 1.0)
+    if int(valid.sum().item()) <= int(max_entries):
+        return launch_set
+    scores = torch.where(valid, launch_set.ships, torch.full_like(launch_set.ships, -1.0))
+    keep_idx = torch.argsort(scores, dim=-1, descending=True)[..., : int(max_entries)]
+    keep = torch.zeros_like(valid)
+    keep.scatter_(-1, keep_idx, True)
+    keep = keep & valid
+    return dataclasses.replace(
+        launch_set,
+        ships=torch.where(keep, launch_set.ships, torch.zeros_like(launch_set.ships)),
+        valid=keep,
+    )
+
+
+def _opponent_launch_variants(
+    opponent_launch_set: LaunchSet | None,
+    *,
+    variant_count: int,
+) -> tuple[LaunchSet | None, ...]:
+    if opponent_launch_set is None or int(variant_count) <= 1:
+        return (opponent_launch_set,)
+    variants: list[LaunchSet | None] = [
+        opponent_launch_set,
+        _scale_launch_set(opponent_launch_set, factor=0.75),
+        _scale_launch_set(opponent_launch_set, factor=0.50),
+        _delay_launch_set(opponent_launch_set, turns=1),
+        _top_launch_set(opponent_launch_set, max_entries=3),
+        _delay_launch_set(_scale_launch_set(opponent_launch_set, factor=0.75), turns=1),
+        _top_launch_set(opponent_launch_set, max_entries=1),
+    ]
+    return tuple(variants[: max(1, int(variant_count))])
+
+
+def _ordinal_win_stats(
+    *,
+    oep_scores: tuple[float, ...],
+    producer_scores: tuple[float, ...],
+    threshold: float,
+) -> tuple[bool, int, int, float]:
+    if len(oep_scores) != len(producer_scores):
+        raise ValueError("ordinal score vectors must have the same length")
+    variants = len(oep_scores)
+    if variants <= 0:
+        return False, 0, 0, 0.0
+    wins = sum(
+        1
+        for oep_score, producer_score in zip(oep_scores, producer_scores, strict=True)
+        if float(oep_score) > float(producer_score)
+    )
+    win_rate = float(wins) / float(variants)
+    return win_rate >= float(threshold), int(wins), int(variants), win_rate
+
+
 def _top_entries_by_ships(entries: LaunchEntries, *, max_entries: int) -> LaunchEntries:
     valid = entries.valid & (entries.ships >= 1.0)
     valid_slots = torch.where(valid)[0]
@@ -381,6 +488,77 @@ def _combine_launch_sets(primary: LaunchSet, extra: LaunchSet | None) -> LaunchS
         owner=torch.cat([primary.owner, extra.owner], dim=-1),
         valid=torch.cat([primary.valid, extra.valid], dim=-1),
     )
+
+
+def _clone_movement(movement: PlanetMovement) -> PlanetMovement:
+    values: dict[str, Any] = {}
+    for field in dataclasses.fields(PlanetMovement):
+        value = getattr(movement, field.name)
+        values[field.name] = value.clone() if isinstance(value, Tensor) else value
+    return PlanetMovement(**values)
+
+
+def _invalidate_garrison_cache(movement: PlanetMovement) -> None:
+    movement.garrison_owner_cache = None
+    movement.garrison_ships_cache = None
+    movement.garrison_pre_combat_owner_cache = None
+    movement.garrison_pre_combat_ships_cache = None
+    movement.garrison_dirty_from = None
+
+
+def _debit_entry_sources(movement: PlanetMovement, entries: LaunchEntries) -> None:
+    valid = entries.valid & (entries.ships >= 1.0)
+    valid_slots = torch.where(valid)[0]
+    if int(valid_slots.numel()) == 0:
+        return
+    ships = movement.planet_ships.clone()
+    for entry_idx in valid_slots.tolist():
+        source_slot = int(entries.source_slots[entry_idx].item())
+        if source_slot < 0 or source_slot >= int(ships.shape[0]):
+            continue
+        ships[source_slot] = (ships[source_slot] - entries.ships[entry_idx]).clamp(min=0.0)
+    movement.planet_ships = ships
+    _invalidate_garrison_cache(movement)
+
+
+def _select_best_plan_variant(
+    variants: tuple[LaunchEntries, ...],
+    *,
+    opponent_launch_set: LaunchSet | None,
+    status,
+    prod: Tensor,
+    alive_by_step: Tensor,
+    player_count: int,
+    player_id: int,
+) -> tuple[LaunchEntries, float, int]:
+    if not variants:
+        raise ValueError("plan variant selection requires at least one variant")
+    best_idx = 0
+    best_entries = variants[0]
+    best_fitness = _plan_fitness(
+        best_entries,
+        opponent_launch_set=opponent_launch_set,
+        status=status,
+        prod=prod,
+        alive_by_step=alive_by_step,
+        player_count=int(player_count),
+        player_id=int(player_id),
+    )
+    for idx, entries in enumerate(variants[1:], start=1):
+        fitness = _plan_fitness(
+            entries,
+            opponent_launch_set=opponent_launch_set,
+            status=status,
+            prod=prod,
+            alive_by_step=alive_by_step,
+            player_count=int(player_count),
+            player_id=int(player_id),
+        )
+        if float(fitness) > float(best_fitness):
+            best_idx = int(idx)
+            best_entries = entries
+            best_fitness = float(fitness)
+    return best_entries, float(best_fitness), best_idx
 
 
 def _score_launch_set(
@@ -445,10 +623,7 @@ def _plan_fitness(
 
 
 def _planet_id_to_slot(movement: PlanetMovement) -> dict[int, int]:
-    return {
-        int(planet_id.item()): int(slot)
-        for slot, planet_id in enumerate(movement.planet_ids)
-    }
+    return {int(planet_id.item()): int(slot) for slot, planet_id in enumerate(movement.planet_ids)}
 
 
 def _safe_drain_by_slot(*, status, obs, player_id: int) -> Tensor:
@@ -527,9 +702,8 @@ def _entries_from_lane_intents(
             continue
         if source_slot == target_slot:
             continue
-        if (
-            not bool(obs.alive[source_slot])
-            or int(obs.owner_abs[source_slot].item()) != int(player_id)
+        if not bool(obs.alive[source_slot]) or int(obs.owner_abs[source_slot].item()) != int(
+            player_id
         ):
             continue
         if not bool(obs.alive[target_slot]):
@@ -654,9 +828,8 @@ def _cheap_opponent_entries(
     S = int(source_idx.shape[0])
     T = int(target_idx.shape[0])
     dist = cache.cross_dist[0][source_idx.clamp(0, P - 1)][:, target_idx.clamp(0, P - 1)]
-    pair_score = (
-        target_value[target_idx.clamp(0, P - 1)].view(1, T)
-        - 0.04 * dist.to(obs.ships.dtype)
+    pair_score = target_value[target_idx.clamp(0, P - 1)].view(1, T) - 0.04 * dist.to(
+        obs.ships.dtype
     )
     pair_score = torch.where(
         source_exists.view(S, 1) & target_exists.view(1, T),
@@ -801,9 +974,7 @@ def _build_fraction_candidates(
     C = S * T * G
     cand_src = source_idx.view(S, 1, 1).expand(S, T, G).reshape(C, 1)
     cand_tgt_slot = target_idx.view(1, T, 1).expand(S, T, G).reshape(C)
-    cand_tgt_short = (
-        torch.arange(T, device=device).view(1, T, 1).expand(S, T, G).reshape(C)
-    )
+    cand_tgt_short = torch.arange(T, device=device).view(1, T, 1).expand(S, T, G).reshape(C)
     cand_send = torch.where(valid, sizes, torch.zeros_like(sizes)).reshape(C, 1)
     cand_angle = angle.reshape(C, 1)
     cand_eta = torch.where(valid, eta, torch.ones_like(eta)).reshape(C, 1)
@@ -821,7 +992,9 @@ def _build_fraction_candidates(
     opp_launches = (
         _launch_set_from_entries(
             entries=opponent_entries,
-            owner_id=_opponent_id(pid, player_count) if _opponent_id(pid, player_count) is not None else -1,
+            owner_id=_opponent_id(pid, player_count)
+            if _opponent_id(pid, player_count) is not None
+            else -1,
             candidates=C,
         )
         if opponent_entries is not None
@@ -865,6 +1038,250 @@ def _build_fraction_candidates(
     }
 
 
+def _append_regroup_if_enabled(
+    *,
+    wave_entries: LaunchEntries,
+    leftover: Tensor,
+    built: dict[str, Any],
+    movement: PlanetMovement,
+    obs,
+    obs_tensors: dict,
+    cache,
+    status,
+    config: OEPPlannerConfig,
+) -> LaunchEntries:
+    if not bool(config.enable_regroup):
+        return wave_entries
+    pressure = cheap_enemy_pressure(
+        obs, cache, horizon=float(config.horizon), player_id=int(obs.player_id)
+    )
+    from orbit_lite.planner_core import _plan_regroup
+
+    regroup = _plan_regroup(
+        movement=movement,
+        obs=obs,
+        obs_tensors=obs_tensors,
+        garrison_status=status,
+        leftover=leftover,
+        original_ships=obs.ships.to(built["dtype"]),
+        pressure=pressure,
+        config=config,
+        H=max(0, int(status.ships.shape[-1]) - 1),
+    )
+    return concat_launch_entries([wave_entries, regroup])
+
+
+def _greedy_entries_from_built(
+    *,
+    built: dict[str, Any],
+    movement: PlanetMovement,
+    obs,
+    obs_tensors: dict,
+    cache,
+    status,
+    config: OEPPlannerConfig,
+) -> LaunchEntries:
+    wave_entries, leftover = _greedy_select(
+        P=built["P"],
+        W=built["W"],
+        device=built["device"],
+        dtype=built["dtype"],
+        score=built["score"],
+        cand_src=built["cand_src"],
+        cand_send=built["cand_send"],
+        cand_angle=built["cand_angle"],
+        cand_eta=built["cand_eta"],
+        cand_active=built["cand_active"],
+        cand_tgt_slot=built["cand_tgt_slot"],
+        cand_tgt_short=built["cand_tgt_short"],
+        cand_is_def=built["cand_is_def"],
+        source_budget=built["source_budget"],
+        target_exists=built["target_exists"],
+        roi_threshold=float(config.roi_threshold),
+    )
+    return _append_regroup_if_enabled(
+        wave_entries=wave_entries,
+        leftover=leftover,
+        built=built,
+        movement=movement,
+        obs=obs,
+        obs_tensors=obs_tensors,
+        cache=cache,
+        status=status,
+        config=config,
+    )
+
+
+def _beam_first_indices(
+    built: dict[str, Any],
+    *,
+    width: int,
+    roi_threshold: float,
+) -> tuple[int, ...]:
+    if int(width) <= 0:
+        return ()
+    score = built["score"]
+    eligible = torch.isfinite(score) & (score > float(roi_threshold))
+    if not bool(eligible.any()):
+        return ()
+    ranked = torch.where(eligible, score, torch.full_like(score, float("-inf")))
+    order = torch.argsort(ranked, descending=True, stable=True)[: int(width)]
+    return tuple(int(idx) for idx in order.tolist() if bool(eligible[idx].item()))
+
+
+def _masked_score_after_prefix(
+    *,
+    built: dict[str, Any],
+    config: OEPPlannerConfig,
+    prefix_indices: tuple[int, ...],
+) -> tuple[Tensor, Tensor, Tensor, list[LaunchEntries]] | None:
+    if not prefix_indices:
+        return (
+            built["score"].clone(),
+            built["source_budget"].clone(),
+            built["target_exists"].clone(),
+            [],
+        )
+    score = built["score"]
+    cand_src = built["cand_src"]
+    cand_send = built["cand_send"]
+    cand_active = built["cand_active"]
+    forced_score = score.clone()
+    source_budget = built["source_budget"].clone()
+    target_exists = built["target_exists"].clone()
+    forced_entries: list[LaunchEntries] = []
+    forced_sources: list[Tensor] = []
+    defended_targets: list[int] = []
+    for raw_idx in prefix_indices:
+        idx = int(raw_idx)
+        if idx < 0 or idx >= int(score.shape[0]):
+            return None
+        if not bool(torch.isfinite(forced_score[idx]).item()) or float(
+            forced_score[idx].item()
+        ) <= float(config.roi_threshold):
+            return None
+        active = cand_active[idx]
+        if not bool(active.any().item()):
+            return None
+        if not bool(target_exists[int(built["cand_tgt_short"][idx].item())].item()):
+            return None
+        budget_at = source_budget[cand_src[idx]]
+        if not bool(((cand_send[idx] <= budget_at) | ~active).all().item()):
+            return None
+
+        entries = LaunchEntries(
+            source_slots=cand_src[idx].clone(),
+            target_slots=built["cand_tgt_slot"][idx].expand_as(cand_src[idx]).clone(),
+            ships=torch.where(active, cand_send[idx], torch.zeros_like(cand_send[idx])).clone(),
+            angle=torch.where(
+                active,
+                built["cand_angle"][idx],
+                torch.zeros_like(built["cand_angle"][idx]),
+            ).clone(),
+            eta=torch.where(
+                active, built["cand_eta"][idx], torch.ones_like(built["cand_eta"][idx])
+            ).clone(),
+            valid=active.clone(),
+        )
+        forced_entries.append(entries)
+
+        debit = torch.zeros_like(source_budget)
+        debit.scatter_add_(
+            0,
+            cand_src[idx],
+            torch.where(active, cand_send[idx], torch.zeros_like(cand_send[idx])),
+        )
+        source_budget = (source_budget - debit).clamp(min=0.0)
+        target_exists[int(built["cand_tgt_short"][idx].item())] = False
+        forced_score[idx] = float("-inf")
+
+        selected_sources = cand_src[idx][active]
+        if int(selected_sources.numel()) > 0:
+            forced_sources.append(selected_sources)
+        selected_target = int(built["cand_tgt_slot"][idx].item())
+        if bool(built["cand_is_def"][idx].item()):
+            defended_targets.append(selected_target)
+
+        if forced_sources:
+            used_sources = torch.cat(forced_sources)
+            target_was_source = (
+                built["cand_tgt_slot"].view(-1, 1) == used_sources.view(1, -1)
+            ).any(dim=-1)
+            forced_score = torch.where(
+                target_was_source,
+                torch.full_like(forced_score, float("-inf")),
+                forced_score,
+            )
+        for target_slot in defended_targets:
+            source_was_defended = ((cand_src == int(target_slot)) & cand_active).any(dim=-1)
+            forced_score = torch.where(
+                source_was_defended,
+                torch.full_like(forced_score, float("-inf")),
+                forced_score,
+            )
+    return forced_score, source_budget, target_exists, forced_entries
+
+
+def _forced_prefix_entries_from_built(
+    *,
+    built: dict[str, Any],
+    prefix_indices: tuple[int, ...],
+    movement: PlanetMovement,
+    obs,
+    obs_tensors: dict,
+    cache,
+    status,
+    config: OEPPlannerConfig,
+) -> LaunchEntries | None:
+    state = _masked_score_after_prefix(
+        built=built,
+        config=config,
+        prefix_indices=tuple(int(idx) for idx in prefix_indices),
+    )
+    if state is None:
+        return None
+    forced_score, source_budget, target_exists, forced_entries = state
+    if not forced_entries:
+        return None
+
+    remaining_waves = max(0, int(built["W"]) - len(forced_entries))
+    if remaining_waves <= 0:
+        leftover = source_budget
+        wave_entries = concat_launch_entries(forced_entries)
+    else:
+        rest_entries, leftover = _greedy_select(
+            P=built["P"],
+            W=remaining_waves,
+            device=built["device"],
+            dtype=built["dtype"],
+            score=forced_score,
+            cand_src=built["cand_src"],
+            cand_send=built["cand_send"],
+            cand_angle=built["cand_angle"],
+            cand_eta=built["cand_eta"],
+            cand_active=built["cand_active"],
+            cand_tgt_slot=built["cand_tgt_slot"],
+            cand_tgt_short=built["cand_tgt_short"],
+            cand_is_def=built["cand_is_def"],
+            source_budget=source_budget,
+            target_exists=target_exists,
+            roi_threshold=float(config.roi_threshold),
+        )
+        wave_entries = concat_launch_entries([*forced_entries, rest_entries])
+
+    return _append_regroup_if_enabled(
+        wave_entries=wave_entries,
+        leftover=leftover,
+        built=built,
+        movement=movement,
+        obs=obs,
+        obs_tensors=obs_tensors,
+        cache=cache,
+        status=status,
+        config=config,
+    )
+
+
 def plan_oep_waves(
     *,
     movement: PlanetMovement,
@@ -894,41 +1311,194 @@ def plan_oep_waves(
     )
     if built is None:
         return _empty_entries(obs.device, obs.ships.dtype)
-    wave_entries, leftover = _greedy_select(
-        P=built["P"],
-        W=built["W"],
-        device=built["device"],
-        dtype=built["dtype"],
-        score=built["score"],
-        cand_src=built["cand_src"],
-        cand_send=built["cand_send"],
-        cand_angle=built["cand_angle"],
-        cand_eta=built["cand_eta"],
-        cand_active=built["cand_active"],
-        cand_tgt_slot=built["cand_tgt_slot"],
-        cand_tgt_short=built["cand_tgt_short"],
-        cand_is_def=built["cand_is_def"],
-        source_budget=built["source_budget"],
-        target_exists=built["target_exists"],
-        roi_threshold=float(config.roi_threshold),
-    )
-    if not bool(config.enable_regroup):
-        return wave_entries
-    pressure = cheap_enemy_pressure(obs, cache, horizon=float(config.horizon), player_id=int(obs.player_id))
-    from orbit_lite.planner_core import _plan_regroup
-
-    regroup = _plan_regroup(
+    return _greedy_entries_from_built(
+        built=built,
         movement=movement,
         obs=obs,
         obs_tensors=obs_tensors,
-        garrison_status=status,
-        leftover=leftover,
-        original_ships=obs.ships.to(built["dtype"]),
-        pressure=pressure,
+        cache=cache,
+        status=status,
         config=config,
-        H=max(0, int(status.ships.shape[-1]) - 1),
     )
-    return concat_launch_entries([wave_entries, regroup])
+
+
+def plan_oep_beam_first_waves(
+    *,
+    movement: PlanetMovement,
+    obs,
+    obs_tensors: dict,
+    cache,
+    status,
+    prod: Tensor,
+    alive_by_step: Tensor,
+    config: OEPPlannerConfig,
+    fractions: tuple[float, ...],
+    player_count: int,
+    opponent_entries: LaunchEntries | None,
+    opponent_launch_set: LaunchSet | None,
+    beam_width: int,
+) -> tuple[LaunchEntries, int, int]:
+    built = _build_fraction_candidates(
+        movement=movement,
+        obs=obs,
+        obs_tensors=obs_tensors,
+        cache=cache,
+        status=status,
+        prod=prod,
+        alive_by_step=alive_by_step,
+        config=config,
+        fractions=fractions,
+        player_count=player_count,
+        opponent_entries=opponent_entries,
+    )
+    if built is None:
+        return _empty_entries(obs.device, obs.ships.dtype), 0, 0
+
+    variants = [
+        _greedy_entries_from_built(
+            built=built,
+            movement=movement,
+            obs=obs,
+            obs_tensors=obs_tensors,
+            cache=cache,
+            status=status,
+            config=config,
+        )
+    ]
+    for first_idx in _beam_first_indices(
+        built,
+        width=int(beam_width),
+        roi_threshold=float(config.roi_threshold),
+    ):
+        variant = _forced_prefix_entries_from_built(
+            built=built,
+            prefix_indices=(first_idx,),
+            movement=movement,
+            obs=obs,
+            obs_tensors=obs_tensors,
+            cache=cache,
+            status=status,
+            config=config,
+        )
+        if variant is not None:
+            variants.append(variant)
+    if len(variants) == 1:
+        return variants[0], 1, 0
+    best_entries, _, best_idx = _select_best_plan_variant(
+        tuple(variants),
+        opponent_launch_set=opponent_launch_set,
+        status=status,
+        prod=prod,
+        alive_by_step=alive_by_step,
+        player_count=int(player_count),
+        player_id=int(obs.player_id),
+    )
+    return best_entries, len(variants), int(best_idx)
+
+
+def plan_oep_beam_pair_waves(
+    *,
+    movement: PlanetMovement,
+    obs,
+    obs_tensors: dict,
+    cache,
+    status,
+    prod: Tensor,
+    alive_by_step: Tensor,
+    config: OEPPlannerConfig,
+    fractions: tuple[float, ...],
+    player_count: int,
+    opponent_entries: LaunchEntries | None,
+    opponent_launch_set: LaunchSet | None,
+    beam_width: int,
+) -> tuple[LaunchEntries, int, int]:
+    built = _build_fraction_candidates(
+        movement=movement,
+        obs=obs,
+        obs_tensors=obs_tensors,
+        cache=cache,
+        status=status,
+        prod=prod,
+        alive_by_step=alive_by_step,
+        config=config,
+        fractions=fractions,
+        player_count=player_count,
+        opponent_entries=opponent_entries,
+    )
+    if built is None:
+        return _empty_entries(obs.device, obs.ships.dtype), 0, 0
+
+    variants = [
+        _greedy_entries_from_built(
+            built=built,
+            movement=movement,
+            obs=obs,
+            obs_tensors=obs_tensors,
+            cache=cache,
+            status=status,
+            config=config,
+        )
+    ]
+    first_indices = _beam_first_indices(
+        built,
+        width=int(beam_width),
+        roi_threshold=float(config.roi_threshold),
+    )
+    for first_idx in first_indices:
+        state = _masked_score_after_prefix(
+            built=built,
+            config=config,
+            prefix_indices=(first_idx,),
+        )
+        if state is None:
+            continue
+        forced_score, _, _, _ = state
+        first_built = dict(built)
+        first_built["score"] = forced_score
+        second_indices = _beam_first_indices(
+            first_built,
+            width=int(beam_width),
+            roi_threshold=float(config.roi_threshold),
+        )
+        if not second_indices:
+            variant = _forced_prefix_entries_from_built(
+                built=built,
+                prefix_indices=(first_idx,),
+                movement=movement,
+                obs=obs,
+                obs_tensors=obs_tensors,
+                cache=cache,
+                status=status,
+                config=config,
+            )
+            if variant is not None:
+                variants.append(variant)
+            continue
+        for second_idx in second_indices:
+            variant = _forced_prefix_entries_from_built(
+                built=built,
+                prefix_indices=(first_idx, second_idx),
+                movement=movement,
+                obs=obs,
+                obs_tensors=obs_tensors,
+                cache=cache,
+                status=status,
+                config=config,
+            )
+            if variant is not None:
+                variants.append(variant)
+    if len(variants) == 1:
+        return variants[0], 1, 0
+    best_entries, _, best_idx = _select_best_plan_variant(
+        tuple(variants),
+        opponent_launch_set=opponent_launch_set,
+        status=status,
+        prod=prod,
+        alive_by_step=alive_by_step,
+        player_count=int(player_count),
+        player_id=int(obs.player_id),
+    )
+    return best_entries, len(variants), int(best_idx)
 
 
 class OEPLiteMemory:
@@ -945,6 +1515,20 @@ class OEPLiteMemory:
         self.selection_delta_sum = 0.0
         self.selection_delta_min: float | None = None
         self.selection_delta_max: float | None = None
+        self.selection_ordinal_win_rate_sum = 0.0
+        self.selection_ordinal_win_rate_min: float | None = None
+        self.selection_ordinal_win_rate_max: float | None = None
+        self.selection_ordinal_wins = 0
+        self.selection_ordinal_variants = 0
+        self.selection_plan_memory_variant_calls = 0
+        self.selection_plan_memory_variant_choices = 0
+        self.selection_plan_memory_variant_candidates = 0
+        self.selection_beam_first_calls = 0
+        self.selection_beam_first_choices = 0
+        self.selection_beam_first_candidates = 0
+        self.selection_beam_pair_calls = 0
+        self.selection_beam_pair_choices = 0
+        self.selection_beam_pair_candidates = 0
         self.selection_phase_counts: dict[str, int] = {}
         self.selection_phase_delta_sum: dict[str, float] = {}
 
@@ -963,12 +1547,44 @@ class OEPLiteMemory:
         self.selection_delta_sum = 0.0
         self.selection_delta_min = None
         self.selection_delta_max = None
+        self.selection_ordinal_win_rate_sum = 0.0
+        self.selection_ordinal_win_rate_min = None
+        self.selection_ordinal_win_rate_max = None
+        self.selection_ordinal_wins = 0
+        self.selection_ordinal_variants = 0
+        self.selection_plan_memory_variant_calls = 0
+        self.selection_plan_memory_variant_choices = 0
+        self.selection_plan_memory_variant_candidates = 0
+        self.selection_beam_first_calls = 0
+        self.selection_beam_first_choices = 0
+        self.selection_beam_first_candidates = 0
+        self.selection_beam_pair_calls = 0
+        self.selection_beam_pair_choices = 0
+        self.selection_beam_pair_candidates = 0
         self.selection_phase_counts = {}
         self.selection_phase_delta_sum = {}
 
     def record_profile(self, name: str, elapsed: float) -> None:
         self.profile_totals[name] = self.profile_totals.get(name, 0.0) + float(elapsed)
         self.profile_counts[name] = self.profile_counts.get(name, 0) + 1
+
+    def record_plan_memory_variant(self, *, candidate_count: int, chosen_index: int) -> None:
+        self.selection_plan_memory_variant_calls += 1
+        self.selection_plan_memory_variant_candidates += int(candidate_count)
+        if int(chosen_index) > 0:
+            self.selection_plan_memory_variant_choices += 1
+
+    def record_beam_first(self, *, candidate_count: int, chosen_index: int) -> None:
+        self.selection_beam_first_calls += 1
+        self.selection_beam_first_candidates += int(candidate_count)
+        if int(chosen_index) > 0:
+            self.selection_beam_first_choices += 1
+
+    def record_beam_pair(self, *, candidate_count: int, chosen_index: int) -> None:
+        self.selection_beam_pair_calls += 1
+        self.selection_beam_pair_candidates += int(candidate_count)
+        if int(chosen_index) > 0:
+            self.selection_beam_pair_choices += 1
 
     def record_selection(
         self,
@@ -979,22 +1595,50 @@ class OEPLiteMemory:
         producer_fitness: float,
         oep_entries: LaunchEntries,
         producer_entries: LaunchEntries,
+        ordinal_win_rate: float | None = None,
+        ordinal_wins: int = 0,
+        ordinal_variants: int = 0,
     ) -> None:
         choice = "oep" if bool(chose_oep) else "producer"
         self.selection_counts[choice] = self.selection_counts.get(choice, 0) + 1
         if bool(oep_entries.valid.any().item()):
             self.selection_counts["oep_nonempty"] = self.selection_counts.get("oep_nonempty", 0) + 1
         if bool(producer_entries.valid.any().item()):
-            self.selection_counts["producer_nonempty"] = self.selection_counts.get("producer_nonempty", 0) + 1
+            self.selection_counts["producer_nonempty"] = (
+                self.selection_counts.get("producer_nonempty", 0) + 1
+            )
         delta = float(oep_fitness) - float(producer_fitness)
         self.selection_delta_sum += delta
-        self.selection_delta_min = delta if self.selection_delta_min is None else min(self.selection_delta_min, delta)
-        self.selection_delta_max = delta if self.selection_delta_max is None else max(self.selection_delta_max, delta)
+        self.selection_delta_min = (
+            delta if self.selection_delta_min is None else min(self.selection_delta_min, delta)
+        )
+        self.selection_delta_max = (
+            delta if self.selection_delta_max is None else max(self.selection_delta_max, delta)
+        )
+        if ordinal_win_rate is not None:
+            win_rate = float(ordinal_win_rate)
+            self.selection_ordinal_win_rate_sum += win_rate
+            self.selection_ordinal_win_rate_min = (
+                win_rate
+                if self.selection_ordinal_win_rate_min is None
+                else min(self.selection_ordinal_win_rate_min, win_rate)
+            )
+            self.selection_ordinal_win_rate_max = (
+                win_rate
+                if self.selection_ordinal_win_rate_max is None
+                else max(self.selection_ordinal_win_rate_max, win_rate)
+            )
+            self.selection_ordinal_wins += int(ordinal_wins)
+            self.selection_ordinal_variants += int(ordinal_variants)
         phase = self._selection_phase(int(step))
         phase_prefix = f"{phase}_{choice}"
         self.selection_phase_counts[phase] = self.selection_phase_counts.get(phase, 0) + 1
-        self.selection_phase_counts[phase_prefix] = self.selection_phase_counts.get(phase_prefix, 0) + 1
-        self.selection_phase_delta_sum[phase] = self.selection_phase_delta_sum.get(phase, 0.0) + delta
+        self.selection_phase_counts[phase_prefix] = (
+            self.selection_phase_counts.get(phase_prefix, 0) + 1
+        )
+        self.selection_phase_delta_sum[phase] = (
+            self.selection_phase_delta_sum.get(phase, 0.0) + delta
+        )
 
     @staticmethod
     def _selection_phase(step: int) -> str:
@@ -1026,8 +1670,10 @@ class OEPLiteMemory:
             "producer_choices": producer,
             "oep_choice_rate": oep / max(1.0, total),
             "producer_choice_rate": producer / max(1.0, total),
-            "oep_nonempty_rate": float(self.selection_counts.get("oep_nonempty", 0)) / max(1.0, total),
-            "producer_nonempty_rate": float(self.selection_counts.get("producer_nonempty", 0)) / max(1.0, total),
+            "oep_nonempty_rate": float(self.selection_counts.get("oep_nonempty", 0))
+            / max(1.0, total),
+            "producer_nonempty_rate": float(self.selection_counts.get("producer_nonempty", 0))
+            / max(1.0, total),
             "mean_fitness_delta_oep_minus_producer": self.selection_delta_sum / max(1.0, total),
             "min_fitness_delta_oep_minus_producer": (
                 0.0 if self.selection_delta_min is None else float(self.selection_delta_min)
@@ -1035,6 +1681,35 @@ class OEPLiteMemory:
             "max_fitness_delta_oep_minus_producer": (
                 0.0 if self.selection_delta_max is None else float(self.selection_delta_max)
             ),
+            "mean_ordinal_win_rate_oep_vs_producer": self.selection_ordinal_win_rate_sum
+            / max(1.0, total),
+            "min_ordinal_win_rate_oep_vs_producer": (
+                0.0
+                if self.selection_ordinal_win_rate_min is None
+                else float(self.selection_ordinal_win_rate_min)
+            ),
+            "max_ordinal_win_rate_oep_vs_producer": (
+                0.0
+                if self.selection_ordinal_win_rate_max is None
+                else float(self.selection_ordinal_win_rate_max)
+            ),
+            "ordinal_wins_oep_vs_producer": float(self.selection_ordinal_wins),
+            "ordinal_variants_oep_vs_producer": float(self.selection_ordinal_variants),
+            "plan_memory_variant_calls": float(self.selection_plan_memory_variant_calls),
+            "plan_memory_variant_choices": float(self.selection_plan_memory_variant_choices),
+            "plan_memory_variant_candidates": float(self.selection_plan_memory_variant_candidates),
+            "plan_memory_variant_choice_rate": float(self.selection_plan_memory_variant_choices)
+            / max(1.0, float(self.selection_plan_memory_variant_calls)),
+            "beam_first_calls": float(self.selection_beam_first_calls),
+            "beam_first_choices": float(self.selection_beam_first_choices),
+            "beam_first_candidates": float(self.selection_beam_first_candidates),
+            "beam_first_choice_rate": float(self.selection_beam_first_choices)
+            / max(1.0, float(self.selection_beam_first_calls)),
+            "beam_pair_calls": float(self.selection_beam_pair_calls),
+            "beam_pair_choices": float(self.selection_beam_pair_choices),
+            "beam_pair_candidates": float(self.selection_beam_pair_candidates),
+            "beam_pair_choice_rate": float(self.selection_beam_pair_choices)
+            / max(1.0, float(self.selection_beam_pair_calls)),
         }
         for phase in ("early", "mid", "late", "endgame"):
             phase_decisions = float(self.selection_phase_counts.get(phase, 0))
@@ -1043,9 +1718,9 @@ class OEPLiteMemory:
             summary[f"{phase}_decisions"] = phase_decisions
             summary[f"{phase}_oep_choice_rate"] = phase_oep / max(1.0, phase_decisions)
             summary[f"{phase}_producer_choice_rate"] = phase_producer / max(1.0, phase_decisions)
-            summary[f"{phase}_mean_fitness_delta_oep_minus_producer"] = (
-                float(self.selection_phase_delta_sum.get(phase, 0.0)) / max(1.0, phase_decisions)
-            )
+            summary[f"{phase}_mean_fitness_delta_oep_minus_producer"] = float(
+                self.selection_phase_delta_sum.get(phase, 0.0)
+            ) / max(1.0, phase_decisions)
         return summary
 
 
@@ -1233,6 +1908,50 @@ class OEPLiteRuntime:
             planet_ids=obs_tensors["planets"][..., 0].long(),
         )
 
+    def _reactive_reply_entries(
+        self,
+        *,
+        our_entries: LaunchEntries,
+        opponent_id: int,
+        obs_tensors: dict,
+        movement: PlanetMovement,
+        cache,
+        base_config: OEPPlannerConfig,
+        player_count: int,
+        player_id: int,
+    ) -> tuple[LaunchEntries, PlanetGarrisonStatus, Tensor]:
+        # Apply *our* plan (OEP or Producer) to a clone, then let the opponent
+        # re-plan against the resulting state. Called symmetrically for both
+        # plans so the 2-ply comparison scores each plan against the opponent's
+        # reply to THAT plan (not one plan vs a static prediction).
+        reply_movement = _clone_movement(movement)
+        our_launches = infer_planned_launches_from_entries(
+            obs_tensors=obs_tensors,
+            movement=reply_movement,
+            entries=our_entries,
+            player_id=int(player_id),
+        )
+        apply_private_planned_launches(
+            movement=reply_movement,
+            launches=our_launches,
+            owner_id=int(player_id),
+            obs_tensors=obs_tensors,
+        )
+        _debit_entry_sources(reply_movement, our_entries)
+        reply_status = reply_movement.garrison_status(max_horizon=int(base_config.horizon))
+        reply_alive_by_step = reply_movement.alive_by_step[: int(base_config.horizon) + 1]
+        reply_entries = self._producer_entries_inline(
+            owner_id=int(opponent_id),
+            obs_tensors=obs_tensors,
+            movement=reply_movement,
+            cache=cache,
+            status=reply_status,
+            alive_by_step=reply_alive_by_step,
+            base_config=base_config,
+            player_count=int(player_count),
+        )
+        return reply_entries, reply_status, reply_alive_by_step
+
     def tensor_action(self, obs_tensors: dict, raw_obs: Any | None = None):
         action_start = self._profile_start()
         mem = self.memory
@@ -1245,7 +1964,9 @@ class OEPLiteRuntime:
         if mem.cached_player_count is None:
             mem.cached_player_count = largest_initial_player_count(obs_tensors)
         player_count = int(mem.cached_player_count)
-        base_config = _effective_config(_config_for(player_count), step=int(obs_tensors["step"].item()))
+        base_config = _effective_config(
+            _config_for(player_count), step=int(obs_tensors["step"].item())
+        )
         device = obs_tensors["planets"].device
         obs = parse_obs(obs_tensors)
         if obs.P == 0:
@@ -1336,10 +2057,7 @@ class OEPLiteRuntime:
             raise ValueError(f"unknown OEP producer_plan_mode: {producer_plan_mode!r}")
         opponent_entries = None
         opp_id = _opponent_id(int(obs.player_id), player_count)
-        if (
-            bool(self.config.opponent_response)
-            and opp_id is not None
-        ):
+        if bool(self.config.opponent_response) and opp_id is not None:
             mode = str(self.config.opponent_response_mode)
             if mode == "producer":
                 if producer_plan_mode == "inline":
@@ -1478,20 +2196,67 @@ class OEPLiteRuntime:
         oep_config = self._oep_config(base_config, step=int(obs_tensors["step"].item()))
 
         stage_start = self._profile_start()
-        oep_entries = plan_oep_waves(
-            movement=movement,
-            obs=obs,
-            obs_tensors=obs_tensors,
-            cache=cache,
-            status=status,
-            prod=movement.planet_prod,
-            alive_by_step=alive_by_step,
-            config=oep_config,
-            fractions=self.config.fractions,
-            player_count=player_count,
-            opponent_entries=opponent_entries,
-        )
-        self._profile_record("plan_oep_waves", stage_start)
+        beam_pair_width = max(0, int(self.config.beam_pair_width))
+        beam_first_width = max(0, int(self.config.beam_first_width))
+        if beam_pair_width > 0:
+            oep_entries, beam_candidate_count, beam_chosen_index = plan_oep_beam_pair_waves(
+                movement=movement,
+                obs=obs,
+                obs_tensors=obs_tensors,
+                cache=cache,
+                status=status,
+                prod=movement.planet_prod,
+                alive_by_step=alive_by_step,
+                config=oep_config,
+                fractions=self.config.fractions,
+                player_count=player_count,
+                opponent_entries=opponent_entries,
+                opponent_launch_set=opponent_launch_set,
+                beam_width=beam_pair_width,
+            )
+            if bool(self.config.profile_stages):
+                mem.record_beam_pair(
+                    candidate_count=beam_candidate_count,
+                    chosen_index=beam_chosen_index,
+                )
+            self._profile_record("plan_oep_beam_pair", stage_start)
+        elif beam_first_width > 0:
+            oep_entries, beam_candidate_count, beam_chosen_index = plan_oep_beam_first_waves(
+                movement=movement,
+                obs=obs,
+                obs_tensors=obs_tensors,
+                cache=cache,
+                status=status,
+                prod=movement.planet_prod,
+                alive_by_step=alive_by_step,
+                config=oep_config,
+                fractions=self.config.fractions,
+                player_count=player_count,
+                opponent_entries=opponent_entries,
+                opponent_launch_set=opponent_launch_set,
+                beam_width=beam_first_width,
+            )
+            if bool(self.config.profile_stages):
+                mem.record_beam_first(
+                    candidate_count=beam_candidate_count,
+                    chosen_index=beam_chosen_index,
+                )
+            self._profile_record("plan_oep_beam_first", stage_start)
+        else:
+            oep_entries = plan_oep_waves(
+                movement=movement,
+                obs=obs,
+                obs_tensors=obs_tensors,
+                cache=cache,
+                status=status,
+                prod=movement.planet_prod,
+                alive_by_step=alive_by_step,
+                config=oep_config,
+                fractions=self.config.fractions,
+                player_count=player_count,
+                opponent_entries=opponent_entries,
+            )
+            self._profile_record("plan_oep_waves", stage_start)
 
         stage_start = self._profile_start()
         producer_fitness = _plan_fitness(
@@ -1505,22 +2270,177 @@ class OEPLiteRuntime:
         )
         self._profile_record("fitness_producer", stage_start)
 
+        plan_variant_count = max(0, int(self.config.plan_memory_variants))
+        if plan_variant_count > 0 and mem.last_lanes:
+            stage_start = self._profile_start()
+            memory_entries = _entries_from_lane_intents(
+                mem.last_lanes[:plan_variant_count],
+                movement=movement,
+                obs=obs,
+                status=status,
+                config=oep_config,
+                player_id=int(obs.player_id),
+            )
+            if bool(memory_entries.valid.any().item()):
+                oep_entries, oep_fitness, chosen_variant = _select_best_plan_variant(
+                    (oep_entries, memory_entries),
+                    opponent_launch_set=opponent_launch_set,
+                    status=status,
+                    prod=movement.planet_prod,
+                    alive_by_step=alive_by_step,
+                    player_count=player_count,
+                    player_id=int(obs.player_id),
+                )
+                if bool(self.config.profile_stages):
+                    mem.record_plan_memory_variant(candidate_count=2, chosen_index=chosen_variant)
+                self._profile_record("plan_memory_variant", stage_start)
+            else:
+                stage_start = self._profile_start()
+                oep_fitness = _plan_fitness(
+                    oep_entries,
+                    opponent_launch_set=opponent_launch_set,
+                    status=status,
+                    prod=movement.planet_prod,
+                    alive_by_step=alive_by_step,
+                    player_count=player_count,
+                    player_id=int(obs.player_id),
+                )
+                self._profile_record("fitness_oep", stage_start)
+        else:
+            stage_start = self._profile_start()
+            oep_fitness = _plan_fitness(
+                oep_entries,
+                opponent_launch_set=opponent_launch_set,
+                status=status,
+                prod=movement.planet_prod,
+                alive_by_step=alive_by_step,
+                player_count=player_count,
+                player_id=int(obs.player_id),
+            )
+            self._profile_record("fitness_oep", stage_start)
+
         stage_start = self._profile_start()
-        oep_fitness = _plan_fitness(
-            oep_entries,
-            opponent_launch_set=opponent_launch_set,
-            status=status,
-            prod=movement.planet_prod,
-            alive_by_step=alive_by_step,
-            player_count=player_count,
-            player_id=int(obs.player_id),
-        )
-        self._profile_record("fitness_oep", stage_start)
         _advantage = oep_fitness - producer_fitness
-        chose_oep = (
-            _advantage > float(self.config.min_advantage)
-            and _advantage < float(self.config.max_advantage)
-        )
+        ordinal_win_rate: float | None = None
+        ordinal_wins = 0
+        ordinal_variants = 0
+        if bool(self.config.reactive_reply):
+            if opp_id is None:
+                chose_oep = _advantage > float(self.config.min_advantage) and _advantage < float(
+                    self.config.max_advantage
+                )
+            elif _advantage <= float(self.config.reactive_reply_prune_advantage):
+                chose_oep = False
+            elif bool(oep_entries.valid.any().item()):
+                stage_start = self._profile_start()
+                reactive_entries, _, _ = self._reactive_reply_entries(
+                    our_entries=oep_entries,
+                    opponent_id=int(opp_id),
+                    obs_tensors=obs_tensors,
+                    movement=movement,
+                    cache=cache,
+                    base_config=base_config,
+                    player_count=player_count,
+                    player_id=int(obs.player_id),
+                )
+                reactive_launch_set = _launch_set_from_entries(
+                    entries=reactive_entries,
+                    owner_id=int(opp_id),
+                    candidates=1,
+                )
+                self._profile_record("producer_reactive_reply", stage_start)
+
+                stage_start = self._profile_start()
+                oep_fitness = _plan_fitness(
+                    oep_entries,
+                    opponent_launch_set=reactive_launch_set,
+                    status=status,
+                    prod=movement.planet_prod,
+                    alive_by_step=alive_by_step,
+                    player_count=player_count,
+                    player_id=int(obs.player_id),
+                )
+                self._profile_record("fitness_oep_reactive", stage_start)
+
+                # Symmetric 2-ply (ERRO #2 fix): score the Producer plan against
+                # the opponent's reply to IT too. Otherwise we'd compare
+                # OEP-under-reactive-adversary vs Producer-under-static-prediction,
+                # which biases the threshold against ever deviating.
+                stage_start = self._profile_start()
+                producer_reactive_entries, _, _ = self._reactive_reply_entries(
+                    our_entries=producer_entries,
+                    opponent_id=int(opp_id),
+                    obs_tensors=obs_tensors,
+                    movement=movement,
+                    cache=cache,
+                    base_config=base_config,
+                    player_count=player_count,
+                    player_id=int(obs.player_id),
+                )
+                producer_reactive_launch_set = _launch_set_from_entries(
+                    entries=producer_reactive_entries,
+                    owner_id=int(opp_id),
+                    candidates=1,
+                )
+                self._profile_record("producer_reactive_reply_baseline", stage_start)
+
+                stage_start = self._profile_start()
+                producer_fitness = _plan_fitness(
+                    producer_entries,
+                    opponent_launch_set=producer_reactive_launch_set,
+                    status=status,
+                    prod=movement.planet_prod,
+                    alive_by_step=alive_by_step,
+                    player_count=player_count,
+                    player_id=int(obs.player_id),
+                )
+                self._profile_record("fitness_producer_reactive", stage_start)
+
+                _advantage = oep_fitness - producer_fitness
+                chose_oep = oep_fitness > producer_fitness
+            else:
+                chose_oep = False
+        elif int(self.config.ordinal_opponent_variants) > 1:
+            stage_start = self._profile_start()
+            opponent_variants = _opponent_launch_variants(
+                opponent_launch_set,
+                variant_count=int(self.config.ordinal_opponent_variants),
+            )
+            producer_scores = [producer_fitness]
+            oep_scores = [oep_fitness]
+            for variant in opponent_variants[1:]:
+                producer_scores.append(
+                    _plan_fitness(
+                        producer_entries,
+                        opponent_launch_set=variant,
+                        status=status,
+                        prod=movement.planet_prod,
+                        alive_by_step=alive_by_step,
+                        player_count=player_count,
+                        player_id=int(obs.player_id),
+                    )
+                )
+                oep_scores.append(
+                    _plan_fitness(
+                        oep_entries,
+                        opponent_launch_set=variant,
+                        status=status,
+                        prod=movement.planet_prod,
+                        alive_by_step=alive_by_step,
+                        player_count=player_count,
+                        player_id=int(obs.player_id),
+                    )
+                )
+            chose_oep, ordinal_wins, ordinal_variants, ordinal_win_rate = _ordinal_win_stats(
+                oep_scores=tuple(oep_scores),
+                producer_scores=tuple(producer_scores),
+                threshold=float(self.config.ordinal_win_threshold),
+            )
+            self._profile_record("fitness_ordinal_variants", stage_start)
+        else:
+            chose_oep = _advantage > float(self.config.min_advantage) and _advantage < float(
+                self.config.max_advantage
+            )
         if bool(self.config.profile_stages):
             mem.record_selection(
                 step=int(obs_tensors["step"].item()),
@@ -1529,8 +2449,22 @@ class OEPLiteRuntime:
                 producer_fitness=float(producer_fitness),
                 oep_entries=oep_entries,
                 producer_entries=producer_entries,
+                ordinal_win_rate=ordinal_win_rate,
+                ordinal_wins=ordinal_wins,
+                ordinal_variants=ordinal_variants,
             )
         chosen = oep_entries if chose_oep else producer_entries
+        mem.last_lanes = (
+            _lane_intents_from_entries(
+                oep_entries,
+                movement=movement,
+                status=status,
+                obs=obs,
+                player_id=int(obs.player_id),
+            )
+            if chose_oep
+            else ()
+        )
 
         chosen = disambiguate_duplicate_launches(chosen)
 
@@ -1567,6 +2501,7 @@ class OEPLiteRuntime:
         with torch.no_grad():
             sparse_row = self.tensor_action(obs_tensors, raw_obs=obs)
         return sparse_action_row_to_moves(sparse_row, obs, player_id=player_id)
+
 
 def _env_config() -> OEPLiteConfig:
     def _env_int(name: str, default: int) -> int:
@@ -1636,6 +2571,25 @@ def _env_config() -> OEPLiteConfig:
             "OEP_LATE_MAX_SOURCES_PER_LANE",
             defaults.late_max_sources_per_lane,
         ),
+        ordinal_opponent_variants=_env_int(
+            "OEP_ORDINAL_OPPONENT_VARIANTS",
+            defaults.ordinal_opponent_variants,
+        ),
+        ordinal_win_threshold=_env_float(
+            "OEP_ORDINAL_WIN_THRESHOLD",
+            defaults.ordinal_win_threshold,
+        ),
+        reactive_reply=_env_bool("OEP_REACTIVE_REPLY", defaults.reactive_reply),
+        reactive_reply_prune_advantage=_env_float(
+            "OEP_REACTIVE_REPLY_PRUNE_ADVANTAGE",
+            defaults.reactive_reply_prune_advantage,
+        ),
+        plan_memory_variants=_env_int(
+            "OEP_PLAN_MEMORY_VARIANTS",
+            defaults.plan_memory_variants,
+        ),
+        beam_first_width=_env_int("OEP_BEAM_FIRST_WIDTH", defaults.beam_first_width),
+        beam_pair_width=_env_int("OEP_BEAM_PAIR_WIDTH", defaults.beam_pair_width),
     )
 
 
