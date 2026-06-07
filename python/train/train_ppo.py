@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import random
 import time
 from collections.abc import Sequence
@@ -14,11 +15,25 @@ import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn.functional as F
-from python.agents.policy import FlatActorCritic
-from python.agents.registry import get_heuristic_policies
+from python.agents.policy import EntityActorCritic, FlatActorCritic
+
+_POLICY_ARCHS = {"flat": FlatActorCritic, "entity": EntityActorCritic}
+
+
+def _build_policy(arch: str, obs_dim: int):
+    if arch not in _POLICY_ARCHS:
+        raise ValueError(f"unknown policy arch {arch!r}; valid: {sorted(_POLICY_ARCHS)}")
+    return _POLICY_ARCHS[arch](obs_dim)
+from python.agents.registry import (
+    STATEFUL_SINGLETON_OPPONENTS,
+    get_heuristic_policies,
+    get_isolated_opponents,
+)
+from python.train.opponent_pool import get_process_opponent_pool
 
 from orbit_wars_gym import OrbitWarsGymEnv
 from orbit_wars_gym.action_decoder import DecoderConfig, decode_discrete_action
+from orbit_wars_gym.action_masks import build_action_masks, split_masks
 from orbit_wars_gym.backend import RustBatchBackend, RustConfig
 from orbit_wars_gym.encoding import observation_dim
 from orbit_wars_gym.entities import fleet_owner, planet_id, planet_owner
@@ -26,7 +41,7 @@ from orbit_wars_gym.entities import fleet_owner, planet_id, planet_owner
 _HEURISTIC_POLICIES = get_heuristic_policies()
 PHASE0_OPPONENTS = {
     name: _HEURISTIC_POLICIES[name]
-    for name in ("greedy", "defensive", "rush", "anti_meta", "weak_random")
+    for name in ("producer", "oep", "greedy", "defensive", "rush", "anti_meta", "weak_random")
 }
 
 
@@ -34,10 +49,15 @@ PHASE0_OPPONENTS = {
 class Phase0TrainingConfig:
     seed: int = 0
     policy_track: str = "phase0_2p"
+    policy_arch: str = "flat"
     num_players: int = 2
     total_timesteps: int = 200_000
     rollout_steps: int = 256
     rollout_num_envs: int = 1
+    # Opponent-call parallelism. Default 1 (sequential) — both threads (GIL-bound
+    # planners) and processes (per-step state IPC > planner compute) were measured
+    # SLOWER than sequential. >1 enables the experimental process pool (opt-in).
+    opponent_workers: int = 1
     update_epochs: int = 4
     minibatch_size: int = 256
     learning_rate: float = 2.5e-4
@@ -115,6 +135,7 @@ class RolloutSegment:
     returns: torch.Tensor
     values: torch.Tensor
     rewards: torch.Tensor
+    masks: torch.Tensor
     opponent: str
     episode_metrics: list[dict[str, Any]] = field(default_factory=list)
 
@@ -324,13 +345,21 @@ def _collect_single_env_rollout_segment(
     action_buf = []
     logprob_buf = []
     value_buf = []
+    mask_buf = []
     rewards_np = np.empty(rollout_steps, dtype=np.float32)
     dones_np = np.empty(rollout_steps, dtype=np.float32)
 
     for reset_idx in range(rollout_steps):
         obs_tensor = torch.as_tensor(obs_np, dtype=torch.float32, device=device).unsqueeze(0)
+        mask_tensor = torch.as_tensor(
+            build_action_masks(env.state, 0, min_ships_to_launch=training_cfg.decoder_min_ships_to_launch),
+            dtype=torch.bool,
+            device=device,
+        ).unsqueeze(0)
         with torch.no_grad():
-            action_tensor, logprob_tensor, _, value_tensor = model.get_action_and_value(obs_tensor)
+            action_tensor, logprob_tensor, _, value_tensor = model.get_action_and_value(
+                obs_tensor, masks=split_masks(mask_tensor)
+            )
         action = action_tensor.squeeze(0).cpu().numpy()
         previous_state = env.state
         next_obs_np, reward, done, _, _ = env.step(action)
@@ -349,6 +378,7 @@ def _collect_single_env_rollout_segment(
         action_buf.append(action_tensor.squeeze(0))
         logprob_buf.append(logprob_tensor.squeeze(0))
         value_buf.append(value_tensor.squeeze(0))
+        mask_buf.append(mask_tensor.squeeze(0))
         rewards_np[reset_idx] = float(reward)
         dones_np[reset_idx] = float(done)
 
@@ -392,6 +422,7 @@ def _collect_single_env_rollout_segment(
         returns=returns,
         values=values,
         rewards=rewards,
+        masks=torch.stack(mask_buf),
         opponent=opponent_name,
         episode_metrics=episode_metrics,
     )
@@ -423,12 +454,37 @@ def _collect_batched_rollout_segment(
 ) -> RolloutSegment:
     if training_cfg.num_players != 2:
         raise ValueError("batched PPO rollout currently supports only 2-player training")
-    try:
-        opponent_policy = PHASE0_OPPONENTS[opponent_name]
-    except KeyError as exc:
-        raise ValueError(f"unknown phase-0 opponent: {opponent_name}") from exc
+    if opponent_name not in PHASE0_OPPONENTS:
+        raise ValueError(f"unknown phase-0 opponent: {opponent_name}")
 
     num_envs = max(1, min(int(training_cfg.rollout_num_envs), int(sample_limit)))
+    # One isolated opponent instance per env so concurrent games never share
+    # per-game memory (producer/oep singletons). Each instance resets on step==0,
+    # so reusing the cached pool across segments is safe. Stateless heuristics
+    # reuse one shared callable.
+    opponent_policies = get_isolated_opponents(opponent_name, num_envs)
+    # Opponent planners (producer/oep) are the per-step bottleneck and are
+    # independent per env (isolation makes concurrent calls safe). Threads do NOT
+    # help — the planners are GIL-bound pure Python, so a ThreadPoolExecutor was
+    # measured ~20x SLOWER. Real parallelism needs separate processes:
+    # ``opponent_workers > 1`` spawns a persistent process pool with a fixed
+    # env->worker assignment (per-env memory lives in the worker). 0 = auto.
+    if (
+        int(training_cfg.opponent_workers) == 1
+        or num_envs == 1
+        or opponent_name not in STATEFUL_SINGLETON_OPPONENTS  # stateless opps are cheap; no pool
+    ):
+        opponent_pool = None
+    else:
+        requested = int(training_cfg.opponent_workers)
+        workers = min(requested, num_envs) if requested > 0 else min(num_envs, os.cpu_count() or 1)
+        # Cached/persistent pool keyed by the configured max env count, reused
+        # across segments (workers' per-game memory resets on step==0).
+        opponent_pool = (
+            get_process_opponent_pool(opponent_name, int(training_cfg.rollout_num_envs), workers)
+            if workers > 1
+            else None
+        )
     base_shaping_scale, comet_shaping_scale = shaping_scales(training_cfg, progress)
     reward_env = build_phase0_env(
         seed=base_seed,
@@ -458,25 +514,45 @@ def _collect_batched_rollout_segment(
     action_buf = []
     logprob_buf = []
     value_buf = []
+    mask_buf = []
     rewards_np = np.empty((rollout_steps, num_envs), dtype=np.float32)
     dones_np = np.empty((rollout_steps, num_envs), dtype=np.float32)
 
     for step_index in range(rollout_steps):
         obs_tensor = torch.as_tensor(obs_np, dtype=torch.float32, device=device)
+        mask_tensor = torch.as_tensor(
+            np.stack([
+                build_action_masks(state, 0, min_ships_to_launch=training_cfg.decoder_min_ships_to_launch)
+                for state in current_states
+            ]),
+            dtype=torch.bool,
+            device=device,
+        )
         with torch.no_grad():
-            action_tensor, logprob_tensor, _, value_tensor = model.get_action_and_value(obs_tensor)
+            action_tensor, logprob_tensor, _, value_tensor = model.get_action_and_value(
+                obs_tensor, masks=split_masks(mask_tensor)
+            )
         actions_np = action_tensor.cpu().numpy()
 
         action_rows: list[list[float]] = []
         player_moves_by_env: list[list[list[float]]] = [[] for _ in range(num_envs)]
-        for env_index, state in enumerate(current_states):
-            if not active[env_index]:
-                continue
+        active_indices = [i for i in range(num_envs) if active[i]]
+
+        # Opponent moves (the expensive part); via a process pool when enabled,
+        # else sequential. Each env has its own isolated opponent instance.
+        if opponent_pool is not None:
+            opponent_moves_by_env = opponent_pool.moves(current_states, active_indices)
+        else:
+            opponent_moves_by_env = {
+                i: opponent_policies[i](current_states[i], 1) for i in active_indices
+            }
+
+        for env_index in active_indices:
+            state = current_states[env_index]
             player_moves = decode_discrete_action(state, 0, actions_np[env_index], decoder_config(training_cfg))
-            opponent_moves = opponent_policy(state, 1)
             player_moves_by_env[env_index] = player_moves
             action_rows.extend(_moves_to_flat_rows(env_index, 0, player_moves))
-            action_rows.extend(_moves_to_flat_rows(env_index, 1, opponent_moves))
+            action_rows.extend(_moves_to_flat_rows(env_index, 1, opponent_moves_by_env[env_index]))
 
         flat_actions = (
             np.asarray(action_rows, dtype=np.float64)
@@ -534,9 +610,12 @@ def _collect_batched_rollout_segment(
         action_buf.append(action_tensor)
         logprob_buf.append(logprob_tensor)
         value_buf.append(value_tensor)
+        mask_buf.append(mask_tensor)
 
         current_states = next_states
         obs_np = next_obs_np
+
+    # Pool is cached/persistent (reset on step==0); closed at interpreter exit.
 
     for env_index, episode in enumerate(episodes):
         if active[env_index] and episode.length > 0:
@@ -563,6 +642,7 @@ def _collect_batched_rollout_segment(
         gae_lambda=training_cfg.gae_lambda,
     )
 
+    masks = torch.stack(mask_buf)
     flat_observations = observations.reshape(-1, observations.shape[-1])
     flat_actions = actions.reshape(-1, actions.shape[-1])
     flat_logprobs = logprobs.reshape(-1)
@@ -570,6 +650,7 @@ def _collect_batched_rollout_segment(
     flat_returns = returns.reshape(-1)
     flat_values = values.reshape(-1)
     flat_rewards = rewards.reshape(-1)
+    flat_masks = masks.reshape(-1, masks.shape[-1])
     if sample_limit > 0:
         flat_observations = flat_observations[:sample_limit]
         flat_actions = flat_actions[:sample_limit]
@@ -578,6 +659,7 @@ def _collect_batched_rollout_segment(
         flat_returns = flat_returns[:sample_limit]
         flat_values = flat_values[:sample_limit]
         flat_rewards = flat_rewards[:sample_limit]
+        flat_masks = flat_masks[:sample_limit]
 
     return RolloutSegment(
         observations=flat_observations,
@@ -587,6 +669,7 @@ def _collect_batched_rollout_segment(
         returns=flat_returns,
         values=flat_values,
         rewards=flat_rewards,
+        masks=flat_masks,
         opponent=opponent_name,
         episode_metrics=episode_metrics,
     )
@@ -635,6 +718,7 @@ def _concat_segments(segments: Sequence[RolloutSegment]) -> dict[str, torch.Tens
         "advantages": torch.cat([segment.advantages for segment in segments], dim=0),
         "returns": torch.cat([segment.returns for segment in segments], dim=0),
         "values": torch.cat([segment.values for segment in segments], dim=0),
+        "masks": torch.cat([segment.masks for segment in segments], dim=0),
     }
 
 
@@ -664,10 +748,12 @@ def _ppo_update(
             old_logprob_mb = batch["logprobs"][indices]
             advantage_mb = batch["advantages"][indices]
             return_mb = batch["returns"][indices]
+            mask_mb = split_masks(batch["masks"][indices])
 
             advantage_mb = (advantage_mb - advantage_mb.mean()) / (advantage_mb.std(unbiased=False) + 1e-8)
 
-            _, new_logprob, entropy, new_value = model.get_action_and_value(obs_mb, action_mb)
+            # Same mask as sampling time -> the PPO importance ratio stays correct.
+            _, new_logprob, entropy, new_value = model.get_action_and_value(obs_mb, action_mb, masks=mask_mb)
             log_ratio = new_logprob - old_logprob_mb
             ratio = log_ratio.exp()
 
@@ -697,6 +783,16 @@ def _ppo_update(
     if update_steps:
         for key in stats:
             stats[key] /= update_steps
+
+    # Critic explained variance over the rollout batch (pre-update value targets):
+    # ev <= 0 means the value head explains no more than a constant baseline.
+    with torch.no_grad():
+        y_true = batch["returns"]
+        y_pred = batch["values"]
+        var_y = torch.var(y_true, unbiased=False)
+        stats["explained_variance"] = (
+            float(1.0 - torch.var(y_true - y_pred, unbiased=False) / var_y) if float(var_y) > 0 else 0.0
+        )
     return stats
 
 
@@ -737,10 +833,23 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
     device = torch.device(training_cfg.device)
     opponents = _parse_opponents(training_cfg.opponents)
 
-    model = FlatActorCritic(observation_dim()).to(device)
+    # Producer/OEP keep per-game memory in a module-level singleton. The batched
+    # rollout now gives each env its OWN isolated opponent instance (see
+    # get_isolated_opponents), so concurrent games no longer cross-contaminate and
+    # batched/vectorized rollout is safe with stateful opponents.
+
+    # When warm-starting, adopt the checkpoint's architecture (e.g. an entity-BC
+    # init) so the state_dict loads cleanly; otherwise use the configured arch.
+    checkpoint = _load_checkpoint(training_cfg.checkpoint_in, device) if training_cfg.checkpoint_in else None
+    if checkpoint is not None:
+        ckpt_summary = checkpoint.get("summary") if isinstance(checkpoint.get("summary"), dict) else {}
+        policy_arch = str(ckpt_summary.get("arch", training_cfg.policy_arch))
+    else:
+        policy_arch = training_cfg.policy_arch
+
+    model = _build_policy(policy_arch, observation_dim()).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=training_cfg.learning_rate)
-    if training_cfg.checkpoint_in:
-        checkpoint = _load_checkpoint(training_cfg.checkpoint_in, device)
+    if checkpoint is not None:
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer_state = checkpoint.get("optimizer_state_dict")
         if optimizer_state:
@@ -751,6 +860,7 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
     all_episode_metrics: list[dict[str, Any]] = []
     opponent_segments = {name: 0 for name in opponents}
     latest_update_stats: dict[str, float] = {}
+    update_series: list[dict[str, float]] = []
 
     while total_timesteps < training_cfg.total_timesteps:
         segments: list[RolloutSegment] = []
@@ -777,11 +887,15 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
             all_episode_metrics.extend(segment.episode_metrics)
         batch = _concat_segments(segments)
         latest_update_stats = _ppo_update(model, optimizer, batch, training_cfg)
+        update_series.append(
+            {"update": float(update_idx), "timesteps": float(total_timesteps), **latest_update_stats}
+        )
         update_idx += 1
 
     elapsed_seconds = max(time.perf_counter() - started_at, 1e-9)
     summary = {
         "algorithm": "ppo",
+        "arch": policy_arch,
         "policy_track": training_cfg.policy_track,
         "num_players": training_cfg.num_players,
         "timesteps": total_timesteps,
@@ -811,6 +925,7 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
     }
     summary.update(_aggregate_episode_metrics(all_episode_metrics))
     summary.update({f"last_{key}": value for key, value in latest_update_stats.items()})
+    summary["update_series"] = update_series
 
     if training_cfg.checkpoint_out:
         checkpoint_path = Path(training_cfg.checkpoint_out)
@@ -870,11 +985,17 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--training-track", choices=("phase0_2p", "phase5_4p"), default="phase0_2p")
+    parser.add_argument("--policy-arch", choices=("flat", "entity"), default="flat",
+                        help="policy architecture for training from scratch; a --checkpoint-in overrides it with the checkpoint's arch")
     parser.add_argument("--num-players", type=int, default=2)
     parser.add_argument("--opponents", default="greedy,defensive,rush,anti_meta,weak_random")
     parser.add_argument("--total-timesteps", type=int, default=200_000)
     parser.add_argument("--rollout-steps", type=int, default=256)
     parser.add_argument("--rollout-num-envs", type=int, default=1)
+    parser.add_argument("--opponent-workers", type=int, default=1,
+                        help="opponent-call parallelism in batched rollout. 1=sequential (recommended/default). "
+                             ">1 = experimental process pool (measured SLOWER: planner is too cheap vs per-step IPC). "
+                             "0 = auto (also slower). Threads were tried too and are GIL-bound.")
     parser.add_argument("--update-epochs", type=int, default=4)
     parser.add_argument("--minibatch-size", type=int, default=256)
     parser.add_argument("--learning-rate", type=float, default=2.5e-4)
@@ -930,10 +1051,12 @@ def main():
     base_cfg = Phase0TrainingConfig(
         seed=args.seed,
         policy_track=args.training_track,
+        policy_arch=args.policy_arch,
         num_players=args.num_players,
         total_timesteps=args.total_timesteps,
         rollout_steps=args.rollout_steps,
         rollout_num_envs=args.rollout_num_envs,
+        opponent_workers=args.opponent_workers,
         update_epochs=args.update_epochs,
         minibatch_size=args.minibatch_size,
         learning_rate=args.learning_rate,
@@ -973,7 +1096,7 @@ def main():
     )
     payload = {
         "obs_dim": int(obs.shape[0]),
-        "params": int(sum(parameter.numel() for parameter in FlatActorCritic(observation_dim()).parameters())),
+        "params": int(sum(p.numel() for p in _build_policy(summary.get("arch", "flat"), observation_dim()).parameters())),
         "summary": summary,
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
