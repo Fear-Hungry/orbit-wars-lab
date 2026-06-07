@@ -5,165 +5,239 @@
 
 ---
 
-# 🎯 ATACAR AGORA — superar o Producer
+# 🎯 ATACAR AGORA — objetivo top 5
 
-## 🆕 OEP SUBMETIDO ao Kaggle (2026-06-06, ref 53432895) — teste do score REAL
-Insight (do usuário): a régua local (1v1 vs Producer, −0.045) é PROXY; o score do leaderboard é torneio vs ~109 agentes — um bot que perde 1v1 pode ser mais robusto vs o campo. **torch funciona no Kaggle** (Producer prova), então o OEP é submetível (`scripts/package_oep_submission.py`, min_advantage=15 baked, validado no `get_last_callable`). Submetido risk-free (best-counts). **RESULTADO: ERROU** (`SubmissionStatus.ERROR`) — Producer 1199.2 intacto (best-counts confirmado, sem dano). Causa provável: validação local foi 2p/sem-cometas/1-decisão; o torneio tem **cometas+4p+hardware lento** → actTimeout estourado ou crash em cometas/4p (não testados). **CONSERTADO E RE-SUBMETIDO** (ref 53433131, wrapper robusto no main.py: lookahead em thread com orçamento ~0.6s → fallback ao Producer; corrige o timeout sem violar no-silent-fallback do runtime). **COMPLETOU → publicScore 600.0** = MUITO abaixo do Producer (1199.2). **Achado definitivo:** o OEP está overfit ao Producer — o proxy 1v1 (−0.045) era enganosíssimo; contra o campo de 109 agentes o OEP é catastrófico (600). **Bot melhor NÃO encontrado; o OEP é muito pior na métrica real.** Producer 1199 intacto (best-counts). Lição: o leaderboard é a única régua que importa; o 1v1-vs-Producer pode superestimar enormemente.
+Estado operacional curto:
 
+- **Producer é a melhor submissão operacional atual** (~1200 LB). Congelar como default até existir candidato provado.
+- **OEP é útil como adversário/professor** (~1100 LB), mas não como linha de tuning: knobs/overlays OEP já foram atacados e não devem voltar sem hipótese nova.
+- **PPO atual ainda é fraco** (`-1.0` vs Producer nos registros antigos). O próximo ataque é imitação + currículo forte, não PPO do zero contra heurísticas fracas.
+- **Histórico detalhado fechado vive em `EXPERIMENTS.md`**. Este arquivo deve ficar só com o que ainda vamos atacar.
+- **Decidir só com evidência pareada suficiente**: 16 seeds = triagem; 96 seeds decide. Score Kaggle precisa estabilizar antes de conclusão.
 
-Producer = a melhor que temos (o piso). Meta: candidato com **margin > 0 vs Producer a 96 seeds,
-crash/timeout/invalid = 0**. Ordem fixa (motor→backtest→bot; corrigir CORREÇÃO antes de otimizar).
-⚠️ Decidir **só a 96 seeds** — 16/4-seed é ruído (vimos +0.31 vs −0.21 no MESMO agente).
+## 🧭 SEGUIR AGORA — lição do tópico Kaggle 704741 ("Lessons learned so far")
+O tópico do Radek muda a prioridade: PPO competitivo não é "mais reward shaping"; é **sistema de treino**
+com features corretas, métricas de PPO, currículo/opponent pool e avaliação por checkpoints. O nosso erro
+atual é ficar entre dois mundos: OEP/Producer overlay já saturou, enquanto PPO ainda é baseline fraco
+treinado contra heurísticas fracas.
 
-## ✅ A — world-model do orbit_lite fiel novamente (motor/lookahead verde)
-- [x] **A. `test_movement_l3` saiu do xfail sem mudança de lógica no `orbit_lite`:** o repro seed=37 era efeito de extensão nativa `orbit_wars_rs` stale em relação ao fonte Rust atual. Após rebuild real do binding (`rtk .venv/bin/python -m maturin develop --release -m crates/orbit_wars_py/Cargo.toml`), `test_movement_l3_matches_rust_with_random_valid_launches --runxfail` passou 200/200 e a suíte de movimento passou 9/9.
-  - **Correção de honestidade:** lag uniforme e `normal OR lag` foram hipóteses falsas; não entraram no motor. O fix válido é garantir que o binding Rust local esteja reconstruído contra o fonte atual.
-  - **Validação adicional:** `tests/test_parity_actions.py` passou 4/4 depois do rebuild, confirmando que o Rust carregado voltou a bater o oficial nas janelas de ação.
-- [x] **A-parcial (o que de fato ficou fiel):** swept-pair cobre origem/destino, cometas e terceiro planeta quando o backend nativo está atualizado.
-- [x] **B. Diagnóstico OEP (6 evals 96 seeds):** o OEP satura no **empate (−0.045)** e NÃO bate o Producer por tweak. Knobs exaustados — todos regrediram vs −0.045: `min_advantage` (curva NÃO-monotônica: ótimo em 15), WIDER (−0.080), banda (−0.274), horizon=28 (−0.271). **Causa-raiz inicial medida: o fitness 1-ply SUPERESTIMA e é RUIDOSO** (best-response a um Producer ESTÁTICO que na verdade re-planeja; as maiores vantagens projetadas são as mais ILUSÓRIAS). E1/E2 testaram a camada de seleção/diagnóstico; revisão E0 conclui que o próximo salto precisa melhorar **plano-candidato**, não só re-pontuar planos existentes.
-- [x] **Submissão Producer (1231.9) Kaggle-safe:** `NameError: __file__` resolvido em `_load_upstream` (tenta `import _upstream` primeiro). Validado por `get_last_callable`.
+- [ ] **Congelar o default competitivo no Producer até existir candidato provado.** Não gastar mais sessão com
+  knobs de seleção OEP (`min_advantage`, horizon, ordinal, reactive, rollout) sem gerador de plano novo ou
+  evidência externa forte. OEP local e OEP Kaggle já provaram overfit ao Producer/proxy.
+- [x] **Antes de novo run PPO longo, consertar instrumentação:** ✅ 2026-06-07. `explained_variance` no summary/checkpoint
+  (`last_explained_variance`) e série por update em `summary["update_series"]` (`approx_kl`, `clipfrac`, entropy,
+  `value_loss`, `policy_loss`, explained_variance, timesteps). Script de comparação vs Producer a seeds fixas já existe
+  (`scripts.benchmark_ppo_submission`). **Pendente (campanha):** eval periódico DENTRO do loop com win/margin por
+  oponente + captura de neutros por checkpoint (parte do loop de campanha do P3, não pré-req de código).
+- [~] **Auditar map bias / features assimétricas:** ✅ auditoria FEITA 2026-06-07 (`scripts/audit_map_bias.py`,
+  `symmetry.py`, `tests/test_map_bias_invariance.py`); baseline em `artifacts/map_bias/invariance_report.json`.
+  **Achado (BC policy, 192 estados):** player-swap gap = **0.0** (encoder já correto em perspectiva) mas
+  rotate_180 gap = **2.5–5.6 logits** e reflect_x = **1.7–3.6** → forte viés ESPACIAL de `x/y` absolutos + `planet_id`.
+  - [x] **Correção ESPACIAL aplicada (data-augmentation):** ✅ 2026-06-07. `collect_imitation_dataset --augment` adiciona
+    cópias rotate_180/reflect_x ao split de train com o MESMO label (índices invariantes). Resultado (bc_producer_aug):
+    gap rotate_180 2.5–5.6 → **0.24–1.07**, reflect_x 1.7–3.6 → **0.22–0.89** (~5–10×); launch F1 0.16–0.45 → **0.62**;
+    **margem online −0.915 → −0.880** (melhorou), crash/timeout/invalid=0. Critério "reduz sensibilidade sem piorar
+    benchmark" ✅. Canonicalização não foi necessária (augmentation já atingiu o alvo). **Target head segue fraco (0.09)
+    mesmo com aug → é representação, não simetria → T4.**
+- [x] **Trocar o currículo fraco por oponente forte:** ✅ 2026-06-07. `PHASE0_OPPONENTS` inclui Producer e OEP (P0);
+  currículo ponderado é expressável por repetição em `--opponents` (ex.: `producer×7,greedy×2,oep` → 70/20/10,
+  confirmado em opponent_segments); warm-start por imitação pronto (P2 BC + `--checkpoint-in` carrega o BC). Falta só
+  rodar a campanha (abaixo).
+- [ ] **Rodar campanha PPO só depois dos três itens acima:** milhões+ de timesteps, checkpoints periódicos,
+  tournament local por checkpoint, promoção só com 96 seeds vs Producer + 2º oponente-régua, crash/timeout/invalid=0.
+  Se não houver budget para isso, declarar Producer como submissão operacional.
+- [ ] **Alternativa não-RL:** abandonar overlay no Producer e construir planner standalone de timeline/sim-value
+  estilo fórum (missões safe-capture, rescue, recapture, reinforce, snipe, redistribuição por dominância). Isso é
+  build multi-sessão; não é MCTS turno-a-turno sobre os candidatos atuais.
 
----
+## 🧪 EXPERIMENTOS A FAZER — PPO usando Producer/OEP como professores e adversários
+Hipótese: Producer (~1200 LB) e OEP (~1100 LB) são fortes o bastante para servir como **currículo**.
+PPO direto do zero contra eles provavelmente perde tudo; a rota testável é **imitação → PPO contra pool forte
+→ self-play**. Cada experimento precisa salvar artefato, métrica por checkpoint e comparação pareada.
 
-# 🔬 E. NOVAS SOLUÇÕES — explorar para CRUZAR o 0 (pós-diagnóstico, fundamentado)
+- [x] **P0. Registrar adversários fortes no treino.** ✅ feito e verificado 2026-06-06.
+  - [x] **Implementar registry:** `producer` adicionado a `PHASE0_OPPONENTS` em `python/train/train_ppo.py` reaproveitando `python/agents/registry.py` (sem loader paralelo).
+  - [x] **Implementar OEP policy:** `oep_agent(state, player)` em `python/agents/registry.py` converte estado→observação oficial e reusa `bots/oep/agent.py` (lazy import). Registrado em `get_heuristic_policies()` e `HEURISTIC_NAMES`.
+  - [x] **Garantir reset determinístico:** ambos resetam memória em `step == 0` por construção — Producer em `_upstream.py:378`, OEP em `planner.py:2257` (`tensor_action`). Coberto por `test_producer_runtime_resets_cached_movement_on_step_zero`. **Subescopo extra:** como ambos usam runtime singleton de módulo, adicionei guard fail-loud em `train_phase0` que recusa batched rollout (`rollout_num_envs > 1`) com `producer`/`oep` (contaminação entre envs interleaved); single-env é seguro (jogos sequenciais). Set `STATEFUL_SINGLETON_OPPONENTS` no registry.
+  - [x] **Teste unitário:** `tests/test_strong_opponents_registry.py` chama `producer`/`oep` em estados 2p e 4p (todos os players) e valida `moves_are_legal`.
+  - [x] **Smoke de treino:** rodado; terminou ok.
+  - [x] **Correto quando:** ✅ smoke sem crash; `summary["opponents"] == ["producer","oep"]`; `opponent_segments == {producer:8, oep:8}`; checkpoint carregável por `scripts.benchmark_ppo_submission` (crash/timeout/invalid_action_rate = 0). Suíte `test_training_phase0 + test_oep_agent + test_strong_opponents_registry` = 46 passed.
 
-> **Insight central (do diagnóstico B + revisão E0):** o avaliador 1-ply era ruidoso e inflava vantagem,
-> mas E1/E2 só mexeram na **camada de seleção** entre os mesmos planos e não criaram plano melhor que o
-> Producer. A próxima geração precisa atacar **qualidade do plano-candidato**: gerar `oep_entries` por
-> um mecanismo diferente, dentro do orçamento de 1s, e só então medir a 96 seeds.
+- [x] **P1. Dataset de imitação Producer/OEP.** ✅ feito e verificado 2026-06-06 — **revelou 2 blocantes para P2 (ver `P1.5` abaixo).**
+  - [x] **Criar coletor:** `scripts/collect_imitation_dataset.py` roda jogos locais com experts e salva `.npz` + `.meta.json` por dataset em `artifacts/imitation/`.
+  - [x] **Conteúdo mínimo por exemplo:** `obs`, `player`, `step`, `expert_id`, `raw_moves` (CSR), `action` (4-tupla PPO), `seed`, `split_id`, `quant_error`, `matched_moves`, `num_expert_moves`, `is_no_op`, `is_hard`, `legal`. (Não há `legal_mask` no stack; gravado `legal` por exemplo.)
+  - [x] **Resolver ação contínua -> discreta:** `python/orbit_wars_gym/action_inverse.py` — busca em grade + argmin da `move_set_distance` (métrica documentada: angle rad + |Δships|/source_ships, miss/extra penalties). Round-trip exato (erro 0) coberto por teste.
+  - [x] **Datasets separados:** `producer_only`, `oep_only`, `producer_oep_mix`, `hard_states` (este só grava estados onde as ações projetadas de Producer e OEP divergem; 2 labels por estado).
+  - [x] **Split fixo:** `split_for_seed(seed)` (`seed%5` → train/val/test); por seed, não por linha. Testado.
+  - [x] **Relatório:** `artifacts/imitation/dataset_report.json` com n, por-expert, por-step, max_bucket_share por cabeça, no_op_rate, legal_action_rate, hard_rate, quant_error mean/p50/p95/max, content_hash.
+  - [x] **Correto quando:** ✅ `--self-check` reproduz content_hash (determinismo); `legal_action_rate == 1.0`; `is_no_op` == (0 expert moves) sem descartes silenciosos; quant_error p95 documentado (~4.2 nos datasets principais). **Ressalva:** `max_bucket_share.source` = 0.84–0.96 (> 0.90 em hard_states) — colapso COM explicação: experts lançam quase sempre do planeta mais forte → `source_rank 0`. Vira input de `P1.5`.
 
-## ⚠️ E0. REVISÃO do que o codex implementou (2026-06-06) — o que está errado e POR QUÊ
-O codex implementou E1a (variantes ordinais do oponente) **e** E2a (`reactive_reply` 2-ply) no `planner.py`,
-mais o fix de reset do Producer. Revisão honesta:
-- [x] **Acertou (não mexer):** (a) fix de reset do Producer (`_upstream.py`: `mem.reset()` no step 0) — era **memory-leak real** (`movement`/`last_sparse_action_row` vazavam entre jogos no mesmo worker, contaminando a régua e explicando a divergência jobs=1 vs jobs=4). (b) `_debit_entry_sources` **não** é débito-duplo — `apply_private_planned_launches` só semeia arrivals/stash, não debita o source (docstring confirma). (c) Rodou o **gate 96 seeds** de verdade: margin=−0.099, win=0.448, `passed=False`.
-- [x] **ERRO #1 (ESTRATÉGICO — aceito):** E1a e E2a são **mudanças na CAMADA DE SELEÇÃO** — só escolhem melhor entre os MESMOS dois planos (OEP vs Producer); **nenhum melhora os planos-candidatos do OEP**. A réplica E2a desinflou o diagnóstico de fitness no profile serial (`mean_fitness_delta≈0.138`), mas a margem de 16 seeds continua só triagem e não mede promoção. POR QUÊ: se o novo trabalho só re-pontua `oep_entries` já existentes, ele pode reduzir ilusão, mas não cria plano melhor que o Producer. A alavanca que cruza 0 é **plano-candidato melhor** (busca real C1 / MCTS E3 / valor aprendido E4), não mais um chooser.
-  - [x] DECISÃO acionável: parar de afinar seleção (E1/E2) e pivotar para **qualidade do plano** (C1 ou E3). Verificar: o novo trabalho gera `oep_entries` por um mecanismo diferente do atual, não só re-pontua os mesmos.
-- [x] **ERRO #2 (METODOLÓGICO — CORRIGIDO):** o `reactive_reply` recomputava só o `oep_fitness` contra a réplica reativa e deixava o `producer_fitness` contra a previsão estática → comparava OEP-sob-adversário-reativo vs Producer-sob-oponente-passivo (limiar enviesado contra desviar). **Fix (2-ply simétrico, Justesen):** `_reactive_reply_entries` foi generalizada (param `our_entries`) e agora é chamada TAMBÉM para o `producer_entries`; o `producer_fitness` é recomputado contra a réplica do oponente AO PLANO DO PRODUCER. Cada plano é pontuado contra a resposta a ELE.
-  - [x] verificado: profile serial 1 seed/128 — as duas réplicas rodam **59/59 vezes** (`producer_reactive_reply` e `producer_reactive_reply_baseline`, simétrico); custo extra ~12,5ms só nos turnos gated (`advantage>prune`); `max_decision_ms=118`, `timeout=0.0`. ruff + `test_oep_agent.py` 24 passed. Knob off-by-default → agente padrão inalterado.
-- [x] **ERRO #3 (corrigido no registro):** E2a JÁ foi benchmarkado (16 seeds: margin=−0.0326, timeout_rate=0.000701; E2b prune0: margin=−0.0625, timeout_rate=0.01257). **MAS a rejeição não pode depender da margem 16-seed nem do timeout paralelo isolado:** o profile SERIAL tem `max=119ms` (E2a) / `91ms` (E2b), ~8× de folga, timeout=0.0. O motivo honesto de não promover agora é: comparação 2-ply ainda assimétrica (ERRO #2), margem não gate-confirmada e E1/E2 não melhoram o plano-candidato.
-  - [ ] (opcional) E2a é o ÚNICO candidato que (a) conserta a inflação diagnosticada E (b) é numericamente o melhor a 16 seeds → merece **UMA** rodada 96 seeds **serial** (jobs=1) pra cravar o teto. Mas mesmo se der empate, não basta pro TOP-5 → pivotar pra C1/E3 de qualquer forma.
-- [x] **ERRO #4 (confirmado e corrigido no artefato):** o fix de reset **muda o baseline do Producer** → toda margem medida ANTES dele é suspeita. Verificação inicial de `artifacts/submission_producer.tar.gz`: o `main.py` autocontido antigo só zerava `cached_player_count` no step 0; não chamava `mem.reset()` e nem continha `_upstream.py` separado. O tarball foi reconstruído com o script versionado e agora contém `_upstream.py` com `mem.reset()` no step 0.
-  - [x] ação: reconstruir/validar o tarball Producer antes de usá-lo como régua ou artefato de submissão.
-  - [ ] re-rodar qualquer baseline pré-fix antes de citar.
-- [x] **Nit menor:** validação `reactive_reply + ordinal_variants>1` movida para `OEPLiteConfig.__post_init__`, com teste de env/config. Agora falha na construção da config, não dentro do turno.
+- [x] **P1.5. Cabeça `launch?` binária + move condicional** (decisão do usuário; fork resolvido). ✅ a–f completos e verificados (a–e 2026-06-06, f masking 2026-06-07).
+  - Evidência que motivou: Producer/OEP **seguram ~81% dos turnos** (`num_expert_moves==0`), mas o decoder SEMPRE lançava. Solução escolhida: `action = [launch, source, target, frac, offset]`, `P(pass)=P(launch=0)`, `P(move)=P(launch=1)*∏heads`.
+  - [x] **(a) policy.py:** `self.launch=Linear(256,2)`; `forward` retorna launch; `get_action_and_value` emite ação (B,5) com `logprob = launch_lp + is_launch*move_lp` e `entropy = launch_entropy + p_launch*move_entropy`.
+  - [x] **(b) decoder:** aceita `[launch,s,t,f,o]`, `launch==0 -> []`; compat 4-campos (legado/inverse) marcada.
+  - [x] **(c) inverse + dataset:** `InverseResult.launch`/`.action5`; collector salva `action` (N,5); report ganha `launch_rate` e heads em cols 1..4.
+  - [x] **(d) PPO:** `gym_env.action_space = MultiDiscrete([2,16,32,4,5])`; rollout/update já genéricos quanto à largura; smoke shape-5 OK (entropy 5.79).
+  - [x] **(e) export:** `export_submission` exige `launch.weight/bias`, `_neural_action` prepõe argmax de launch, `_neural_decode` trata `launch==0->[]`; benchmark do export = crash/timeout/invalid 0.
+  - [x] **(f) masking** ✅ feito 2026-06-07. `python/orbit_wars_gym/action_masks.py` (builder flat `MASK_DIM=50` launch|source|target + `split_masks`); `policy.get_action_and_value(..., masks=)` aplica `masked_fill`; ligado no rollout single-env **e** batched, `_concat_segments`, `_ppo_update` (mesma mask no sampling E no update — testado em `test_same_mask_reproduces_logprob_for_ppo_ratio`); export `_neural_action` usa argmax mascarado p/ paridade. 5 testes em `tests/test_action_masks.py`; PPO smoke com mask saudável (kl 0.0025, clipfrac 0.035). Regra: launch=0 sempre válido; launch=1 só se há planeta lançável; source até len(own_launchable); target até planet_count-1; head sem entrada válida cai p/ all-valid (evita NaN, ignorado pois launch=0).
+  - [x] **Correto (parcial):** ✅ 198 testes passam; `decode([0,...])==[]`; no-op vira `launch=0` (não (0,0,0,0) ativo); `logprob(pass)` independe de source/target/frac/offset; PPO smoke shape-5; export inclui launch e roda sem ação ilegal. Registrado em `EXPERIMENTS.md`. **Pendente:** BC report com `no_op_rate≈0.81` + métricas separadas de launch e heads ativos (vem no P2); masking (P3).
 
-## C1. [PRIMEIRO DEGRAU] Qualidade do plano-candidato antes de MCTS completo
-Objetivo: gerar `oep_entries` por mecanismo diferente do guloso atual. Não é mais tuning de seleção;
-o candidato precisa existir como plano alternativo antes da comparação OEP-vs-Producer.
-- [x] **C1a. Plano-memória temporal — IMPLEMENTADO E REJEITADO COMO DEFAULT.**
-  - [x] `OEP_PLAN_MEMORY_VARIANTS=N` reconstrói até N lanes do último plano OEP executado no estado atual e escolhe entre plano guloso atual vs plano-memória por fitness de plano inteiro.
-  - [x] Default preservado (`OEP_PLAN_MEMORY_VARIANTS=0`); validação/env/testes cobrem o knob.
-  - [x] Verificação: profile 1 seed/128 teve `timeout=0.0`, `max_decision_ms=82.24`, `mean_decision_ms=45.41`; a variante de memória foi candidata 43 vezes e venceu só 1 (`choice_rate=0.023`). Smoke 4 seeds/500: crash/invalid/timeout=0, `mean_score_margin=-0.25` (ruído, não gate), `mean_decision_ms≈360` no runner.
-  - [x] Decisão: não promover nem rodar 96 seeds. O mecanismo gera plano alternativo real, mas quase nunca supera o guloso e adiciona custo. Próximo C1/E3 precisa gerar variações por rollout/beam efetivo, não só persistência de lanes antigas.
-- [x] **C1b. Beam do primeiro lance — IMPLEMENTADO E REJEITADO COMO DEFAULT.**
-  - [x] `OEP_BEAM_FIRST_WIDTH=N` força cada um dos top-N primeiros lances elegíveis, completa o restante com o greedy atual, inclui regroup e escolhe o melhor plano inteiro por fitness.
-  - [x] Default preservado (`OEP_BEAM_FIRST_WIDTH=0`); validação/env/testes cobrem o knob.
-  - [x] Verificação: profile 1 seed/128 teve `timeout=0.0`, `max_decision_ms=88.44`, `mean_decision_ms=47.55`; o beam gerou 358 candidatos em 232 decisões e escolheu alternativa só 3 vezes (`choice_rate=0.013`). Smoke 4 seeds/500: crash/invalid/timeout=0, `mean_score_margin=-0.25` (ruído, não gate), `mean_decision_ms≈381` no runner.
-  - [x] Decisão: não promover nem rodar 96 seeds. Gerar variações só no primeiro lance quase sempre confirma o guloso; próximo C1/E3 precisa de rollout multi-turn ou avaliação de nó que altere a árvore, não só beam raso.
+- [x] **P2. Behavioral cloning antes do PPO.** ✅ feito e verificado 2026-06-07 (gate atingido; BC fraco mas saiu do colapso).
+  - [x] **Criar treino BC:** `python/train/train_bc.py` com loss launch-aware (`CE(launch) + 1[launch==1]*(CE(source)+CE(target)+CE(frac)+CE(offset))`) e métricas por expert. Testado (`tests/test_train_bc.py`).
+  - [x] **Checkpoints:** `artifacts/bc/bc_producer.pt`, `bc_oep.pt`, `bc_mix.pt` treinados no dataset 0-11 (1024 train cada); salvam `summary` (decoder), `config`, `val_metrics`.
+  - [x] **Validação offline:** report com launch P/R/F1, predicted vs expert pass rate, active-head top-1 acc (só launch=1), loss por expert. (top-3/erro de moves reconstruídos não feitos — top-1 cobre o gate.)
+  - [x] **Benchmark online:** vs `producer,oep` 16 seeds 256 steps: bc_producer margin=-0.9150 (win 0.016), bc_oep=-0.9674 (win 0.0), bc_mix colapsou p/ pass. crash/timeout/invalid=0.
+  - [x] **Teste de não-regressão:** `tests/test_train_bc.py` confirma carga via `export_submission._load_checkpoint_payload` (com `launch.*`); export roda sem ação ilegal.
+  - [x] **Correto quando:** ✅ `bc_producer mean_score_margin=-0.915 > -1.0` vs Producer/OEP, `crash/timeout/invalid=0`, aprendeu além de no-op (source acc~0.70, launch calibrado quando não colapsa). **NÃO promover BC como submissão** (perde quase tudo vs Producer; é warm-start p/ P3).
+  - **Limitações medidas (input p/ P3/T4/T5):** (1) target head fraco (acc~0.07-0.12) — gargalo da quantização do target_rank; (2) launch head às vezes colapsa p/ classe majoritária (pass ~60%) → P3 deve usar class-weight/entropy no launch; (3) instabilidade entre seeds/tamanhos de dataset.
 
-## E1. [FECHADO] Avaliador ordinal: parar de confiar na MAGNITUDE do fitness
-**Diagnóstico que sustenta:** a curva de `min_advantage` é **não-monotônica** e os desvios delta>40
-(maiores vantagens projetadas) são os mais ILUSÓRIOS → a *magnitude* do fitness é não-confiável, mas a
-*ordenação* relativa pode ainda carregar sinal. É exatamente o cenário do paper.
-**Embasamento FORTE** — Joppen & Fürnkranz, *Ordinal Monte Carlo Tree Search* (arXiv:1901.04274):
-recompensas numéricas handcrafted são "necessariamente enviesadas"; o comportamento do agente muda com
-o *encoding* da recompensa; o tratamento **ordinal** (comparação por ranking, invariante a transformação
-monotônica) supera. Casa 1:1 com nosso fitness handcrafted superestimando.
-**Onde mexer:** seleção em `planner.py:1519-1533` (hoje `_advantage = oep_fitness − producer_fitness` comparado a `min_advantage`); fitness determinístico em `_plan_fitness` (`planner.py:409`, um ÚNICO `opponent_launch_set` estático); knobs em `OEPPlannerConfig` (`planner.py:~134`).
-- [x] **E1a. Avaliação multi-seed do oponente — IMPLEMENTADA E REJEITADA COMO DEFAULT.**
-  - [x] Gerou variantes determinísticas de `opponent_launch_set` (base, fração 0.75/0.50, atraso +1, top-K) via `OEP_ORDINAL_OPPONENT_VARIANTS`.
-  - [x] Para cada variante, compara `s_oep[k]` vs `s_prod[k]` e seleciona por `wins/K >= OEP_ORDINAL_WIN_THRESHOLD`; `wins/K` entra no `record_selection`/`profile_oep_step`.
-  - [x] Verificação de custo/cauda: K=3 profile serial 4 seeds/500 teve `mean=38.76ms`, `max=138.94ms`, `max_match_p95=84.08ms`, `timeout=0.0`; K=5 profile serial 4 seeds/500 teve `mean=50.62ms`, `max=156.21ms`, `max_match_p95=103.41ms`, `timeout=0.0`. No runner paralelo, K=3 smoke 4 seeds teve `mean_decision_ms=343.99`, `timeout=0.0`; K=5/16 seeds teve `mean_decision_ms=347.72`, 3 timeouts (`timeout_rate=0.000584`), possivelmente com contenda local. A métrica decisiva é cauda (`p99`/`max`/`timeout_count`), não média nem margem pequena-seed. Detalhe em `EXPERIMENTS.md` (2026-06-06).
-  - [x] Decisão: não promover nem rodar 96 seeds; default permanece no avaliador escalar anterior (`OEP_ORDINAL_OPPONENT_VARIANTS=1`). Margem de K=3/K=5 é inconclusiva porque 4-seed é ruído e 16-seed não é gate; não registrar "empatou no 4-seed" como achado. A rejeição é de **custo/design**: K=3/5 é pequeno demais para denoising ordinal forte; K alto o bastante para o efeito do paper teria custo linear e precisaria provar p99/max/timeout_count antes de qualquer gate. A hipótese ordinal simples também só perturba o mesmo plano estático, sem modelar a resposta reativa do Producer.
-- [x] **E1b. CANCELADO por escopo atual:** torneio ordinal par-a-par ainda re-pontua os mesmos candidatos. Não atacar enquanto o próximo trabalho precisar gerar planos melhores, não só escolher melhor entre planos saturados.
+- [~] **P3. PPO fine-tune com currículo forte.** **INFRA PRONTA 2026-06-07; falta a CAMPANHA (compute longo) + decisão de promoção.**
+  - [x] **Inicialização (arch-aware):** `train_ppo` seleciona a arquitetura pelo `summary["arch"]` do checkpoint (ou `--policy-arch`). **entity-init funciona ponta a ponta**: carrega bc_entity → PPO entity → salva/exporta arch-aware (smokes: arch=entity auto-detectado, flat-init compat, export crash/timeout/invalid=0). `_build_policy` + `_POLICY_ARCHS` em train_ppo.
+  - [x] **Currículo inicial:** `70% Producer / 20% heurísticas / 10% OEP` via repetição em `--opponents` (ex.: `producer×7,greedy×2,oep`). Verificado em opponent_segments.
+  - [x] **Instrumentação obrigatória:** `explained_variance` + `update_series` (approx_kl, clipfrac, entropy, value_loss, policy_loss) no summary/checkpoint. (reward médio/length/neutral captures já em `_aggregate_episode_metrics`.)
+  - [x] **Corrida limitada validada (120k timesteps, entity-init):** ✅ 2026-06-07. SPS 85.9 (~23 min); `artifacts/ppo/ppo_entity.pt`.
+    Curvas: EV −0.14→+0.79→estável **+0.90–0.94**; KL 0.005–0.02; clipfrac 0.07–0.15; entropy 1.35→3.0 (sem colapso); value_loss 0.55→0.03. Treino SADIO.
+    **Benchmark vs Producer/OEP 16 seeds: margin −0.7491 (win 0.094)** — **melhorou +0.20 sobre o BC entity (−0.9535)**; crash/timeout/invalid=0.
+  - [x] **Correto quando:** ✅ (na corrida limitada) curva pareada **melhora sobre o BC** (−0.95→−0.75), `explained_variance` materialmente > 0 (0.79–0.94), e PPO **não destrói o BC** (EV positivo já em u5). **Funil imitação→PPO validado.**
+  - [x] **Extensão +500k (620k total):** margin −0.749 (120k) → −0.848 (620k), win 0.094→0.047. **REENQUADRAR (input do usuário):** o post de referência treinou PPO **~12–15h em GPU potente** (provável 10–50M timesteps). Meus runs CPU (120k/620k @ ~85 SPS) são **escala de VALIDAÇÃO**, 1–2 ordens de grandeza abaixo. Logo a "regressão" é mais provável **sub-treino/instabilidade inicial** do que conclusão convergida. O que está SÓLIDO: (1) o funil BC→PPO melhora cedo (−0.95→−0.75) e (2) treino é sadio (EV ~0.94). Melhor checkpoint local = `ppo_entity` (120k, −0.75).
+  - **Evidência externa decisiva (usuário):** o PPO do post atingiu **~1300 de score — ACIMA do Producer (~1228)**, com **~12–15h de GPU**. Ou seja: **PPO é caminho PROVADO para bater o Producer / TOP-5**, e o gargalo é COMPUTE, não a abordagem. Meu pipeline (imitação→PPO + masking + entity + eval-gating) é o harness certo; falta o budget.
+  - **Nota de compute:** a regra do CLAUDE.md "sem GPU" é sobre **inferência** (agente roda CPU-only, actTimeout=1s). **Treino** é outra história. Gargalo de throughput = env-stepping (sim Rust + planners Producer/OEP em CPU); ~85 SPS → 15M timesteps ≈ ~49h CPU. Campanha competitiva = **GPU + envs vetorizados** = fronteira de compute do usuário.
+  - [x] **UNLOCK de throughput — isolamento por-env dos opponents** ✅ 2026-06-07. `make_runtime`/`make_agent` em bots/oep + bots/producer (runtime fresco por instância); `registry.get_isolated_opponents(name, count)` (pool cacheado de instâncias isoladas; reset por step==0); rollout batched usa uma instância por env; guard de P0 removido (agora seguro). Provado sem contaminação cruzada (`tests/test_opponent_isolation.py` — producer+oep) + 217 testes verdes.
+    - **Medido:** single-env CPU **147 SPS** → 16-env GPU (RTX 5060 Ti) **265 SPS (~1.8×)**. 10M timesteps ≈ ~10.5h (faixa do fórum).
+    - **Novo gargalo:** planner do opponent (Producer/OEP em Python, sequencial por env) — vetorização batcha sim Rust + policy GPU, mas o opponent é linear no nº de envs.
+  - [x] **Paralelizar opponents — TENTADO (threads + processos), AMBOS FALHAM** 2026-06-07. Threads (ThreadPoolExecutor): 12 SPS (~20× pior) — planners GIL-bound. Processos (`ProcessOpponentPool`, spawn, env→worker fixo): 74.5 SPS (~3.3× pior) — IPC/pickle do estado por step > custo do planner (~3.6ms). Correção verificada nos dois. **Default revertido p/ sequencial** (`opponent_workers=1`); pool fica opt-in experimental. Conclusão: paralelizar a *chamada* não compensa (planner barato vs transporte).
+  - **Lever real de throughput** (se quiser >1.8×): reduzir o CUSTO do opponent — currículo com mais greedy/producer (baratos) e menos OEP (caro), ou um opponent mais rápido. O unlock 1.8× (~250–275 SPS) já dá campanha overnight (10M ≈ ~10h).
+  - [ ] **NECESSÁRIO (provado pela regressão): eval periódico + seleção por margem pareada + early-stop.** Gancho no train loop que, a cada N updates, exporta + benchmarka vs Producer/OEP e guarda o melhor; parar se a margem piorar 3 evals seguidos ou entropy subir demais. **Sem isso, treino longo regride.**
+  - [ ] **Tuning anti-drift:** reduzir ent_coef / ancorar no BC (KL ao BC ou ent menor); revisar shaping (pode estar desalinhado da margem final). Re-rodar campanha COM eval-gating.
+  - [ ] **CAMPANHA LONGA + promoção:** só depois do eval-gating; gate de 96 seeds = decisão do usuário. `ppo_entity` (−0.75) ainda NÃO bate Producer → não promover.
 
-## E2. [FECHADO] Best-response 2-ply (oponente responde ao plano do OEP)
-**Diagnóstico que sustenta:** a superestimação vem do 1-ply best-response a uma resposta ESTÁTICA do
-Producer; o Producer real re-planeja. Fechar isso é o conserto direto da causa.
-**Embasamento FORTE** — Justesen, Mahlmann & Togelius 2016 (*Online Evolution / rolling-horizon contra
-oponente que reage*): modelar a réplica do oponente reduz a ilusão de vantagem.
-**Onde mexer:** o `opponent_launch_set` passado a `_plan_fitness` (`planner.py:1497-1517`) é hoje uma previsão ESTÁTICA (`_cheap_opponent_entries`/`opponent_entries` de `plan_oep_waves`). O 2-ply troca essa previsão por uma RÉPLICA reativa ao plano do OEP.
-- [x] **E2a. Réplica reativa do Producer ao plano do OEP — IMPLEMENTADA E REJEITADA COMO DEFAULT.**
-  - [x] Clona o `PlanetMovement`, aplica as chegadas futuras do plano OEP, debita explicitamente as fontes do OEP no clone e chama o Producer inline como réplica (`OEP_REACTIVE_REPLY=1`).
-  - [x] Pontua o OEP contra `opp_reply_launch_set`; o Producer baseline continua com a previsão estática atual. Isso torna E2a **diagnóstico assimétrico**, não seletor promovível.
-  - [x] Verificação: o profile serial confirma o diagnóstico — `mean_fitness_delta` caiu para perto de zero (4 seeds/500: **0.138**, vs deltas inflados anteriores), sem cauda perto de 1s (`max=119.62ms`, `timeout=0.0`).
-  - [x] Decisão: não promover. Margem 16-seed é só triagem, não gate; o bloqueio correto é comparação assimétrica + ausência de plano-candidato novo.
-- [x] **E2b. Poda por custo — IMPLEMENTADA E REJEITADA COMO DEFAULT.**
-  - [x] Curto-circuito por vantagem 1-ply (`OEP_REACTIVE_REPLY_PRUNE_ADVANTAGE`, default experimental 0): se o OEP já não vence no avaliador barato, não chama a réplica.
-  - [x] Verificação serial: chamadas reativas caíram **469→177** em ~1k decisões; `mean_decision_ms=38.45`, `max=91.05`, `timeout=0.0`.
-  - [x] Decisão: não promover. A poda reduziu custo serial, mas não muda o problema estrutural: E2b continua selecionando entre os mesmos planos e ainda herda a comparação assimétrica.
+- [ ] **P4. Hall-of-fame/self-play só depois de sair do buraco.**
+  - [ ] **Pré-condição:** só iniciar quando melhor PPO/BC tiver `mean_score_margin > -1.0` vs Producer e alguma vitória/empate real em triagem.
+  - [ ] **Pool:** manter sempre Producer e OEP na pool; adicionar checkpoints próprios promovidos por margem pareada, não por reward de treino.
+  - [ ] **Sampling:** limitar self-play para não virar monocultura; cada batch precisa conter uma fração mínima de Producer/OEP.
+  - [ ] **Antiesquecimento:** rodar eval contra snapshots antigos antes de substituir o campeão.
+  - [ ] **Correto quando:** novo checkpoint melhora contra versões próprias sem regredir materialmente contra Producer/OEP; se regredir, volta para currículo com mais expert.
 
-## E3. [FECHADO — IMPLEMENTADO E REJEITADO] Busca por valor de rollout sobre conjunto de candidatos
-Implementado o E3-flat: `_oep_plan_variant_list` (conjunto diverso de candidatos = guloso + beam do 1º lance)
-+ `_rollout_value` (cada candidato pontuado pela **réplica reativa do Producer** + valor terminal, em vez do
-fitness 1-ply) + ramo de seleção `OEP_ROLLOUT_SEARCH_WIDTH` (off-by-default). Roda no binding fresco (motor fiel).
-- [x] **Custo ok:** profile W=4 → `max_decision_ms=145` (~7× folga vs `actTimeout=1s`), `timeout=0`, estágio `rollout_search` ~21ms. Default (W=0) inalterado: smoke legal 0 timeout; 29 testes OEP passam (2 novos: lista de variantes + guard); ruff limpo.
-- [x] **GATE 96 seeds vs Producer (binding fresco): margin = −0.20087, win = 0.396, crash/invalid/timeout = 0.** → **REGREDIU FORTE** (−0.201 ≪ −0.045 do baseline).
-- [x] **Conclusão:** mais diversidade de candidato + valor de rollout (réplica reativa) ainda imperfeito = **MAIS desvios net-negativos**. Consistente com B (wider/banda/horizon todos regrediram). O gargalo NÃO é gerar/avaliar candidatos sobre o Producer — é que **os desvios do OEP são intrinsecamente piores que o plano do Producer**, e nenhum avaliador orbit_lite (1-ply/2-ply/ordinal/rollout-flat) isola com confiança os raros desvios bons.
-- [x] **Decisão:** rejeitar E3 como default (`OEP_ROLLOUT_SEARCH_WIDTH=0`). A família inteira "busca/seleção sobre o Producer" (E1/E2/C1/E3) **satura ou regride → teto da arquitetura Producer+best-response atingido**.
-- [x] **Confirmação extra (horizonte longo):** testei a busca de rollout com `OEP_HORIZON=40` (insight do intel "horizonte longo + valor terminal") → **−0.31 (16 seeds), pior ainda**. Horizonte longo com oponente de resposta única superestima MAIS (bate com C-exp4). Família rollout morta em todos os horizontes. Knob de horizonte revertido (não ajudou).
-- [x] **Valor terminal de TERRITÓRIO (`OEP_ROLLOUT_TERMINAL_VALUE=1`, intel sim-value-search):** produção-território no estado terminal. **GATE 96 seeds = −0.10917** (melhor que E3 net-ship-delta −0.20, mas abaixo do −0.045). Território é melhor preditor que ships, mas NÃO cruza.
-- [x] **Território + threshold conservador (reuso `OEP_MIN_ADVANTAGE` na escala território):** ⚠️ **ARMADILHA DE 16 SEEDS** — a 16 seeds deu monotônico e POSITIVO (adv1=0.0, adv3=+0.25, adv6=+0.4375 win=0.72), parecia o avanço. **Gate 96 seeds (adv=6) = −0.24274, win=0.375.** O +0.44 era PURO RUÍDO de seed-count baixo (mesma armadilha do +0.31 vs −0.21). O threshold PIOROU a 96 seeds (−0.109 sem → −0.24 com). Lição reforçada: **só 96 seeds decide — 16 seeds gera falso-positivo convincente.** A disciplina pegou o falso-positivo antes de qualquer claim/submissão.
+- [x] **P5. Ablation de map bias/features.** ✅ auditoria + tratamento (augmentation) feitos e verificados 2026-06-07.
+  - [x] **Teste de invariância:** `tests/test_map_bias_invariance.py` + `python/orbit_wars_gym/symmetry.py` (rotate_180/reflect_x/swap_players, involuções testadas) + `scripts/audit_map_bias.py` (gap de logits por head/transform).
+  - [x] **Baseline:** `artifacts/map_bias/invariance_report.json` — perspectiva gap 0.0; rotate_180 2.5–5.6; reflect_x 1.7–3.6 (viés espacial de x/y absolutos + planet_id).
+  - [x] **Tratamento (data augmentation):** `--augment` no collector; `artifacts/map_bias/invariance_report_aug.json` — gap caiu ~5–10×, margem online melhorou (−0.915→−0.880). Ver SEGUIR AGORA acima.
+  - [~] **Tratamento alternativo (canonicalização) / entity-arch:** não feito — augmentation já atingiu o critério; canonicalização e entity encoder ficam em **T4** (target head ainda fraco = problema de representação).
+  - [ ] **Tratamentos:** testar pelo menos duas opções: canonicalização relativa ao jogador e data augmentation no rollout/dataset.
+  - [ ] **Benchmark BC:** treinar BC pequeno com encoder atual vs variante e comparar loss/accuracy/margem online.
+  - [ ] **Correto quando:** variante reduz sensibilidade artificial a simetrias sem piorar benchmark pareado contra Producer/OEP; se loss melhora mas jogo piora, não promover.
 
-## E5. [INICIADO — agente de busca STANDALONE, fora do frame best-response]
-Construído increment 1 do agente sim-value-search standalone (`OEP_STANDALONE_TERRITORY=1`, off-by-default): enumera lanes amplas (owned × top-K alvos mais próximos), rankeia por ganho de **território terminal**, combina greedy — **sem âncora no Producer** (`_standalone_territory_plan`).
-- [x] **Increment 1 = −0.75 (16 seeds), win 0.125, 0 crash/timeout, 110ms.** FRACO. Causas: (a) valor-território **sem-oponente** super-valoriza agressão (super-estende→esmagado); (b) geração de candidatos "atacar o mais próximo / full-send" é muito mais pobre que o targeting production-aware do Producer.
-- [x] **Conclusão (prova real, não asserção):** um standalone competitivo precisa **reconstruir a sofisticação do Producer** (targeting por produção, safe-capture, defesa/recaptura) + as adições do intel + oponente reativo no valor. O Producer **já é** um agente sim-value forte perto do teto desta classe. Bater exige um build de pesquisa multi-sessão tunado, não um increment.
-- [x] **Increment 2 (oponente reativo no valor):** consertou a super-agressão diagnosticada → **−0.25 (16 seeds), win 0.375** (de −0.75). Custo 129ms, 0 crash/timeout. Melhora real, mas ainda muito abaixo do Producer. Gargalo restante = **geração de candidatos** (nearest-attack << targeting production-aware do Producer).
-- [x] **Padrão claro dos 2 increments:** cada fix melhora (−0.75→−0.25) mas o teto do standalone com candidatos pobres fica ~−0.1 a −0.25 — MESMO patamar dos variantes ancorados (−0.045 a −0.109). Confirma: o limite é a QUALIDADE DO CANDIDATO, e nenhum gerador disponível (nearest, OEP-lanes) bate o plano do Producer. Bater exige reconstruir o targeting production-aware do Producer + safe-capture + missões — build multi-sessão.
-- [x] **Increment 3 (standalone sobre candidatos production-aware do OEP):** forçado a sempre jogar o melhor candidato por território (`OEP_MIN_ADVANTAGE=-999`) → **−0.252 (16 seeds)**, mesmo patamar do nearest (−0.25). **PROVA matemática do padrão:** dropar o fallback pro plano do Producer SEMPRE piora (ancorado −0.109 → standalone −0.25). O plano do Producer É a baseline forte; qualquer frame que desvia dele perde, e nenhum gerador de candidatos disponível produz planos melhores. **CONCLUSÃO DEFINITIVA (E1-E5, ~15 configs, 5 arquiteturas): o Producer está no teto desta classe heurística+sim; bater exige um agente de pesquisa tunado multi-sessão (timeline-sim completo do intel) ou RL em escala — não alcançável numa sessão.** NÃO investir em MCTS turno-a-turno (exigiria port do engine p/ stepper puro-Python; a evidência diz que o problema é o PLANO do OEP, não a profundidade da busca).
+- [ ] **P6. Gate de promoção PPO.**
+  - [ ] **Gate 1 triagem:** 16 seeds vs Producer/OEP + sanity contra `greedy,rush,anti_meta`; usar só para decidir se vale 96 seeds.
+  - [ ] **Gate 2 decisor:** 96 seeds pareadas vs Producer e OEP, com cometas ligados e registro 2p/4p separado.
+  - [ ] **Gate 3 top-5 proxy:** incluir pelo menos um agente público forte do benchmark comunitário antes de submeter.
+  - [ ] **Métricas obrigatórias:** `mean_score_margin`, win rate, paired delta, worst decile, crash/timeout/invalid, mean/p95/max decision ms, 2p e 4p separados.
+  - [ ] **Registro:** adicionar linha em `EXPERIMENTS.md` com baseline, candidato, comandos, artefatos, margem antes/depois e decisão.
+  - [ ] **Correto quando:** `crash/timeout/invalid=0`, margem pareada não-negativa vs Producer/OEP, sem regressão clara em 4p, e top-5 proxy não contradiz a promoção.
 
-## E4. [ATIVADO — critério atingido; campanha longa] Política APRENDIDA via self-play
-**Ativado** (2026-06-06): E1/E2/C1/E3 esgotados e registrados → o critério de `docs/TRAINING.md`
-("OEP esgota ganho mensurável vs Producer") está satisfeito. A infra é madura (`train_ppo`,
-`train_league`, `competitive_cycle`, `pbt`) e treina RÁPIDO no binding fresco (~65k timesteps em ~2 min).
-- [x] **BASELINE MEDIDO (decisivo):** o checkpoint atual `phase0_seed1_65536_resume_seed4_65536.pt` (treinado vs heurísticas fracas) **PERDE 100% vs Producer** (`mean_score_margin=-1.0, win_rate=0`, 0 crash/invalid, 34ms). A política aprendida está MUITO abaixo do Producer.
-- [x] **Realidade do E4:** o Producer NÃO é oponente de treino (só `PHASE0_OPPONENTS` heurísticos); ele é o ALVO de avaliação. Fechar de −1.0 até bater o Producer exige a campanha completa: Phase 0 (vs fracos) → Phase 2-3 (self-play league / PBT / hall-of-fame) → export → gate vs Producer. É **sustentado e incerto** (RL batendo heurística forte de 1200 é difícil; pode platôar abaixo), NÃO um único run.
-- [x] **CAMPANHA SELF-PLAY RODADA (2026-06-06):** driver `/tmp/selfplay_campaign.py` → `run_competitive_cycle` 3 gerações, POP=4, ~32k timesteps/membro (~393k total), PBT + hall-of-fame + 5 heurísticas, semeado do phase0. Campeão `selfplay_campaign/generation_002/seed_001.pt` exportado e gateado vs Producer (16 seeds): **margin = −1.0, win = 0 — IDÊNTICO ao baseline, self-play NÃO moveu nada.** A política perde por margem MÁXIMA todo jogo (não é "perto"; é fundamentalmente fraca vs o Producer). Treinar vs heurísticas fracas + self não ensina a lidar com o jogo forte do Producer.
-- [ ] (se retomar E4) precisaria de ordens de magnitude mais compute (milhões+ de timesteps), curriculum/reward dedicado, e possivelmente arquitetura diferente — multi-dia, convergência incerta. NÃO é caminho de uma sessão.
+## 🧨 MAIS OPÇÕES DE EXPERIMENTOS — objetivo TOP 5
+Base prática: tópicos Kaggle `704095` (109-agent tournament), `704741` (PPO que treina), `704849`
+(bulk replays), `704817` (lookup/precompute), `704777` (2p/4p) e score real das nossas submissões
+(`Producer≈1200`, `OEP≈1100`). Base de literatura via `paper-search`: transfer/imitation em deep RL
+(Zhu et al. 2023; Zhu et al. 2018), PPO/sistemas escaláveis em jogos complexos (Ye et al. 2020),
+multi-agent RL/opponent modelling (Wong et al. 2022) e desafios de RL real/simulado (Dulac-Arnold et al. 2021).
+Força da evidência: **forte** para imitação+RL e opponent pool; **parcial** para a forma exata em Orbit Wars.
 
-### Estado da exploração (2026-06-06): bot melhor que o Producer NÃO encontrado nesta passada
-Resumo honesto após exaurir os levers tratáveis:
-- **Busca/seleção sobre o Producer (E1/E2/C1/E3):** todos saturam (~−0.045) ou regridem (E3: −0.20). FECHADO.
-- **Política aprendida (E4):** baseline atual = **−1.0 (perde tudo)**; gap enorme; campanha self-play longa e incerta.
-- **Melhor bot continua o Producer (1231.9).** As alternativas reais (campanha E4 OU reescrita como agente de busca standalone tipo sim-value/timeline do intel) são projetos sustentados, não wins de uma sessão.
+- [ ] **T0. Régua top-5 local antes de qualquer nova submissão.**
+  - [ ] **Selecionar pool:** baixar/empacotar agentes públicos fortes do benchmark `704095`: `exp30`, `exp29/27`, `sim-value-search`, `advanced-timeline`, `dominance redistribution` e 1-2 forks top.
+  - [ ] **Isolar fixtures:** colocar cada agente em `artifacts/opponents/top5_proxy/<id>/` com README curto de origem, commit/notebook, dependências e comando de smoke.
+  - [ ] **Smoke individual:** cada oponente precisa rodar 2p e, se aplicável, 4p por poucos seeds contra Producer sem crash/timeout.
+  - [ ] **Configurar gate:** criar `configs/eval_top5_proxy.yaml` com Producer, OEP e pool pública forte, separando 2p/4p e seeds fixas.
+  - [ ] **Relatório:** salvar `artifacts/top5_proxy/baseline_producer_oep.json` para saber onde Producer/OEP ficam nessa régua.
+  - [ ] **Correto quando:** qualquer candidato novo é comparado contra a mesma pool; se ele só bate Producer mas apanha da pool top proxy, não é candidato top 5.
 
-> **Honestidade sobre a evidência (postura tech-lead):** E1 e E2 tinham embasamento forte para corrigir
-> diagnóstico/seleção, mas nesta forma não geram plano-candidato melhor e ficam rejeitados como default.
-> E3/E4 têm teto maior, mas são builds grandes com payoff incerto (o topo do leaderboard > 1228 prova
-> que existem planos robustamente melhores que o Producer; o OEP local satura no empate). Nenhum
-> knob/tweak adicional de seleção deve ser priorizado — isso já foi exaustado em B/E1/E2.
+- [ ] **T1. Replay mining das nossas derrotas reais.**
+  - [ ] **Coleta:** usar fluxo do tópico `704849` ou script próprio para baixar replays das submissões Producer/OEP e organizar por `submission_ref/outcome/opponent`.
+  - [ ] **Parser:** extrair por replay: formato 2p/4p, seed, scores por step, ownership, fleets, comets, ações, timeouts/crashes.
+  - [ ] **Classificador de derrota:** marcar causas prováveis: abertura ruim, comet, 4p/kingmaker, overextension, falta de defesa/recapture, redistribuição tardia, timeout/crash.
+  - [ ] **Amostras visuais:** gerar links/HTML para 5-10 derrotas representativas por classe.
+  - [ ] **Tabela decisora:** produzir `artifacts/replay_mining/loss_taxonomy.csv` e resumo com impacto estimado por classe.
+  - [ ] **Correto quando:** temos top-3 padrões de derrota com replays exemplares; cada novo experimento cita qual classe de perda está atacando.
 
-## D. [PARALELO — ganho barato] Ligar o lookahead em 4p (ex-F1)
-Leaderboard pontua 2p E 4p; hoje o OEP é guloso em 4p (`_opponent_id` → None, sem 1-ply). Princípio
-**forte** (modelar oponente — Justesen 2016); escolha do oponente 4p é fraca (começar por 1).
-- [ ] verificar: em 4p `opponent_entries` ≠ None; win 4p ≥ baseline OEP-4p-off, sem regressão de timeout.
+- [ ] **T2. DAgger / imitação iterativa com Producer+OEP.**
+  - [ ] **Pré-condição:** P1/P2 concluídos e uma policy BC exportável funcionando.
+  - [ ] **Coleta on-policy:** rodar a policy BC/PPO em seeds fixas; detectar estados ruins por perda de margem, ação inválida/sem efeito, divergência grande de expert ou queda futura.
+  - [ ] **Relabel:** consultar Producer/OEP nesses estados e adicionar labels ao dataset com peso maior para estados críticos.
+  - [ ] **Ciclos:** repetir 3-5 vezes `policy -> estados ruins -> expert labels -> BC resume -> benchmark`.
+  - [ ] **Controle:** manter dataset test fixo fora dos ciclos para medir generalização, não memorização.
+  - [ ] **Correto quando:** cada ciclo melhora ou mantém margem contra Producer/OEP em seeds fixas; se dois ciclos seguidos piorarem, parar e auditar quantização/labels.
 
----
+- [ ] **T3. Distilação de valor/critic a partir dos experts.**
+  - [ ] **Gerar targets:** rollouts de Producer/OEP com retorno final, score-margin normalizado, produção final, sobrevivência e flags de vitória.
+  - [ ] **Treinar critic:** pré-treinar value head para predizer retorno/score-margin a partir do encoder; salvar `critic_pretrain.pt`.
+  - [ ] **Ablation:** comparar PPO inicializado com actor BC apenas vs actor BC + critic pré-treinado.
+  - [ ] **Métricas:** `explained_variance`, value_loss inicial, estabilidade de KL/clipfrac, margem em eval curto.
+  - [ ] **Correto quando:** critic pré-treinado aumenta `explained_variance` e não causa regressão online nos primeiros updates; se só melhora loss offline, não promover.
 
-# Estado atual (2026-06-06, pós-fixes de fidelidade + diagnóstico OEP)
+- [~] **T4. Entity encoder / attention em vez de MLP flat.** **OFFLINE VENCEU (decisivo) 2026-06-07; export + online pendentes.**
+  - [x] **Design mínimo:** `EntityActorCritic` (`python/agents/policy.py`) — reshape da MESMA obs flat em planetas(96×14)/frotas(256×10), MLP por-entidade + masked mean-pool (flag de presença), trunk + heads compatíveis; mesma interface `get_action_and_value(masks)`. Invariante a ordem de slot (testado). Sem mudar dataset/decoder/ação.
+  - [x] **Comparação controlada (mesmo dataset/seed/épocas):** entity >> flat em quase todo head: launch F1 0.16→**0.60**, **target 0.065→0.185 (~3×)**, offset 0.16→0.50, frac 0.52→0.72, source ~empate; flat colapsou (over-pass), entity calibrado.
+  - [x] **Métricas (offline):** accuracy por cabeça (acima), legal rate ok. **Falta:** runtime por decisão + margem online + tamanho de submissão.
+  - [x] **Exportabilidade:** ✅ export arch-aware (`export_submission` detecta `summary["arch"]`); forward entity em Python puro (reshape + MLP por-entidade + masked pool). Roda legal, **18ms/decisão** (vs ~25ms flat), crash/timeout/invalid=0. 4 testes em `tests/test_entity_policy.py` (inclui invariância a permutação).
+  - [x] **Online (BC):** bc_entity vs Producer/OEP 16 seeds = **margin −0.9535, win 0.0** — NÃO melhor que flat (−0.915) nem aug (−0.880). **Achado: accuracy offline de BC NÃO se traduz em margin online** (BC sozinho, qualquer arch, é warm-start fraco que perde quase tudo).
+  - [x] **Correto quando (avaliado):** entity é melhor offline + exportável + rápido, mas **não melhor online via BC** → pelo critério estrito, não promover por BC. **Conclusão:** entity é a melhor ARQUITETURA p/ inicializar o PPO (target head + launch calibrado + exportável + 18ms); a decisão flat-vs-entity deve ser settled pelo **PPO online (P3)**, não pelo BC. Próximo: P3 fine-tune com entity-init.
 
-- **Régua/SIMULADOR (Rust) FIEL ao Kaggle** — `parity_probe_actions` + `tests/test_parity_actions.py` (~40k steps, 0 div). Margens 96 seeds confiáveis.
-- ✅ **World-model do orbit_lite (lookahead) fiel com binding Rust atualizado:** `test_movement_l3` não está mais em xfail; suíte de movimento esperada é 9 passed.
-- **Melhor OEP local = −0.045 vs Producer (96 seeds)** — empate quase; satura por tweak. E1/E2 reduziram ilusão de avaliação, mas não geram plano melhor. Gargalo = **qualidade do plano-candidato** (E3/C1).
-- **Submissão Producer (1231.9) Kaggle-safe contra `NameError` e tarball reconstruído com reset completo**; ainda revalidar baselines antigos antes de citar margem medida pré-fix.
-- As margens antigas do roadmap foram medidas em **régua infiel** — re-validar SEMPRE a 96 seeds.
+- [ ] **T5. Action masking e decoder supervisionado.**
+  - [ ] **Máscaras óbvias:** origem sem naves, planeta inexistente, alvo próprio quando modo ataque, fração que viola reserva mínima, offset que leva a sol/borda quando detectável.
+  - [ ] **Auxiliary head:** treinar `intent` (`no-op`, `capture`, `attack`, `reinforce`, `regroup`, `evacuate/comet`) para estabilizar representação.
+  - [ ] **Integração PPO:** aplicar máscara antes de sample/logprob para manter cálculo correto de PPO; não mascarar só no decode final.
+  - [ ] **Testes:** unidade para logprob/entropy com máscara e para não gerar ação impossível em estados sintéticos.
+  - [ ] **Correto quando:** invalid/sem-efeito cai, entropy não colapsa prematuramente, e benchmark melhora ou mantém margem contra Producer/OEP.
 
-# Feito (detalhe no git/EXPERIMENTS/tests)
+- [ ] **T6. Política/treino 4p separado.**
+  - [ ] **Track separado:** criar config/checkpoint `phase5_4p` com dataset/rollouts 4p e features de terceiro jogador/vulnerabilidade.
+  - [ ] **Experts 4p:** usar Producer/OEP se rodarem em 4p com segurança; senão, criar pool mista com heurísticas 4p estáveis.
+  - [ ] **Mixture por modo:** selecionar policy 2p para 2p e policy 4p para 4p no wrapper de submissão.
+  - [ ] **Gate:** avaliar 2p e 4p separadamente; não aceitar ganho 4p que destrói 2p.
+  - [ ] **Correto quando:** 4p melhora com `crash/timeout/invalid=0`, p95 decision ms seguro e 2p mantém margem contra Producer/OEP.
 
-- Fidelidade do simulador Rust: combate (ordem de colisão / swept-pair / timing de cometa) + gerador + obs.
-- Diagnóstico OEP completo (6 evals 96 seeds): o OEP satura no empate; mais knob/horizonte PIORA; E1/E2 indicam que re-pontuar os mesmos planos não basta.
-- Submissão Producer Kaggle-safe (`NameError: __file__` resolvido em `_load_upstream`).
-- Infra/portfólio: `conftest.py`, scripts de diagnóstico versionados, reorganização de `docs/`.
+- [ ] **T7. Especialista de cometas.**
+  - [ ] **Diagnóstico antes:** usar replay mining para confirmar que cometas explicam perda material; se não aparecem no top-3, adiar.
+  - [ ] **Features:** adicionar janela até próximo spawn (`50/150/250/350/450`), planeta comet, distância/ETA, risco de overcommit e evacuação.
+  - [ ] **Política especialista:** testar heurística ou cabeça auxiliar para contestar, ignorar ou evacuar cometa.
+  - [ ] **Ablation:** Producer puro vs Producer+comet specialist vs PPO/BC com feature de spawn window.
+  - [ ] **Correto quando:** melhora em seeds com cometa decisivo sem piorar seeds sem disputa de cometa; se só ajuda casos raros e piora geral, não promover.
 
-# Roadmap remanescente (condensado)
+- [ ] **T8. Planner standalone timeline-sim completo.**
+  - [ ] **Escopo novo:** não reutilizar frame OEP de “desviar do Producer”; construir planner com missões explícitas.
+  - [ ] **Missões mínimas:** `safe_capture`, `rescue`, `recapture`, `reinforce`, `snipe`, `hammer/multiprong`, `dominance redistribution`.
+  - [ ] **Timeline:** simular arrivals/produção/recapture por planeta em horizonte suficiente, com risco de resposta de oponente.
+  - [ ] **Valor terminal:** território/produção/risco, não só delta de ships.
+  - [ ] **Critério duro:** precisa bater Producer/OEP em 96 seeds; se só empata ou ganha em 16 seeds, não chamar de progresso.
+  - [ ] **Correto quando:** melhora pareada robusta, tempo dentro de `actTimeout`, e replays mostram missões novas úteis em derrotas antes classificadas.
 
-- **2º oponente-régua**: adicionar um oponente forte do fórum ao gate, para não overfitar só o Producer. Obrigatório para top 5.
-- **PPO/self-play**: seção E4 (DEFERIDO).
-- **Marcar `EXPERIMENTS.md`** que experimentos anteriores aos fixes foram em régua infiel.
-- **Screenshots `artifacts/kaggle_*.png`**: decidir se entram no portfólio (decisão sua).
+- [ ] **T9. Mixture-of-experts / seletor de política.**
+  - [ ] **Experts elegíveis:** Producer, OEP, PPO-BC, PPO-finetune, especialista 4p, especialista cometa; cada expert precisa ter benchmark próprio.
+  - [ ] **Features do seletor:** formato 2p/4p, step, vantagem de produção, pressão inimiga, spawn de cometa, vulnerabilidade, fase de jogo.
+  - [ ] **Baseline simples:** seletor heurístico por regras antes de treinar seletor aprendido.
+  - [ ] **Auditoria:** logar qual expert foi escolhido por turno/fase e resultado posterior.
+  - [ ] **Correto quando:** seletor supera o melhor expert individual em benchmark pareado; se só alterna e empata, complexidade não vale.
 
----
+- [ ] **T10. Population-based training real.**
+  - [ ] **Pré-condição:** PPO/BC já saiu do `-1.0` vs Producer; antes disso PBT só multiplica runs ruins.
+  - [ ] **Mutáveis:** LR, entropy, clip, reward scales, decoder fractions, opponent mix, BC loss coefficient.
+  - [ ] **Exploit/explore:** promover por margem pareada em eval fixo, não por reward médio de treino.
+  - [ ] **Lineage:** todo checkpoint precisa registrar pai, hparams, dataset hash, opponent mix e evals.
+  - [ ] **Correto quando:** pelo menos um braço melhora contra Producer/OEP e não esquece hall-of-fame; se população converge para heurística fraca, resetar curriculum.
+
+- [ ] **T11. Precompute/lookup para liberar orçamento de planner.**
+  - [ ] **Medição baseline:** antes de otimizar, medir p50/p95/max decision ms e hotspots do planner/decoder atual.
+  - [ ] **Cache alvo:** intercept angle/ETA por pares de planetas por janela de 50 turns, inspirado no tópico `704817`, mas em Python submetível.
+  - [ ] **Validação geométrica:** comparar lookup contra cálculo direto em amostra grande; registrar erro por step/par.
+  - [ ] **Uso controlado:** se lookup tiver erro ±1, ele só pode ser usado quando não muda decisão crítica ou com fallback explícito medido.
+  - [ ] **Correto quando:** p95/max cai materialmente, decisões não divergem em casos sensíveis e qualidade não piora no gate.
+
+- [ ] **T12. Critério de corte para matar linha cedo.**
+  - [ ] **Definir antes de rodar:** cada família precisa declarar métrica-alvo, custo máximo, seeds de triagem, gate decisor e condição de parada.
+  - [ ] **Kill criteria padrão:** 3 ciclos sem melhora pareada, `crash/timeout/invalid>0`, regressão 4p grave, `explained_variance` ruim persistente ou custo acima do orçamento.
+  - [ ] **Registro:** toda morte de linha entra em `EXPERIMENTS.md` com motivo técnico, para não ressuscitar tuning morto.
+  - [ ] **Reabertura:** só reabrir família se houver evidência nova: oponente novo, replay mining novo, bug corrigido ou hipótese diferente.
+  - [ ] **Correto quando:** o backlog fica enxuto e nenhuma linha morta volta por intuição; o próximo experimento sempre aponta para um padrão medido.
 
 # MANUAL — arquitetura e invariantes (não apagar)
 
@@ -192,4 +266,4 @@ régua/world-model infiel = perseguir ruído (corrompe a correlação local↔le
 ## Parado / não fazer
 - Micro-tuning de heurística (reservas/aberturas/hammer) — saturado contra bots locais (exp. 73–99).
 - Tweak de knob no OEP (min_advantage/horizon/wider/banda) — EXAUSTADO em B (tudo regrediu vs −0.045).
-- GPU — agente roda CPU-only com `actTimeout=1s` e problema minúsculo; gargalo é qualidade do modelo, não compute.
+- ~~GPU~~ — **REVISTO 2026-06-07: GPU LIBERADA para TREINO** (a máquina tem GPU local; ver CLAUDE.md "Compute / GPU"). A regra antiga ("compute não é o gargalo") valia para micro-tuning de heurística, mas o caminho PPO competitivo (~1300 > Producer com ~12–15h GPU) é justamente limitado por compute. **Inferência/submissão segue CPU-only** (invariante D10/D11): treinar na GPU, exportar modelo que roda em CPU.
