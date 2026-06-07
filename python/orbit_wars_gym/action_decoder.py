@@ -104,17 +104,28 @@ def decode_discrete_action(
 ) -> list[list[float]]:
     """Decode one compact discrete action into official move list.
 
-    action layout:
-        [source_rank, target_rank, fraction_idx, offset_idx]
+    action layout (canonical, 5 fields):
+        [launch, source_rank, target_rank, fraction_idx, offset_idx]
 
-    The ranks refer to sorted candidate lists, not raw planet ids. This keeps the
-    neural action space fixed across variable maps.
+    ``launch == 0`` is an explicit pass (no moves) — see todo P1.5. The four
+    trailing ranks refer to sorted candidate lists, not raw planet ids, keeping
+    the neural action space fixed across variable maps.
+
+    Temporary backward compatibility: a 4-field action
+    ``[source_rank, target_rank, fraction_idx, offset_idx]`` is still accepted and
+    treated as an implicit launch (legacy behaviour, also used by the inverse
+    grid-search in ``action_inverse``). Remove once all call sites pass 5 fields.
     """
 
     a = np.asarray(action, dtype=np.int64).tolist()
-    if len(a) < 4:
+    if len(a) >= 5:
+        launch, source_rank, target_rank, fraction_idx, offset_idx = a[:5]
+        if launch == 0:
+            return []
+    elif len(a) == 4:
+        source_rank, target_rank, fraction_idx, offset_idx = a[:4]
+    else:
         return []
-    source_rank, target_rank, fraction_idx, offset_idx = a[:4]
 
     planets = state.get("planets", [])
     own = [p for p in planets if planet_owner(p) == player and planet_ships(p) >= cfg.min_ships_to_launch]

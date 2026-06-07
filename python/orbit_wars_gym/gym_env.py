@@ -78,7 +78,8 @@ class OrbitWarsGymEnv(gym.Env):
         self.four_player_leader_scale = float(four_player_leader_scale)
         self.four_player_third_player_scale = float(four_player_third_player_scale)
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(observation_dim(self.encoder_cfg),), dtype=np.float32)
-        self.action_space = spaces.MultiDiscrete([16, 32, 4, 5])
+        # [launch, source_rank, target_rank, fraction_idx, offset_idx]; launch==0 passes.
+        self.action_space = spaces.MultiDiscrete([2, 16, 32, 4, 5])
         self.state: dict[str, Any] | None = None
 
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
