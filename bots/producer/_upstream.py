@@ -438,12 +438,26 @@ def _to_list_observation(obs):
     return converted
 
 
-def agent(obs):
-    """Single-observation entry point for local play and Kaggle."""
+def _run(runtime, obs):
     obs = _to_list_observation(obs)
     player = obs.get("player", 0) if isinstance(obs, dict) else obs.player
     player_id = int(player)
     obs_tensors = single_obs_to_tensor(obs, player_id=player_id)
     with torch.no_grad():
-        sparse_row = _RUNTIME.tensor_action(obs_tensors)
+        sparse_row = runtime.tensor_action(obs_tensors)
     return sparse_action_row_to_moves(sparse_row, obs, player_id=player_id)
+
+
+def agent(obs):
+    """Single-observation entry point for local play and Kaggle."""
+    return _run(_RUNTIME, obs)
+
+
+def make_agent():
+    """Isolated Producer agent with its own ProducerLiteRuntime memory.
+
+    For batched/vectorized rollouts where concurrent games must not share the
+    module-global ``_RUNTIME``'s per-game memory.
+    """
+    runtime = ProducerLiteRuntime()
+    return lambda obs: _run(runtime, obs)

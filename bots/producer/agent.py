@@ -73,3 +73,9 @@ def _to_list_observation(obs: Any) -> Any:
 
 def agent(obs: Any):
     return _UPSTREAM.agent(_to_list_observation(obs))
+
+
+def make_agent():
+    """Isolated Producer agent (own runtime/memory) for batched/vectorized rollouts."""
+    inner = _UPSTREAM.make_agent()
+    return lambda obs: inner(_to_list_observation(obs))

@@ -3004,11 +3004,23 @@ def _load_private_producer_policy(name: str) -> Policy:
     return policy
 
 
-_RUNTIME = OEPLiteRuntime(
-    seed_policy=_load_private_producer_policy("seed"),
-    opponent_policy=_load_private_producer_policy("opponent"),
-    config=_env_config(),
-)
+def make_runtime() -> OEPLiteRuntime:
+    """Build a fresh OEP runtime with fully isolated per-game state.
+
+    Each runtime gets its own ``OEPLiteMemory`` AND its own private Producer
+    seed/opponent policies (which themselves carry per-game memory), so two
+    runtimes never share mutable state. Used for batched/vectorized rollouts
+    where concurrent games must not contaminate each other (the module-global
+    ``_RUNTIME`` is only safe for sequential single-env play).
+    """
+    return OEPLiteRuntime(
+        seed_policy=_load_private_producer_policy("seed"),
+        opponent_policy=_load_private_producer_policy("opponent"),
+        config=_env_config(),
+    )
+
+
+_RUNTIME = make_runtime()
 
 
 def agent(obs):
