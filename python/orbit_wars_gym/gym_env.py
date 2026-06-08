@@ -57,6 +57,7 @@ class OrbitWarsGymEnv(gym.Env):
         decoder_cfg: DecoderConfig | None = None,
         action_mode: str = "raw",
         reward_mode: str = "legacy",
+        terminal_reward_scale: float = 1.0,
         reward_gamma: float = 0.99,
         sun_loss_penalty: float = 0.02,
         border_loss_penalty: float = 0.02,
@@ -96,6 +97,10 @@ class OrbitWarsGymEnv(gym.Env):
         if self.reward_mode not in ("legacy", "dense_potential"):
             raise ValueError(f"unknown reward_mode {reward_mode!r} (expected 'legacy' or 'dense_potential')")
         self.reward_gamma = float(reward_gamma)
+        # B4-followup: weight on the terminal win/score reward. Raising it (e.g. 10-20)
+        # makes WINNING dominate the return over the dense PBRS share signal, to push the
+        # policy off the always-producer parity local-optimum toward beat-Producer deviations.
+        self.terminal_reward_scale = float(terminal_reward_scale)
         self.action_mode = str(action_mode)
         if self.action_mode == "candidate":
             self.candidate_factory = CandidateFactory()
@@ -151,7 +156,7 @@ class OrbitWarsGymEnv(gym.Env):
                 + self.four_player_third_player_scale * third_player_reward
             )
         if outcomes[0]["done"]:
-            reward += float(outcomes[0]["rewards"][0])
+            reward += self.terminal_reward_scale * float(outcomes[0]["rewards"][0])
         terminated = bool(outcomes[0]["done"])
         truncated = False
         sun_losses, border_losses = self._loss_counts(previous_state, next_state, player=0, player_moves=actions[0][0])

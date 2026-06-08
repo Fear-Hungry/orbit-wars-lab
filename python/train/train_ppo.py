@@ -61,6 +61,7 @@ class Phase0TrainingConfig:
     policy_track: str = "phase0_2p"
     policy_arch: str = "flat"
     reward_mode: str = "legacy"  # "dense_potential" for B3 PBRS (single-env path only)
+    terminal_reward_scale: float = 1.0  # B4-followup: weight on terminal win to escape producer-parity
     init_default_candidate: int | None = None  # B4: bias fresh candidate_selector toward this idx (1=producer)
     num_players: int = 2
     total_timesteps: int = 200_000
@@ -351,6 +352,7 @@ def _collect_single_env_rollout_segment(
         four_player_third_player_scale=four_player_third_player_scale,
         action_mode="candidate" if is_candidate else "raw",
         reward_mode=training_cfg.reward_mode,
+        terminal_reward_scale=training_cfg.terminal_reward_scale,
     )
     obs_np, _ = env.reset(seed=base_seed)
     episode = EpisodeMetrics(opponent=opponent_name)
@@ -996,6 +998,7 @@ def build_phase0_env(
     decoder_cfg: DecoderConfig | None = None,
     action_mode: str = "raw",
     reward_mode: str = "legacy",
+    terminal_reward_scale: float = 1.0,
 ) -> OrbitWarsGymEnv:
     try:
         opponent_policy = PHASE0_OPPONENTS[opponent_name]
@@ -1010,6 +1013,7 @@ def build_phase0_env(
         decoder_cfg=decoder_cfg,
         action_mode=action_mode,
         reward_mode=reward_mode,
+        terminal_reward_scale=terminal_reward_scale,
         sun_loss_penalty=sun_loss_penalty,
         border_loss_penalty=border_loss_penalty,
         ship_margin_scale=ship_margin_scale,
@@ -1029,6 +1033,8 @@ def main():
                         help="policy architecture for training from scratch; a --checkpoint-in overrides it with the checkpoint's arch")
     parser.add_argument("--reward-mode", choices=("legacy", "dense_potential"), default="legacy",
                         help="'dense_potential' uses potential-based shaping F=γΦ(s')−Φ(s) (B3); single-env path only")
+    parser.add_argument("--terminal-scale", type=float, default=1.0,
+                        help="B4-followup: weight on terminal win reward (e.g. 10-20) to push off producer-parity")
     parser.add_argument("--init-default-candidate", type=int, default=None,
                         help="B4: bias a FRESH candidate_selector toward this candidate idx (1=producer) so it "
                              "starts ~at parity and PPO learns only beneficial deviations; ignored on warm-start")
@@ -1098,6 +1104,7 @@ def main():
         policy_track=args.training_track,
         policy_arch=args.policy_arch,
         reward_mode=args.reward_mode,
+        terminal_reward_scale=args.terminal_scale,
         init_default_candidate=args.init_default_candidate,
         num_players=args.num_players,
         total_timesteps=args.total_timesteps,

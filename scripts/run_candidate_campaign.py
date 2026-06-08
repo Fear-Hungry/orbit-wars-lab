@@ -43,6 +43,7 @@ def _train_chunk(prev: str, ckpt: Path, args: argparse.Namespace, chunk: int, lo
         "--total-timesteps", str(args.chunk_timesteps),
         "--rollout-steps", str(args.rollout_steps),
         "--ent-coef", str(args.ent_coef),
+        "--terminal-scale", str(args.terminal_scale),
         "--device", args.device,
         "--seed", str(args.seed + chunk),
         "--checkpoint-out", str(ckpt),
@@ -87,6 +88,8 @@ def main() -> int:
     parser.add_argument("--chunks", type=int, default=8)
     parser.add_argument("--chunk-timesteps", type=int, default=50_000)
     parser.add_argument("--rollout-steps", type=int, default=256)
+    parser.add_argument("--terminal-scale", type=float, default=1.0,
+                        help="weight on terminal win reward (B4-followup: 10-20 to escape producer-parity)")
     parser.add_argument("--ent-coef", type=float, default=0.01,
                         help="entropy bonus; raise (e.g. 0.03) to sustain exploration of beneficial "
                              "deviations from the producer-parity baseline (B4 collapsed to entropy 0.13)")
