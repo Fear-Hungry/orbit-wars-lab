@@ -148,12 +148,14 @@ class CandidateSelectorActorCritic(nn.Module):
         num_candidates: int = 6,
         entity_hidden: int = 64,
         hidden: int = 256,
+        default_candidate: int | None = None,
     ):
         super().__init__()
         expected = GLOBAL_F + PLANET_N * PLANET_F + FLEET_N * FLEET_F
         if obs_dim != expected:
             raise ValueError(f"CandidateSelectorActorCritic expects flat obs_dim {expected}, got {obs_dim}")
         self.num_candidates = int(num_candidates)
+        self.default_candidate = default_candidate
         self.planet_mlp = nn.Sequential(
             nn.Linear(PLANET_F, entity_hidden), nn.Tanh(),
             nn.Linear(entity_hidden, entity_hidden), nn.Tanh(),
@@ -168,6 +170,16 @@ class CandidateSelectorActorCritic(nn.Module):
         )
         self.selector = nn.Linear(hidden, self.num_candidates)
         self.value = nn.Linear(hidden, 1)
+        # B4 anti-plateau init: bias the fresh selector toward a strong default
+        # candidate (e.g. "producer" idx 1) so the untrained policy starts ~always
+        # playing it (= ties Producer, ~0 seat-neutral) and PPO only has to learn
+        # BENEFICIAL deviations from that baseline — it cannot regress below ~0 the
+        # way the unbiased init did (it converged to a -0.14 selection). Ignored when
+        # warm-starting (load_state_dict overwrites the bias).
+        if default_candidate is not None:
+            with torch.no_grad():
+                self.selector.bias.zero_()
+                self.selector.bias[int(default_candidate)] = 5.0
 
     @staticmethod
     def _masked_mean(emb: torch.Tensor, present: torch.Tensor) -> torch.Tensor:

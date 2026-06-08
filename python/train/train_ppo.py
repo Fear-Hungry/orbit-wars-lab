@@ -25,9 +25,11 @@ _POLICY_ARCHS = {
 }
 
 
-def _build_policy(arch: str, obs_dim: int):
+def _build_policy(arch: str, obs_dim: int, default_candidate: int | None = None):
     if arch not in _POLICY_ARCHS:
         raise ValueError(f"unknown policy arch {arch!r}; valid: {sorted(_POLICY_ARCHS)}")
+    if arch == "candidate_selector" and default_candidate is not None:
+        return _POLICY_ARCHS[arch](obs_dim, default_candidate=default_candidate)
     return _POLICY_ARCHS[arch](obs_dim)
 from python.agents.registry import (
     STATEFUL_SINGLETON_OPPONENTS,
@@ -59,6 +61,7 @@ class Phase0TrainingConfig:
     policy_track: str = "phase0_2p"
     policy_arch: str = "flat"
     reward_mode: str = "legacy"  # "dense_potential" for B3 PBRS (single-env path only)
+    init_default_candidate: int | None = None  # B4: bias fresh candidate_selector toward this idx (1=producer)
     num_players: int = 2
     total_timesteps: int = 200_000
     rollout_steps: int = 256
@@ -872,7 +875,10 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
     else:
         policy_arch = training_cfg.policy_arch
 
-    model = _build_policy(policy_arch, observation_dim()).to(device)
+    model = _build_policy(
+        policy_arch, observation_dim(),
+        default_candidate=(training_cfg.init_default_candidate if checkpoint is None else None),
+    ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=training_cfg.learning_rate)
     if checkpoint is not None:
         model.load_state_dict(checkpoint["model_state_dict"])
@@ -1023,6 +1029,9 @@ def main():
                         help="policy architecture for training from scratch; a --checkpoint-in overrides it with the checkpoint's arch")
     parser.add_argument("--reward-mode", choices=("legacy", "dense_potential"), default="legacy",
                         help="'dense_potential' uses potential-based shaping F=γΦ(s')−Φ(s) (B3); single-env path only")
+    parser.add_argument("--init-default-candidate", type=int, default=None,
+                        help="B4: bias a FRESH candidate_selector toward this candidate idx (1=producer) so it "
+                             "starts ~at parity and PPO learns only beneficial deviations; ignored on warm-start")
     parser.add_argument("--num-players", type=int, default=2)
     parser.add_argument("--opponents", default="greedy,defensive,rush,anti_meta,weak_random")
     parser.add_argument("--total-timesteps", type=int, default=200_000)
@@ -1089,6 +1098,7 @@ def main():
         policy_track=args.training_track,
         policy_arch=args.policy_arch,
         reward_mode=args.reward_mode,
+        init_default_candidate=args.init_default_candidate,
         num_players=args.num_players,
         total_timesteps=args.total_timesteps,
         rollout_steps=args.rollout_steps,

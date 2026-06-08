@@ -62,7 +62,13 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(); ap.add_argument("--checkpoint", required=True)
     ap.add_argument("--opponents", nargs="+", default=["producer", "oep"])
     ap.add_argument("--seeds", type=int, default=8); ap.add_argument("--episode-steps", type=int, default=256)
+    ap.add_argument("--json", action="store_true", help="emit a JSON report (for run_candidate_campaign keep-best)")
     a = ap.parse_args(); model = _load(a.checkpoint)
-    for opp in a.opponents:
-        print(f"{opp:9s}: seat-neutral margin = {eval_vs(model, opp, a.seeds, a.episode_steps):+.4f}")
-    # sanity: always-producer mirror should be ~0 seat-neutral
+    results = [{"opponent": opp, "mean_score_margin": eval_vs(model, opp, a.seeds, a.episode_steps)}
+               for opp in a.opponents]
+    if a.json:
+        import json
+        print(json.dumps({"checkpoint": a.checkpoint, "per_opponent": results}, indent=2))
+    else:
+        for r in results:
+            print(f"{r['opponent']:9s}: seat-neutral margin = {r['mean_score_margin']:+.4f}")

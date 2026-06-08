@@ -42,6 +42,7 @@ def _train_chunk(prev: str, ckpt: Path, args: argparse.Namespace, chunk: int, lo
         "--opponents", args.opponents,
         "--total-timesteps", str(args.chunk_timesteps),
         "--rollout-steps", str(args.rollout_steps),
+        "--ent-coef", str(args.ent_coef),
         "--device", args.device,
         "--seed", str(args.seed + chunk),
         "--checkpoint-out", str(ckpt),
@@ -53,19 +54,19 @@ def _train_chunk(prev: str, ckpt: Path, args: argparse.Namespace, chunk: int, lo
 
 def _eval_chunk(ckpt: Path, args: argparse.Namespace, log: Path, out_json: Path) -> dict[str, Any]:
     cmd = [
-        sys.executable, "-m", "scripts.eval_candidate_selector",
+        sys.executable, "-m", "scripts.eval_candidate_seats",  # SEAT-NEUTRAL (honest); not the biased seat-fixed eval
         "--checkpoint", str(ckpt),
         "--opponents", *args.eval_opponents.split(","),
         "--seeds", str(args.eval_seeds),
         "--episode-steps", str(args.eval_episode_steps),
+        "--json",
     ]
-    # eval_candidate_selector prints the report JSON to stdout
     result = subprocess.run(cmd, cwd=str(_ROOT), capture_output=True, text=True, check=True)
     log.write_text(result.stdout + "\n---STDERR---\n" + result.stderr, encoding="utf-8")
     report = json.loads(result.stdout)
     out_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
     margins = {r["opponent"]: float(r["mean_score_margin"]) for r in report["per_opponent"]}
-    wins = {r["opponent"]: float(r["win_rate"]) for r in report["per_opponent"]}
+    wins = {r["opponent"]: float(r.get("win_rate", 0.0)) for r in report["per_opponent"]}
     return {"margins": margins, "wins": wins}
 
 
@@ -86,6 +87,9 @@ def main() -> int:
     parser.add_argument("--chunks", type=int, default=8)
     parser.add_argument("--chunk-timesteps", type=int, default=50_000)
     parser.add_argument("--rollout-steps", type=int, default=256)
+    parser.add_argument("--ent-coef", type=float, default=0.01,
+                        help="entropy bonus; raise (e.g. 0.03) to sustain exploration of beneficial "
+                             "deviations from the producer-parity baseline (B4 collapsed to entropy 0.13)")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--eval-seeds", type=int, default=8)
     parser.add_argument("--eval-episode-steps", type=int, default=256)
