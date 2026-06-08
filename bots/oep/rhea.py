@@ -33,7 +33,6 @@ from python.orbit_wars_gym.entities import (
     planet_y,
 )
 
-from bots.oep.candidate_factory import register_family
 from bots.oep.family_h import (
     hammer_multiprong,
     production_projected_attack,
@@ -238,4 +237,4 @@ def rhea_plan(obs: Obs, *, _carry: list[list[int]] | None = None) -> Moves:
     return _moves_for_first_gene(best_genome[0], obs)
 
 
-register_family("rhea_macro", lambda: rhea_plan)
+# Registration centralized in candidate_factory._register_builtin_families.

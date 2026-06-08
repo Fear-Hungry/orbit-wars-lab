@@ -18,7 +18,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from bots.oep.candidate_factory import register_family
 from bots.oep.family_h import (
     _planets,
     _player_count,
@@ -87,4 +86,4 @@ def hyperheuristic_plan(obs: Obs) -> Moves:
     return moves if isinstance(moves, list) else []
 
 
-register_family("hyperheuristic", lambda: hyperheuristic_plan)
+# Registration centralized in candidate_factory._register_builtin_families.

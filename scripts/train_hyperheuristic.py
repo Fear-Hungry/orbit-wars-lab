@@ -33,6 +33,14 @@ from pathlib import Path
 from statistics import fmean
 from typing import Any
 
+from bots.oep.family_h import (
+    CAPTURE_MARGIN,
+    RESERVE,
+    _aim,
+    _projected_defense,
+    _split_planets,
+)
+from bots.oep.hyperheuristic import context_bucket
 from scripts.oracle_candidates import DEFAULT_BASELINE, collect_candidate_action_records
 
 Record = dict[str, Any]
@@ -42,6 +50,46 @@ PRIMITIVES = (
     "hammer_multiprong",
     "regroup_dominance",
 )
+
+
+def _hammer_regime(obs: dict[str, Any]) -> bool:
+    """True when >=2 own sources can synchronize to overwhelm one enemy target.
+
+    This is the hammer family's OWN precondition (domain-motivated, not read off
+    the holdout regret table), added because regret showed hammer_multiprong is
+    worth ~+0.17 yet never selected by the coarse bucket selector.
+    """
+
+    _me, own, others = _split_planets(obs)
+    enemies = [p for p in others if p.owner >= 0]
+    angvel = float(obs.get("angular_velocity", 0.03))
+    sources = [p for p in own if p.ships - RESERVE >= 1]
+    if len(sources) < 2 or not enemies:
+        return False
+    total = sum(s.ships - RESERVE for s in sources)
+    for target in enemies:
+        nearest_eta = min(_aim(s, target, angvel)[1] for s in sources)
+        if total > _projected_defense(target, nearest_eta) + CAPTURE_MARGIN:
+            return True
+    return False
+
+
+def snapshot_features(obs: dict[str, Any]) -> dict[str, Any]:
+    """Runtime-available context features (no post-action leak)."""
+
+    return {"bucket": context_bucket(obs), "hammer_regime": _hammer_regime(obs)}
+
+
+def coarse_context(features: dict[str, Any]) -> str:
+    return str(features["bucket"])
+
+
+def rich_context(features: dict[str, Any]) -> str:
+    """Bucket refined by the hammer regime so the selector can route hammer states."""
+
+    if features.get("hammer_regime"):
+        return "hammer|" + str(features["bucket"])
+    return str(features["bucket"])
 
 
 def split_seeds(seeds: list[int]) -> tuple[list[int], list[int]]:
@@ -115,6 +163,31 @@ def holdout_verdict(selected: float, baseline: float = DEFAULT_BASELINE) -> str:
     return "SELECTOR_CROSSES_FLOOR"  # run 96 vs Producer + OEP sanity
 
 
+def _evaluate_context(
+    records: list[Record], train_seeds: list[int], holdout_seeds: list[int], context_fn
+) -> dict[str, Any]:
+    """Learn + holdout-evaluate keyed on ``context_fn(features)`` (no leak)."""
+
+    tagged = [{**r, "bucket": context_fn(r.get("features", {"bucket": r["bucket"]}))} for r in records]
+    train = [r for r in tagged if r["seed"] in set(train_seeds)]
+    holdout = [r for r in tagged if r["seed"] in set(holdout_seeds)]
+    learned = learn_per_bucket(train, PRIMITIVES)
+    metrics = evaluate(holdout, learned, PRIMITIVES)
+    return {
+        "learned_per_bucket": learned["per_bucket"],
+        "learned_fallback": learned["fallback"],
+        "oracle_new_family_margin_train": _mean(
+            [max(r["margins"][f] for f in PRIMITIVES) for r in train]
+        ),
+        "oracle_new_family_margin_holdout": metrics["oracle_choice_known_outcome"],
+        "selected_new_family_margin_holdout": metrics["selector_choice_predicted"],
+        "regret_holdout": metrics["regret"],
+        "selected_vs_oep_delta": metrics["selected_vs_oep_delta"],
+        "regret_table": regret_table(holdout, learned, PRIMITIVES),
+        "verdict": holdout_verdict(metrics["selector_choice_predicted"]),
+    }
+
+
 def run(
     *,
     seeds: list[int],
@@ -131,15 +204,13 @@ def run(
         snapshot_stride=snapshot_stride,
         max_snapshots=max_snapshots,
         enable_comets=enable_comets,
+        feature_fn=snapshot_features,
     )
     train_seeds, holdout_seeds = split_seeds(seeds)
-    train = [r for r in records if r["seed"] in set(train_seeds)]
-    holdout = [r for r in records if r["seed"] in set(holdout_seeds)]
-    learned = learn_per_bucket(train, PRIMITIVES)
-
-    metrics = evaluate(holdout, learned, PRIMITIVES)
-    train_oracle = _mean([max(r["margins"][f] for f in PRIMITIVES) for r in train])
-    verdict = holdout_verdict(metrics["selector_choice_predicted"])
+    # Same data, two feature schemes — clean coarse-vs-rich comparison (H7b).
+    coarse = _evaluate_context(records, train_seeds, holdout_seeds, coarse_context)
+    rich = _evaluate_context(records, train_seeds, holdout_seeds, rich_context)
+    hammer_rate = _mean([1.0 if r["features"].get("hammer_regime") else 0.0 for r in records])
 
     return {
         "seeds": list(seeds),
@@ -150,19 +221,16 @@ def run(
         "max_snapshots": max_snapshots,
         "enable_comets": enable_comets,
         "primitives": list(PRIMITIVES),
-        "n_train_snapshots": len(train),
-        "n_holdout_snapshots": len(holdout),
-        "learned_per_bucket": learned["per_bucket"],
-        "learned_fallback": learned["fallback"],
-        "oracle_new_family_margin_train": train_oracle,
-        "oracle_new_family_margin_holdout": metrics["oracle_choice_known_outcome"],
-        "selected_new_family_margin_holdout": metrics["selector_choice_predicted"],
-        "regret_holdout": metrics["regret"],
-        "selected_vs_oep_delta": metrics["selected_vs_oep_delta"],
-        "regret_table": regret_table(holdout, learned, PRIMITIVES),
+        "n_train_snapshots": len([r for r in records if r["seed"] in set(train_seeds)]),
+        "n_holdout_snapshots": len([r for r in records if r["seed"] in set(holdout_seeds)]),
+        "hammer_regime_rate": hammer_rate,
+        "coarse_bucket": coarse,
+        "rich_context": rich,
+        # Primary verdict = rich context (H7b); coarse kept for contrast.
+        "selected_new_family_margin_holdout": rich["selected_new_family_margin_holdout"],
+        "verdict": rich["verdict"],
         "crashes": legality["crashes"],
         "invalid_actions": legality["invalid"],
-        "verdict": verdict,
     }
 
 
@@ -173,14 +241,21 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--snapshot-stride", type=int, default=32)
     p.add_argument("--max-snapshots", type=int, default=3)
     p.add_argument("--no-comets", action="store_true")
+    p.add_argument(
+        "--seed-start",
+        type=int,
+        default=0,
+        help="first seed (use fresh seeds, e.g. 32, to avoid reusing a diagnosed holdout)",
+    )
     p.add_argument("--out", type=str, default="")
     return p.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+    start = int(args.seed_start)
     summary = run(
-        seeds=list(range(int(args.seeds))),
+        seeds=list(range(start, start + int(args.seeds))),
         episode_steps=int(args.episode_steps),
         snapshot_stride=int(args.snapshot_stride),
         max_snapshots=int(args.max_snapshots),

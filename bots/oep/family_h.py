@@ -31,7 +31,6 @@ from python.orbit_wars_gym.entities import (
     planet_y,
 )
 
-from bots.oep.candidate_factory import register_family
 from bots.oep.geometry import orbital_intercept
 
 Obs = dict[str, Any]
@@ -267,13 +266,6 @@ def regroup_dominance(obs: Obs) -> Moves:
     return moves
 
 
-def register_family_h() -> None:
-    """Register H2-H5 (idempotent-safe: only call once at import)."""
-
-    register_family("production_projected_attack", lambda: production_projected_attack)
-    register_family("timeline_risk", lambda: timeline_risk)
-    register_family("hammer_multiprong", lambda: hammer_multiprong)
-    register_family("regroup_dominance", lambda: regroup_dominance)
-
-
-register_family_h()
+# Registration of these generators is centralized in
+# candidate_factory._register_builtin_families (keeps this module free of any
+# candidate_factory import → no import cycle).

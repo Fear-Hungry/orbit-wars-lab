@@ -128,14 +128,20 @@ def collect_candidate_action_records(
     max_snapshots: int = 3,
     enable_comets: bool = True,
     act_timeout: float = 1.0,
+    feature_fn: Callable[[State], dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, float]]:
-    """Per-snapshot candidate_action records for the H7a holdout selector.
+    """Per-snapshot candidate_action records for the H7a/H7b holdout selector.
 
-    Each record = ``{seed, bucket, margins: {family: candidate_action_margin}}``,
-    where ``bucket`` is the runtime-available context feature (no post-action
-    leak) and ``margins`` are the grafted-action margins vs Producer. Returned
-    alongside a legality tally so the gate can assert crash/invalid == 0.
+    Each record = ``{seed, bucket, features, margins: {family: ca_margin}}``.
+    ``features`` (from ``feature_fn``, default = just the context bucket) holds
+    the runtime-available context so feature engineering can iterate OFFLINE on
+    the stored records without re-running the expensive rollouts (no post-action
+    leak). Returned with a legality tally so the gate can assert crash/invalid==0.
     """
+
+    if feature_fn is None:
+        def feature_fn(obs: State) -> dict[str, Any]:  # noqa: ANN001
+            return {"bucket": context_bucket(obs)}
 
     submission_idx = 0
     records: list[dict[str, Any]] = []
@@ -163,7 +169,7 @@ def collect_candidate_action_records(
         _bump(base_stats, opp0_stats)
         for snap in snapshots:
             obs = to_official_observation(snap, player=submission_idx)
-            bucket = context_bucket(obs)
+            features = feature_fn(obs)
             margins: dict[str, float] = {}
             for family in families:
                 cand_gen, cand_stats = _family_policy(family)
@@ -181,7 +187,14 @@ def collect_candidate_action_records(
                 )
                 margins[family] = normalized_margin(scores, submission_idx)
                 _bump(cand_stats, inc_stats, opp_ca_stats)
-            records.append({"seed": int(seed), "bucket": bucket, "margins": margins})
+            records.append(
+                {
+                    "seed": int(seed),
+                    "bucket": features.get("bucket", context_bucket(obs)),
+                    "features": features,
+                    "margins": margins,
+                }
+            )
     return records, legality
 
 

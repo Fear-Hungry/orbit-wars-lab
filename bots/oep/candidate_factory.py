@@ -86,12 +86,24 @@ DEFAULT_FAMILIES: tuple[str, ...] = (
 
 
 def _register_builtin_families() -> None:
-    # Importing these modules registers H2-H7 into ``_FAMILY_BUILDERS``. Done
-    # lazily at the bottom of the module so the registry functions exist first
-    # (avoids the import cycle family_h/rhea/hyperheuristic -> candidate_factory).
-    from bots.oep import family_h as _family_h  # noqa: F401
-    from bots.oep import hyperheuristic as _hyperheuristic  # noqa: F401
-    from bots.oep import rhea as _rhea  # noqa: F401
+    # Single registration point for H2-H7. The generator modules import NOTHING
+    # from candidate_factory (they only depend on geometry/family_h), so the
+    # import graph is a DAG and there is no cycle regardless of entry order.
+    from bots.oep.family_h import (
+        hammer_multiprong,
+        production_projected_attack,
+        regroup_dominance,
+        timeline_risk,
+    )
+    from bots.oep.hyperheuristic import hyperheuristic_plan
+    from bots.oep.rhea import rhea_plan
+
+    register_family("production_projected_attack", lambda: production_projected_attack)
+    register_family("timeline_risk", lambda: timeline_risk)
+    register_family("hammer_multiprong", lambda: hammer_multiprong)
+    register_family("regroup_dominance", lambda: regroup_dominance)
+    register_family("rhea_macro", lambda: rhea_plan)
+    register_family("hyperheuristic", lambda: hyperheuristic_plan)
 
 
 def available_families() -> tuple[str, ...]:
