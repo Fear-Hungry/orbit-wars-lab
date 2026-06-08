@@ -32,13 +32,12 @@ from python.orbit_wars_gym.entities import (
 )
 
 from bots.oep.candidate_factory import register_family
+from bots.oep.geometry import orbital_intercept
 
 Obs = dict[str, Any]
 Move = list[float]
 Moves = list[Move]
 
-SHIP_SPEED = 6.0
-CENTER = 50.0  # orbit_lite.constants.CENTER (sun / board center; planets orbit it)
 RESERVE = 5  # ships kept home on a source planet
 CAPTURE_MARGIN = 2.0  # extra ships required over projected defense
 VALUE_HORIZON = 60.0  # steps over which captured production is valued
@@ -89,19 +88,7 @@ def _aim(source: _Planet, target: _Planet, angvel: float) -> tuple[float, float]
     eta into defense/production/comet/hammer reasoning.
     """
 
-    orb_r = math.hypot(target.x - CENTER, target.y - CENTER)
-    if orb_r < 1e-6 or abs(angvel) < 1e-9:  # static target (or no rotation)
-        eta = _dist(source, target) / SHIP_SPEED
-        return math.atan2(target.y - source.y, target.x - source.x), max(1.0, eta)
-    a0 = math.atan2(target.y - CENTER, target.x - CENTER)
-    t = _dist(source, target) / SHIP_SPEED
-    px, py = target.x, target.y
-    for _ in range(4):
-        ang = a0 + angvel * t
-        px = CENTER + orb_r * math.cos(ang)
-        py = CENTER + orb_r * math.sin(ang)
-        t = math.hypot(px - source.x, py - source.y) / SHIP_SPEED
-    return math.atan2(py - source.y, px - source.x), max(1.0, t)
+    return orbital_intercept(source.x, source.y, target.x, target.y, angvel)
 
 
 def _projected_defense(target: _Planet, eta: float) -> float:

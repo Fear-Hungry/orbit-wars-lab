@@ -45,6 +45,7 @@ from statistics import fmean
 from typing import Any
 
 from bots.oep.candidate_factory import _FAMILY_BUILDERS, available_families
+from bots.oep.hyperheuristic import context_bucket
 from python.orbit_wars_gym.backend import RustBatchBackend, RustConfig
 from python.orbit_wars_gym.observation import to_official_observation
 from python.orbit_wars_gym.rules import moves_are_legal, normalized_margin
@@ -114,6 +115,74 @@ def _rollout(
         state = states[0]
         if outcomes[0]["done"]:
             return [float(score) for score in outcomes[0]["scores"]]
+
+
+def collect_candidate_action_records(
+    *,
+    seeds: list[int],
+    families: list[str],
+    base_family: str = "oep",
+    incumbent: str = "producer",
+    episode_steps: int = 96,
+    snapshot_stride: int = 32,
+    max_snapshots: int = 3,
+    enable_comets: bool = True,
+    act_timeout: float = 1.0,
+) -> tuple[list[dict[str, Any]], dict[str, float]]:
+    """Per-snapshot candidate_action records for the H7a holdout selector.
+
+    Each record = ``{seed, bucket, margins: {family: candidate_action_margin}}``,
+    where ``bucket`` is the runtime-available context feature (no post-action
+    leak) and ``margins`` are the grafted-action margins vs Producer. Returned
+    alongside a legality tally so the gate can assert crash/invalid == 0.
+    """
+
+    submission_idx = 0
+    records: list[dict[str, Any]] = []
+    legality = {"crashes": 0.0, "invalid": 0.0}
+
+    def _bump(*stats: dict[str, float]) -> None:
+        for s in stats:
+            legality["crashes"] += s["crashes"]
+            legality["invalid"] += s["invalid"]
+
+    for seed in seeds:
+        base_policy, base_stats = _family_policy(base_family)
+        opp0, opp0_stats = _family_policy("producer")
+        snapshots = _base_game_snapshots(
+            seed=int(seed),
+            base_policy=base_policy,
+            opponent_policy=opp0,
+            submission_idx=submission_idx,
+            episode_steps=episode_steps,
+            enable_comets=enable_comets,
+            act_timeout=act_timeout,
+            snapshot_stride=snapshot_stride,
+            max_snapshots=max_snapshots,
+        )
+        _bump(base_stats, opp0_stats)
+        for snap in snapshots:
+            obs = to_official_observation(snap, player=submission_idx)
+            bucket = context_bucket(obs)
+            margins: dict[str, float] = {}
+            for family in families:
+                cand_gen, cand_stats = _family_policy(family)
+                candidate_moves = cand_gen(snap, submission_idx)
+                inc_policy, inc_stats = _family_policy(incumbent)
+                opp_ca, opp_ca_stats = _family_policy("producer")
+                scores = _rollout(
+                    snap,
+                    submission_policy=_grafted_policy(candidate_moves, inc_policy),
+                    opponent_policy=opp_ca,
+                    submission_idx=submission_idx,
+                    episode_steps=episode_steps,
+                    enable_comets=enable_comets,
+                    act_timeout=act_timeout,
+                )
+                margins[family] = normalized_margin(scores, submission_idx)
+                _bump(cand_stats, inc_stats, opp_ca_stats)
+            records.append({"seed": int(seed), "bucket": bucket, "margins": margins})
+    return records, legality
 
 
 def _base_game_snapshots(

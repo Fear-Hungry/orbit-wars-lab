@@ -35,12 +35,12 @@ from python.orbit_wars_gym.entities import (
 
 from bots.oep.candidate_factory import register_family
 from bots.oep.family_h import (
-    SHIP_SPEED,
     hammer_multiprong,
     production_projected_attack,
     regroup_dominance,
     timeline_risk,
 )
+from bots.oep.geometry import SHIP_SPEED
 
 Obs = dict[str, Any]
 Moves = list[list[float]]
