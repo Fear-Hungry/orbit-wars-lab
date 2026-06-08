@@ -124,6 +124,89 @@ class FlatActorCritic(nn.Module):
         return _action_value_from_heads(self.forward(obs), action, masks)
 
 
+class CandidateSelectorActorCritic(nn.Module):
+    """Frente B (redesenho RL): entity encoder + a single ``Discrete(K)`` selector head.
+
+    The proven-misaligned design emitted a raw ``MultiDiscrete([2,16,32,4,5])`` action
+    (EXPERIMENTS 2026-06-08: campaign_h collapsed to -1.0, EV 0.93 decoupled from
+    winning). Here the policy instead chooses the INDEX of one candidate plan produced
+    by :class:`~python.agents.candidate_factory.CandidateFactory` (no_op/producer/oep/
+    greedy/defensive/rush). The action space is a single small categorical, so every
+    sampled action is an expert-vetted, always-legal move-set — the policy can no longer
+    emit a degenerate raw action, and a dense reward becomes learnable.
+
+    Reuses the entity encoder (per-entity MLP + masked-mean pool + trunk) — the best
+    representation offline (T4) — with its OWN submodule names (this is a new arch; it
+    does not share state-dict keys with EntityActorCritic, so the exporter is untouched).
+    """
+
+    # num_candidates default mirrors candidate_factory.NUM_CANDIDATES (kept as a plain
+    # param so policy.py stays free of the registry/bots import chain — D10/D11).
+    def __init__(
+        self,
+        obs_dim: int,
+        num_candidates: int = 6,
+        entity_hidden: int = 64,
+        hidden: int = 256,
+    ):
+        super().__init__()
+        expected = GLOBAL_F + PLANET_N * PLANET_F + FLEET_N * FLEET_F
+        if obs_dim != expected:
+            raise ValueError(f"CandidateSelectorActorCritic expects flat obs_dim {expected}, got {obs_dim}")
+        self.num_candidates = int(num_candidates)
+        self.planet_mlp = nn.Sequential(
+            nn.Linear(PLANET_F, entity_hidden), nn.Tanh(),
+            nn.Linear(entity_hidden, entity_hidden), nn.Tanh(),
+        )
+        self.fleet_mlp = nn.Sequential(
+            nn.Linear(FLEET_F, entity_hidden), nn.Tanh(),
+            nn.Linear(entity_hidden, entity_hidden), nn.Tanh(),
+        )
+        self.trunk = nn.Sequential(
+            nn.Linear(GLOBAL_F + 2 * entity_hidden, hidden), nn.Tanh(),
+            nn.Linear(hidden, hidden), nn.Tanh(),
+        )
+        self.selector = nn.Linear(hidden, self.num_candidates)
+        self.value = nn.Linear(hidden, 1)
+
+    @staticmethod
+    def _masked_mean(emb: torch.Tensor, present: torch.Tensor) -> torch.Tensor:
+        weight = present.unsqueeze(-1)
+        total = (emb * weight).sum(dim=1)
+        count = weight.sum(dim=1).clamp_min(1.0)
+        return total / count
+
+    def forward(self, obs: torch.Tensor) -> dict[str, torch.Tensor]:
+        b = obs.shape[0]
+        glob = obs[:, :GLOBAL_F]
+        p_end = GLOBAL_F + PLANET_N * PLANET_F
+        planets = obs[:, GLOBAL_F:p_end].reshape(b, PLANET_N, PLANET_F)
+        fleets = obs[:, p_end:].reshape(b, FLEET_N, FLEET_F)
+        planet_pool = self._masked_mean(self.planet_mlp(planets), planets[:, :, 0])
+        fleet_pool = self._masked_mean(self.fleet_mlp(fleets), fleets[:, :, 0])
+        h = self.trunk(torch.cat([glob, planet_pool, fleet_pool], dim=-1))
+        return {"candidate": self.selector(h), "value": self.value(h).squeeze(-1)}
+
+    def get_action_and_value(
+        self,
+        obs: torch.Tensor,
+        action: torch.Tensor | None = None,
+        masks: dict[str, torch.Tensor] | None = None,
+    ):
+        """Masked categorical over K candidates. ``masks['candidate']`` is ``(B, K)``
+        boolean; the SAME mask must be passed at sampling and update so the PPO ratio
+        stays correct. Returns ``(action[B], logprob[B], entropy[B], value[B])``."""
+        out = self.forward(obs)
+        logits = out["candidate"]
+        if masks is not None and "candidate" in masks:
+            logits = logits.masked_fill(~masks["candidate"].bool(), float("-inf"))
+        dist = Categorical(logits=logits)
+        if action is None:
+            action = dist.sample()
+        a = action if action.dim() == 1 else action.reshape(-1)
+        return a, dist.log_prob(a), dist.entropy(), out["value"]
+
+
 class EntityActorCritic(nn.Module):
     """Permutation-invariant entity encoder (todo T4).
 

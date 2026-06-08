@@ -37,7 +37,11 @@ def _margin(checkpoint: Path, *, opponents: list[str], seeds: list[int], episode
         enable_comets=True,
         act_timeout=1.0,
         include_4p=False,
-        jobs=min(8, len(seeds)),
+        # jobs=1 (sequential): the campaign trains on CUDA in this same process,
+        # and benchmark_exported_checkpoint's ProcessPoolExecutor uses fork — a
+        # fork after CUDA init deadlocks (parent hangs forever in executor.map).
+        # The eval is cheap, so sequential is fine and safe.
+        jobs=1,
     )
     return report["summary"]
 

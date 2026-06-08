@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import multiprocessing
 import os
 import random
 from collections.abc import Callable
@@ -186,7 +187,13 @@ def _parallel_map(fn, tasks: list[dict[str, Any]], jobs: int) -> list[dict[str, 
     if jobs <= 1 or len(tasks) <= 1:
         return [fn(task) for task in tasks]
     workers = min(int(jobs), len(tasks))
-    with ProcessPoolExecutor(max_workers=workers) as executor:
+    # Use a SPAWN context, never the implicit fork default. The caller may have
+    # already initialised CUDA and/or torch (e.g. benchmark_ppo_submission does
+    # torch.load before opening workers, and the campaign trains on GPU in the
+    # same process). Forking after that deadlocks the workers (threads stuck in
+    # futex_wait); spawn starts clean child interpreters and is safe.
+    ctx = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as executor:
         return list(executor.map(fn, tasks))
 
 

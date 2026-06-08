@@ -16,17 +16,17 @@ from scripts.benchmark_submission import (
 )
 
 
-def _move_signature(moves: list[list[float]]) -> list[tuple[int, int, int, float]]:
-    sig: list[tuple[int, int, int, float]] = []
+def _move_signature(moves: list[list[float]]) -> list[tuple[int, int, float]]:
+    sig: list[tuple[int, int, float]] = []
     for move in moves:
-        if len(move) < 4:
+        # move format: [source_planet_id, angle, ships] (3 elements, not 4)
+        if len(move) < 3:
             continue
         sig.append(
             (
                 int(move[0]),
-                int(move[1]),
                 int(round(float(move[2]))),
-                round(float(move[3]), 3),
+                round(float(move[1]), 3),
             )
         )
     return sorted(sig)

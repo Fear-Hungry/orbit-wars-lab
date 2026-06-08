@@ -14,6 +14,7 @@ from .action_decoder import (
     greedy_moves,
 )
 from .backend import RustBatchBackend, RustConfig
+from python.agents.candidate_factory import CandidateFactory, NUM_CANDIDATES
 from .encoding import EncoderConfig, encode_state, observation_dim
 from .entities import (
     fleet_angle,
@@ -54,6 +55,9 @@ class OrbitWarsGymEnv(gym.Env):
         rust_cfg: RustConfig | None = None,
         opponent_policy=None,
         decoder_cfg: DecoderConfig | None = None,
+        action_mode: str = "raw",
+        reward_mode: str = "legacy",
+        reward_gamma: float = 0.99,
         sun_loss_penalty: float = 0.02,
         border_loss_penalty: float = 0.02,
         ship_margin_scale: float = 0.0,
@@ -78,8 +82,29 @@ class OrbitWarsGymEnv(gym.Env):
         self.four_player_leader_scale = float(four_player_leader_scale)
         self.four_player_third_player_scale = float(four_player_third_player_scale)
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(observation_dim(self.encoder_cfg),), dtype=np.float32)
-        # [launch, source_rank, target_rank, fraction_idx, offset_idx]; launch==0 passes.
-        self.action_space = spaces.MultiDiscrete([2, 16, 32, 4, 5])
+        # action_mode == "raw"       -> [launch, source_rank, target_rank, fraction_idx, offset_idx]; launch==0 passes.
+        # action_mode == "candidate" -> Discrete index over CandidateFactory plans (Frente B; raw action
+        #   was proven misaligned, EXPERIMENTS 2026-06-08). Index 0 is the no-op (pass); the rest are
+        #   expert plans (producer/oep/greedy/defensive/rush). Always legal — the selector can only pick
+        #   an expert-vetted move-set, never emit a degenerate raw action.
+        # reward_mode == "legacy"         -> the annealed base+ship+comet+4p shaping below.
+        # reward_mode == "dense_potential"-> potential-based shaping F = γ·Φ(s') − Φ(s)
+        #   (Ng/Harada/Russell 1999: policy-INVARIANT, so it densifies the signal toward
+        #   winning without distorting the optimum — the fix for the misaligned reward,
+        #   EXPERIMENTS 2026-06-08). Φ is the contested prod/ship/planet share; collapse → 0.
+        self.reward_mode = str(reward_mode)
+        if self.reward_mode not in ("legacy", "dense_potential"):
+            raise ValueError(f"unknown reward_mode {reward_mode!r} (expected 'legacy' or 'dense_potential')")
+        self.reward_gamma = float(reward_gamma)
+        self.action_mode = str(action_mode)
+        if self.action_mode == "candidate":
+            self.candidate_factory = CandidateFactory()
+            self.action_space = spaces.Discrete(NUM_CANDIDATES)
+        elif self.action_mode == "raw":
+            self.candidate_factory = None
+            self.action_space = spaces.MultiDiscrete([2, 16, 32, 4, 5])
+        else:
+            raise ValueError(f"unknown action_mode {action_mode!r} (expected 'raw' or 'candidate')")
         self.state: dict[str, Any] | None = None
 
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
@@ -92,7 +117,11 @@ class OrbitWarsGymEnv(gym.Env):
         assert self.state is not None
         previous_state = self.state
         actions = [[[] for _ in range(self.num_players)]]
-        actions[0][0] = decode_discrete_action(self.state, 0, action, self.decoder_cfg)
+        if self.action_mode == "candidate":
+            cands = self.candidate_factory.candidates(self.state, 0)
+            actions[0][0] = cands[int(action)]["moves"]
+        else:
+            actions[0][0] = decode_discrete_action(self.state, 0, action, self.decoder_cfg)
         for pid in range(1, self.num_players):
             actions[0][pid] = self.opponent_policy(self.state, pid)
         outcomes, states = self.backend.step_with_states(actions)
@@ -107,14 +136,20 @@ class OrbitWarsGymEnv(gym.Env):
             next_state,
             player=0,
         )
-        reward = (
-            self.base_shaping_scale * base_shaping_reward
-            + ship_margin_reward
-            + self.comet_shaping_scale * comet_shaping_reward
-            + self.four_player_vulnerability_scale * vulnerability_reward
-            + self.four_player_leader_scale * leader_reward
-            + self.four_player_third_player_scale * third_player_reward
-        )
+        dense_components: dict[str, float] | None = None
+        if self.reward_mode == "dense_potential":
+            phi_prev, _ = self._dense_potential(previous_state, player=0)
+            phi_next, dense_components = self._dense_potential(next_state, player=0)
+            reward = self.reward_gamma * phi_next - phi_prev
+        else:
+            reward = (
+                self.base_shaping_scale * base_shaping_reward
+                + ship_margin_reward
+                + self.comet_shaping_scale * comet_shaping_reward
+                + self.four_player_vulnerability_scale * vulnerability_reward
+                + self.four_player_leader_scale * leader_reward
+                + self.four_player_third_player_scale * third_player_reward
+            )
         if outcomes[0]["done"]:
             reward += float(outcomes[0]["rewards"][0])
         terminated = bool(outcomes[0]["done"])
@@ -131,7 +166,51 @@ class OrbitWarsGymEnv(gym.Env):
             "four_player_leader_reward": leader_reward,
             "four_player_third_player_reward": third_player_reward,
         }
+        if dense_components is not None:
+            info["dense_potential"] = dense_components
         return obs, reward, terminated, truncated, info
+
+    def _dense_potential(self, state: dict[str, Any], *, player: int) -> tuple[float, dict[str, float]]:
+        """Auditable potential Φ(s) ∈ [0,1] (0.5 = even) from the contested prod/ship/
+        planet shares. Used by potential-based shaping (F = γ·Φ(s') − Φ(s)); the
+        weighted shares are the dense, win-aligned signal the old shaping lacked.
+        Captured neutrals raise prod/planet share; a wiped-out player (no planets)
+        floors Φ to 0 (collapse_penalty). In-flight fleets count toward the ship share.
+        """
+        own_prod = own_ships = own_planets = 0.0
+        enemy_prod = enemy_ships = enemy_planets = 0.0
+        for p in state.get("planets", []):
+            owner = planet_owner(p)
+            if owner == player:
+                own_prod += planet_production(p)
+                own_ships += planet_ships(p)
+                own_planets += 1.0
+            elif owner >= 0:
+                enemy_prod += planet_production(p)
+                enemy_ships += planet_ships(p)
+                enemy_planets += 1.0
+        for f in state.get("fleets", []):
+            fo = fleet_owner(f)
+            if fo == player:
+                own_ships += fleet_ships(f)
+            elif fo >= 0:
+                enemy_ships += fleet_ships(f)
+
+        def _share(a: float, b: float) -> float:
+            return a / (a + b) if (a + b) > 0 else 0.5
+
+        prod_share = _share(own_prod, enemy_prod)
+        ship_share = _share(own_ships, enemy_ships)
+        planet_share = _share(own_planets, enemy_planets)
+        phi = 0.4 * prod_share + 0.3 * ship_share + 0.3 * planet_share
+        if own_planets == 0.0:
+            phi = 0.0  # collapse: wiped out
+        return phi, {
+            "prod_share": prod_share,
+            "ship_share": ship_share,
+            "planet_share": planet_share,
+            "potential": phi,
+        }
 
     def _base_shaping_reward(
         self,

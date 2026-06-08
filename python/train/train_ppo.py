@@ -5,6 +5,7 @@ import json
 import math
 import os
 import random
+import sys
 import time
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field, replace
@@ -15,9 +16,13 @@ import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn.functional as F
-from python.agents.policy import EntityActorCritic, FlatActorCritic
+from python.agents.policy import CandidateSelectorActorCritic, EntityActorCritic, FlatActorCritic
 
-_POLICY_ARCHS = {"flat": FlatActorCritic, "entity": EntityActorCritic}
+_POLICY_ARCHS = {
+    "flat": FlatActorCritic,
+    "entity": EntityActorCritic,
+    "candidate_selector": CandidateSelectorActorCritic,
+}
 
 
 def _build_policy(arch: str, obs_dim: int):
@@ -41,7 +46,10 @@ from orbit_wars_gym.entities import fleet_owner, planet_id, planet_owner
 _HEURISTIC_POLICIES = get_heuristic_policies()
 PHASE0_OPPONENTS = {
     name: _HEURISTIC_POLICIES[name]
-    for name in ("producer", "oep", "greedy", "defensive", "rush", "anti_meta", "weak_random")
+    for name in (
+        "producer", "producer_h30", "producer_h50", "producer_h70",
+        "oep", "greedy", "defensive", "rush", "anti_meta", "weak_random",
+    )
 }
 
 
@@ -50,6 +58,7 @@ class Phase0TrainingConfig:
     seed: int = 0
     policy_track: str = "phase0_2p"
     policy_arch: str = "flat"
+    reward_mode: str = "legacy"  # "dense_potential" for B3 PBRS (single-env path only)
     num_players: int = 2
     total_timesteps: int = 200_000
     rollout_steps: int = 256
@@ -322,6 +331,7 @@ def _collect_single_env_rollout_segment(
         four_player_leader_scale,
         four_player_third_player_scale,
     ) = four_player_shaping_scales(training_cfg, progress)
+    is_candidate = isinstance(model, CandidateSelectorActorCritic)
     env = build_phase0_env(
         seed=base_seed,
         num_players=training_cfg.num_players,
@@ -336,6 +346,8 @@ def _collect_single_env_rollout_segment(
         four_player_vulnerability_scale=four_player_vulnerability_scale,
         four_player_leader_scale=four_player_leader_scale,
         four_player_third_player_scale=four_player_third_player_scale,
+        action_mode="candidate" if is_candidate else "raw",
+        reward_mode=training_cfg.reward_mode,
     )
     obs_np, _ = env.reset(seed=base_seed)
     episode = EpisodeMetrics(opponent=opponent_name)
@@ -351,14 +363,21 @@ def _collect_single_env_rollout_segment(
 
     for reset_idx in range(rollout_steps):
         obs_tensor = torch.as_tensor(obs_np, dtype=torch.float32, device=device).unsqueeze(0)
-        mask_tensor = torch.as_tensor(
-            build_action_masks(env.state, 0, min_ships_to_launch=training_cfg.decoder_min_ships_to_launch),
-            dtype=torch.bool,
-            device=device,
-        ).unsqueeze(0)
+        if is_candidate:
+            # v1 candidate mask is all-True (CandidateFactory.mask). Store (1,K) so the
+            # update re-applies the SAME mask; no 50-dim launch/source/target mask here.
+            mask_tensor = torch.ones(1, model.num_candidates, dtype=torch.bool, device=device)
+            masks_arg = {"candidate": mask_tensor}
+        else:
+            mask_tensor = torch.as_tensor(
+                build_action_masks(env.state, 0, min_ships_to_launch=training_cfg.decoder_min_ships_to_launch),
+                dtype=torch.bool,
+                device=device,
+            ).unsqueeze(0)
+            masks_arg = split_masks(mask_tensor)
         with torch.no_grad():
             action_tensor, logprob_tensor, _, value_tensor = model.get_action_and_value(
-                obs_tensor, masks=split_masks(mask_tensor)
+                obs_tensor, masks=masks_arg
             )
         action = action_tensor.squeeze(0).cpu().numpy()
         previous_state = env.state
@@ -687,7 +706,10 @@ def _collect_rollout_segment(
     sample_limit: int | None = None,
 ) -> RolloutSegment:
     limit = rollout_steps if sample_limit is None else max(1, int(sample_limit))
-    if _batched_rollout_supported(training_cfg):
+    # The candidate-selector arch uses a Discrete(K) action + a (K,) candidate mask,
+    # incompatible with the batched path's 50-dim launch/source/target mask. Single-env
+    # is enough to prove the redesign trains without collapse (batched is an optimization).
+    if _batched_rollout_supported(training_cfg) and not isinstance(model, CandidateSelectorActorCritic):
         per_env_steps = max(1, min(int(rollout_steps), math.ceil(limit / max(1, int(training_cfg.rollout_num_envs)))))
         return _collect_batched_rollout_segment(
             model,
@@ -748,7 +770,10 @@ def _ppo_update(
             old_logprob_mb = batch["logprobs"][indices]
             advantage_mb = batch["advantages"][indices]
             return_mb = batch["returns"][indices]
-            mask_mb = split_masks(batch["masks"][indices])
+            if isinstance(model, CandidateSelectorActorCritic):
+                mask_mb = {"candidate": batch["masks"][indices]}
+            else:
+                mask_mb = split_masks(batch["masks"][indices])
 
             advantage_mb = (advantage_mb - advantage_mb.mean()) / (advantage_mb.std(unbiased=False) + 1e-8)
 
@@ -901,13 +926,18 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
         "timesteps": total_timesteps,
         "updates": update_idx,
         "rollout_num_envs": int(training_cfg.rollout_num_envs),
-        "rollout_backend": "rust_batch" if _batched_rollout_supported(training_cfg) else "gym_single_env",
+        "rollout_backend": (
+            "rust_batch"
+            if (_batched_rollout_supported(training_cfg) and not isinstance(model, CandidateSelectorActorCritic))
+            else "gym_single_env"
+        ),
         "training_wall_seconds": elapsed_seconds,
         "env_steps_per_second": total_timesteps / elapsed_seconds,
         "opponents": list(opponents),
         "opponent_segments": opponent_segments,
         "enable_comets": training_cfg.enable_comets,
         "reward_shaping": "annealed_base_plus_temporal_comet_auxiliary",
+        "reward_mode": training_cfg.reward_mode,
         "ship_margin_scale": training_cfg.ship_margin_scale,
         "base_shaping_scale_start": training_cfg.base_shaping_scale_start,
         "base_shaping_scale_end": training_cfg.base_shaping_scale_end,
@@ -958,6 +988,8 @@ def build_phase0_env(
     four_player_leader_scale: float = 0.0,
     four_player_third_player_scale: float = 0.0,
     decoder_cfg: DecoderConfig | None = None,
+    action_mode: str = "raw",
+    reward_mode: str = "legacy",
 ) -> OrbitWarsGymEnv:
     try:
         opponent_policy = PHASE0_OPPONENTS[opponent_name]
@@ -970,6 +1002,8 @@ def build_phase0_env(
         rust_cfg=rust_cfg,
         opponent_policy=opponent_policy,
         decoder_cfg=decoder_cfg,
+        action_mode=action_mode,
+        reward_mode=reward_mode,
         sun_loss_penalty=sun_loss_penalty,
         border_loss_penalty=border_loss_penalty,
         ship_margin_scale=ship_margin_scale,
@@ -985,8 +1019,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--training-track", choices=("phase0_2p", "phase5_4p"), default="phase0_2p")
-    parser.add_argument("--policy-arch", choices=("flat", "entity"), default="flat",
+    parser.add_argument("--policy-arch", choices=("flat", "entity", "candidate_selector"), default="flat",
                         help="policy architecture for training from scratch; a --checkpoint-in overrides it with the checkpoint's arch")
+    parser.add_argument("--reward-mode", choices=("legacy", "dense_potential"), default="legacy",
+                        help="'dense_potential' uses potential-based shaping F=γΦ(s')−Φ(s) (B3); single-env path only")
     parser.add_argument("--num-players", type=int, default=2)
     parser.add_argument("--opponents", default="greedy,defensive,rush,anti_meta,weak_random")
     parser.add_argument("--total-timesteps", type=int, default=200_000)
@@ -1052,6 +1088,7 @@ def main():
         seed=args.seed,
         policy_track=args.training_track,
         policy_arch=args.policy_arch,
+        reward_mode=args.reward_mode,
         num_players=args.num_players,
         total_timesteps=args.total_timesteps,
         rollout_steps=args.rollout_steps,
@@ -1100,6 +1137,13 @@ def main():
         "summary": summary,
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
+    # The checkpoint is saved and the payload printed. Skip Python's normal exit
+    # path: torch/CUDA teardown deadlocks on WSL (23 threads stuck in futex_wait
+    # after a GPU run), which hangs a parent that waits on this process (the
+    # campaign runner). os._exit bypasses atexit/GC/CUDA teardown safely here.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
 
 
 if __name__ == "__main__":

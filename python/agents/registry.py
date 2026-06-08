@@ -9,6 +9,9 @@ Policy = Callable[[dict[str, Any], int], list[list[float]]]
 
 HEURISTIC_NAMES: tuple[str, ...] = (
     "producer",
+    "producer_h30",
+    "producer_h50",
+    "producer_h70",
     "oep",
     "greedy",
     "defensive",
@@ -23,7 +26,9 @@ HEURISTIC_NAMES: tuple[str, ...] = (
 # starts), but interleaving two live games through the same callable would let
 # one game's plan memory leak into the other. Callers that fan out across
 # concurrent games (e.g. batched rollout) must give each game its own runtime.
-STATEFUL_SINGLETON_OPPONENTS: frozenset[str] = frozenset({"producer", "oep"})
+STATEFUL_SINGLETON_OPPONENTS: frozenset[str] = frozenset(
+    {"producer", "producer_h30", "producer_h50", "producer_h70", "oep"}
+)
 
 _ROOT = Path(__file__).resolve().parents[2]
 PRODUCER_SETUP_COMMAND = "rtk .venv/bin/python -m scripts.prepare_producer_opponent"
@@ -64,6 +69,38 @@ def producer_agent(state: dict[str, Any], player: int) -> list[list[float]]:
     return list(moves) if isinstance(moves, list) else []
 
 
+def _weaken_producer_moves(moves: list[list[float]], ship_frac: float) -> list[list[float]]:
+    """Handicap the Producer by scaling each launch's ship count down to ``ship_frac``
+    of intended. Sending fewer ships is always legal, so this DETERMINISTICALLY weakens
+    the Producer (slower captures, thinner defence) — a smooth difficulty dial for the
+    curriculum ladder. Rationale: a 70%-full-Producer curriculum is a learning CLIFF —
+    every game is a max-loss with no gradient (diagnosed 2026-06-07, EXPERIMENTS.md)."""
+    weakened: list[list[float]] = []
+    for move in moves:
+        if len(move) < 3:
+            continue
+        src, angle, ships = move[0], move[1], int(move[2])
+        weakened.append([src, angle, max(1, int(ships * ship_frac))])
+    return weakened
+
+
+def _handicapped_producer(ship_frac: float) -> Policy:
+    def _policy(state: dict[str, Any], player: int) -> list[list[float]]:
+        return _weaken_producer_moves(producer_agent(state, player), ship_frac)
+
+    return _policy
+
+
+# Difficulty rungs: ship fraction the handicapped Producer sends of its intended
+# launch. Single source of truth so the direct (single-env) and isolated
+# (batched-rollout) paths stay in lockstep.
+_PRODUCER_HANDICAPS: dict[str, float] = {
+    "producer_h30": 0.30,
+    "producer_h50": 0.50,
+    "producer_h70": 0.70,
+}
+
+
 def _load_oep_agent() -> Callable[[dict[str, Any]], list[list[float]]]:
     # Lazy import so merely importing the registry does not pull in the OEP
     # planner (and torch) when only the lightweight heuristics are needed.
@@ -95,6 +132,7 @@ def get_heuristic_policies() -> dict[str, Policy]:
 
     return {
         "producer": producer_agent,
+        **{name: _handicapped_producer(frac) for name, frac in _PRODUCER_HANDICAPS.items()},
         "oep": oep_agent,
         "greedy": greedy_agent,
         "defensive": defensive_agent,
@@ -114,7 +152,7 @@ def _make_isolated_policy(name: str) -> Policy:
     """
     from python.orbit_wars_gym.observation import to_official_observation
 
-    if name == "producer":
+    if name == "producer" or name in _PRODUCER_HANDICAPS:
         bot = _load_producer_module().make_agent()
     elif name == "oep":
         from bots.oep.agent import make_agent
@@ -123,9 +161,14 @@ def _make_isolated_policy(name: str) -> Policy:
     else:
         raise ValueError(f"{name!r} is stateless; use get_heuristic_policies()[name] directly")
 
+    ship_frac = _PRODUCER_HANDICAPS.get(name)
+
     def _policy(state: dict[str, Any], player: int) -> list[list[float]]:
         moves = bot(to_official_observation(state, player=player))
-        return list(moves) if isinstance(moves, list) else []
+        moves = list(moves) if isinstance(moves, list) else []
+        if ship_frac is not None:
+            moves = _weaken_producer_moves(moves, ship_frac)
+        return moves
 
     return _policy
 
@@ -152,3 +195,17 @@ def get_isolated_opponents(name: str, count: int) -> list[Policy]:
     while len(pool) < count:
         pool.append(_make_isolated_policy(name))
     return pool[:count]
+
+
+def make_isolated_opponent(name: str) -> Policy:
+    """Return a FRESH isolated opponent on every call (NOT the cached pool).
+
+    ``get_isolated_opponents`` returns shared cached pool slots, intended for a single
+    caller distributing ``count`` instances across envs (``pool[:count]`` — repeated
+    calls hand back the SAME instances). Independent callers that each ask for one
+    (e.g. one ``CandidateFactory`` per env) would therefore share a runtime and
+    cross-contaminate. This builds a NEW stateful instance per call so each caller is
+    isolated; stateless heuristics are returned as the shared callable (no state)."""
+    if name not in STATEFUL_SINGLETON_OPPONENTS:
+        return get_heuristic_policies()[name]
+    return _make_isolated_policy(name)
