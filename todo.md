@@ -154,6 +154,18 @@ PPO direto do zero contra eles provavelmente perde tudo; a rota testável é **i
   - [ ] verificar: margem ≥ 0 vs Producer a 96 seeds, sem regressão 4p, crash/timeout/invalid=0.
 
 ### FRENTE B — PPO REDESENHADO (selector de candidatos, não MultiDiscrete)
+
+> **ESTADO (2026-06-08): linha CONCLUÍDA na PARIDADE com o Producer. Reward tuning ESGOTADO.**
+> B1+B3+B4 levaram de −1.0 (colapso) a **0.00 seat-neutral vs Producer** (paridade), **+0.17 vs OEP**
+> (bate), held-out **+1.0** (generaliza) → anti-overfitting CUMPRIDO. **Surpassar (>0) NÃO atingido.**
+> Causa provada (3 rewards: PBRS, +ent, +terminal15×, todos teto na paridade): always-producer é
+> ótimo-local robusto; não é reward/exploração/timesteps. Detalhe em `EXPERIMENTS.md`. Checkpoints:
+> `artifacts/ppo/frente_b/{candidate_b1b3_150k,campaign_b4ent/best}.pt`. Evals honestos: `eval_candidate_seats` (seat-neutral); `eval_candidate_selector` é ENVIESADO (player-0), não usar.
+>
+> **RETOMAR POR UMA DAS DUAS FRENTES (multi-sessão, escolha do usuário — NÃO mais reward tuning):**
+> - [ ] **Self-play / liga** (AlphaStar/PSRO): sinal de vitória vs oponentes EVOLUINDO + Producer/OEP sempre na pool + anti-esquecimento. Continua a linha PPO. verificar: novo campeão > paridade vs Producer a 96 seeds sem regredir vs pool.
+> - [ ] **Busca / lookahead** (T8): bot que PLANEJA timeline/sim-value, não seleciona plano de expert. verificar: protótipo dentro de actTimeout bate paridade vs Producer a 96 seeds.
+
 - [~] **B1. Espaço de ação = índice de candidato (com mask).** Candidatos por `producer/oep/greedy/defensive/rush/no-op`; a policy escolhe O ÍNDICE, não a 5-tupla crua. Substitui a `MultiDiscrete([2,16,32,4,5])` morta.
   - [x] **Candidate factory (keystone)** ✅ 2026-06-08. `python/agents/candidate_factory.py` (`CandidateFactory`, 6 candidatos, no_op no índice 0, fail-safe-to-pass, fresh isolated por env). Bug de isolamento pego por teste e corrigido: `registry.make_isolated_opponent` (instância fresca/chamada vs pool cacheado compartilhado). 5 testes em `tests/test_candidate_factory.py`; 26 verdes (factory+isolation+registry). (Nota: registry não tem `reinforce`; usei `defensive` como defend.)
   - [x] **Env mode** ✅ 2026-06-08. `OrbitWarsGymEnv(action_mode="candidate")`: `action_space=Discrete(6)`, `step` decodifica índice→moves do candidato via factory; `raw` (MultiDiscrete) intacto. 5 testes em `tests/test_env_candidate_mode.py` (episódios limpos por índice, no-op passa, raw inalterado, modo inválido levanta). 10 verdes c/ factory.
