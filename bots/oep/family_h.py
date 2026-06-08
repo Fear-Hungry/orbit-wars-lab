@@ -31,14 +31,15 @@ from python.orbit_wars_gym.entities import (
     planet_y,
 )
 
+from bots.oep.engine_aim import Aimer
 from bots.oep.geometry import orbital_intercept
 
 Obs = dict[str, Any]
 Move = list[float]
 Moves = list[Move]
 
-RESERVE = 5  # ships kept home on a source planet
-CAPTURE_MARGIN = 2.0  # extra ships required over projected defense
+RESERVE = 1  # ships kept home on a source planet
+CAPTURE_MARGIN = 1.0  # extra ships required over projected defense
 VALUE_HORIZON = 60.0  # steps over which captured production is valued
 
 
@@ -114,14 +115,17 @@ def production_projected_attack(obs: Obs) -> Moves:
     me, own, targets = _split_planets(obs)
     if not own or not targets:
         return []
-    angvel = float(obs.get("angular_velocity", 0.03))
+    aimer = Aimer(obs)
     scored: list[tuple[float, _Planet, _Planet, int, float]] = []
     for source in own:
         avail = source.ships - RESERVE
         if avail < 1:
             continue
         for target in targets:
-            angle, eta = _aim(source, target, angvel)
+            aim = aimer.aim(source.id, target.id, avail)
+            if aim is None:  # engine says the shot is not viable -> skip
+                continue
+            angle, eta = aim
             defense = _projected_defense(target, eta)
             need = int(math.ceil(defense + CAPTURE_MARGIN))
             if avail < need:
@@ -150,14 +154,17 @@ def timeline_risk(obs: Obs) -> Moves:
     if not own or not targets:
         return []
     comet_ids = {int(pid) for pid in obs.get("comet_planet_ids", [])}
-    angvel = float(obs.get("angular_velocity", 0.03))
+    aimer = Aimer(obs)
     scored: list[tuple[float, _Planet, _Planet, int, float]] = []
     for source in own:
         avail = source.ships - RESERVE
         if avail < 1:
             continue
         for target in targets:
-            angle, eta = _aim(source, target, angvel)
+            aim = aimer.aim(source.id, target.id, avail)
+            if aim is None:  # engine: shot not viable -> skip
+                continue
+            angle, eta = aim
             defense = _projected_defense(target, eta)
             need = int(math.ceil(defense + CAPTURE_MARGIN))
             if avail < need:
@@ -197,34 +204,48 @@ def hammer_multiprong(obs: Obs) -> Moves:
     sources = [p for p in own if p.ships - RESERVE >= 1]
     if not sources:
         return []
-    angvel = float(obs.get("angular_velocity", 0.03))
+    aimer = Aimer(obs)
+
+    def eta_to(source: _Planet, target: _Planet) -> float:
+        aim = aimer.aim(source.id, target.id, source.ships - RESERVE)
+        return aim[1] if aim is not None else math.inf
+
+    def angle_to(source: _Planet, target: _Planet) -> float | None:
+        aim = aimer.aim(source.id, target.id, source.ships - RESERVE)
+        return aim[0] if aim is not None else None
 
     def target_value(target: _Planet) -> float:
-        nearest = min(_aim(s, target, angvel)[1] for s in sources)
+        nearest = min(eta_to(s, target) for s in sources)
+        if math.isinf(nearest):
+            return -math.inf
         defense = _projected_defense(target, nearest)
         return max(0, target.production) * VALUE_HORIZON - defense
 
-    ranked = sorted(targets, key=target_value, reverse=True)
-    if not ranked:
+    reachable = [t for t in targets if any(not math.isinf(eta_to(s, t)) for s in sources)]
+    if not reachable:
         return []
+    ranked = sorted(reachable, key=target_value, reverse=True)
     primary = ranked[0]
-    # Hammer: every source with spare ships piles onto the primary target if the
-    # synchronized force can plausibly overwhelm its projected defense.
-    contributions = sorted(sources, key=lambda s: _aim(s, primary, angvel)[1])
+    # Hammer: every source that can reach the primary piles on if the synchronized
+    # force can plausibly overwhelm its projected defense.
+    contributions = sorted(
+        (s for s in sources if angle_to(s, primary) is not None), key=lambda s: eta_to(s, primary)
+    )
+    if not contributions:
+        return []
     total = sum(s.ships - RESERVE for s in contributions)
-    nearest_eta = _aim(contributions[0], primary, angvel)[1]
+    nearest_eta = eta_to(contributions[0], primary)
     if total > _projected_defense(primary, nearest_eta) + CAPTURE_MARGIN:
-        return [
-            _move(s, _aim(s, primary, angvel)[0], s.ships - RESERVE) for s in contributions
-        ]
+        return [_move(s, angle_to(s, primary), s.ships - RESERVE) for s in contributions]
     # Multiprong fallback: split nearest sources across the two best targets so
     # the opponent must divide its response.
     moves: Moves = []
     for idx, source in enumerate(contributions):
         target = ranked[min(idx % 2, len(ranked) - 1)]
+        ang = angle_to(source, target)
         ships = source.ships - RESERVE
-        if ships >= 1:
-            moves.append(_move(source, _aim(source, target, angvel)[0], ships))
+        if ang is not None and ships >= 1:
+            moves.append(_move(source, ang, ships))
     return moves
 
 
@@ -237,7 +258,7 @@ def regroup_dominance(obs: Obs) -> Moves:
     if not enemies:
         return []
     four_player = _player_count(_planets(obs)) >= 3
-    angvel = float(obs.get("angular_velocity", 0.03))
+    aimer = Aimer(obs)
 
     # Frontier = own planet closest to any enemy. Reinforce it from the safest
     # (most enemy-distant) interior planet that has spare ships.
@@ -253,16 +274,18 @@ def regroup_dominance(obs: Obs) -> Moves:
     moves: Moves = []
     for source in interior[:2]:
         ships = source.ships - RESERVE
-        if ships >= 1:
-            moves.append(_move(source, _aim(source, frontier, angvel)[0], ships))
+        aim = aimer.aim(source.id, frontier.id, ships)
+        if ships >= 1 and aim is not None:
+            moves.append(_move(source, aim[0], ships))
 
     # 4p bias: from the frontier itself, pressure the production leader so we do
     # not kingmake by hitting a convenient weak neighbour.
     if four_player:
         leader = max(enemies, key=lambda e: e.production)
         spare = frontier.ships - RESERVE
-        if spare >= 1:
-            moves.append(_move(frontier, _aim(frontier, leader, angvel)[0], spare))
+        aim = aimer.aim(frontier.id, leader.id, spare)
+        if spare >= 1 and aim is not None:
+            moves.append(_move(frontier, aim[0], spare))
     return moves
 
 
