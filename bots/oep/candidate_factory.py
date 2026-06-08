@@ -95,8 +95,9 @@ def _register_builtin_families() -> None:
         regroup_dominance,
         timeline_risk,
     )
+    from bots.oep.hybrid import make_oep_value_overlay
     from bots.oep.hyperheuristic import hyperheuristic_plan
-    from bots.oep.rhea import rhea_plan
+    from bots.oep.rhea import best_by_value, rhea_plan
 
     register_family("production_projected_attack", lambda: production_projected_attack)
     register_family("timeline_risk", lambda: timeline_risk)
@@ -104,6 +105,8 @@ def _register_builtin_families() -> None:
     register_family("regroup_dominance", lambda: regroup_dominance)
     register_family("rhea_macro", lambda: rhea_plan)
     register_family("hyperheuristic", lambda: hyperheuristic_plan)
+    register_family("best_by_value", lambda: best_by_value)
+    register_family("oep_value_overlay", make_oep_value_overlay)
 
 
 def available_families() -> tuple[str, ...]:

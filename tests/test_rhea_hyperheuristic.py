@@ -64,3 +64,14 @@ def test_context_bucket_known_values() -> None:
         "hammer_multiprong",
         "regroup_dominance",
     }
+
+
+def test_h8_h10_legal_moves() -> None:
+    from bots.oep.candidate_factory import _FAMILY_BUILDERS
+
+    for name in ("best_by_value", "oep_value_overlay"):
+        gen = _FAMILY_BUILDERS[name]()
+        for obs, player in _obs_sequence(seed=4, num_players=2, steps=5):
+            moves = gen(obs)
+            assert isinstance(moves, list)
+            assert moves_are_legal(obs, player, moves), f"{name}: {moves}"

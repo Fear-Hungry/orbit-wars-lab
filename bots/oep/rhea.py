@@ -185,6 +185,52 @@ def _moves_for_first_gene(gene: int, obs: Obs) -> Moves:
     return moves if isinstance(moves, list) else []
 
 
+def _value_of_moves(obs: Obs, moves: Moves, me: int) -> float:
+    """One-step light-model value of playing ``moves`` now (realizable, no leak)."""
+
+    state = _light_from_obs(obs)
+    _apply_moves(state, moves, me)
+    _advance(state, MACRO_STEP)
+    return _territory_value(state, me)
+
+
+def _merge_by_source(move_sets: list[Moves]) -> Moves:
+    """Union of candidate move-sets, one launch per source planet (first wins)."""
+
+    merged: Moves = []
+    used: set[int] = set()
+    for moves in move_sets:
+        for move in moves:
+            src = int(move[0])
+            if src in used:
+                continue
+            used.add(src)
+            merged.append(move)
+    return merged
+
+
+def best_by_value(obs: Obs) -> Moves:
+    """H8: realizable runtime VALUE selector over the primitive candidates.
+
+    Unlike the bucket hyper-heuristic (which could not capture the oracle's
+    per-state signal), this scores each candidate move-set with the light
+    forward model and plays the best — including the UNION of all families and
+    'pass'. No oracle leak: the value is a forward prediction, not the posterior.
+    """
+
+    me = int(obs.get("player", 0))
+    if not obs.get("planets"):
+        return []
+    primitives = [
+        production_projected_attack(obs),
+        timeline_risk(obs),
+        hammer_multiprong(obs),
+        regroup_dominance(obs),
+    ]
+    candidates: list[Moves] = [*primitives, _merge_by_source(primitives), []]
+    return max(candidates, key=lambda mv: _value_of_moves(obs, mv, me))
+
+
 def rhea_plan(obs: Obs, *, _carry: list[list[int]] | None = None) -> Moves:
     me = int(obs.get("player", 0))
     if not obs.get("planets"):
