@@ -1,6 +1,6 @@
 # Relatório de Experimentos
 
-> Gerado de `experiments.duckdb` · **118** experimentos · período **2026-05-31** → **2026-06-09**. Fonte editável: `EXPERIMENTS.md` (importável).
+> Gerado de `experiments.duckdb` (store git-tracked) · **118** experimentos · período **2026-05-31** → **2026-06-09**. Adicione com `python -m python.lab.experiments add`.
 
 ## Resumo
 

@@ -36,11 +36,10 @@ autoresearch-*.json
 autoresearch-*.md
 uv.lock
 
-# Experiment store: binary DuckDB file + regenerated markdown views are derived
-# from EXPERIMENTS.md (git-tracked source). Rebuild with:
-#   python -m python.lab.experiments import
-experiments.duckdb
-EXPERIMENTS.generated.md
+# Experiment store: experiments.duckdb is the CANONICAL, git-tracked store
+# (add via `python -m python.lab.experiments add`, then commit it). Only the
+# regenerated markdown dump is ignored.
+EXPERIMENTS.export.md
 *.pt
 *.pth
 *.onnx

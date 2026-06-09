@@ -1,4 +1,9 @@
-"""Regression tests for the DuckDB-backed experiment store (python/lab/experiments.py)."""
+"""Regression tests for the DuckDB-backed experiment store (python/lab/experiments.py).
+
+experiments.duckdb is the canonical (git-tracked) store; experiments are added
+via add(). parse_md/import_md bulk-load from a markdown dump and are tested here
+against a fixture, NOT the live store. Tasks come from todo.md (git-tracked).
+"""
 
 from __future__ import annotations
 
@@ -12,11 +17,31 @@ pytest.importorskip("duckdb")
 import python.lab.experiments as ex  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
-MD = REPO / "EXPERIMENTS.md"
 TODO = REPO / "todo.md"
-
 _DATE_RE = re.compile(r"^\s*\d{4}-\d{2}-\d{2}\s*\|")
 _TOP_CB_RE = re.compile(r"^- \[[ x~]\]")
+
+SAMPLE_MD = """# Experimentos
+
+## Resultados recentes
+
+```text
+2026-06-01 | A ideia aplicada | rtk cmd a | antes 0.1 | depois 0.3 | resultado A | aplicar como default
+2026-06-02 | G1 ideia rejeitada | rtk git archive ref | tar -x foo | b2 | a2 | piorou | rejeitar, regrediu
+```
+
+## Próximas hipóteses
+
+```text
+2026-06-03 | C ideia futura | rtk cmd c | - | - | - | testar depois
+```
+"""
+
+
+def _sample_md(tmp_path: Path) -> Path:
+    p = tmp_path / "EXPERIMENTS.md"
+    p.write_text(SAMPLE_MD, encoding="utf-8")
+    return p
 
 
 def _count_date_rows(text: str) -> int:
@@ -33,79 +58,77 @@ def _count_toplevel_tasks(text: str) -> int:
     return n
 
 
-def test_parse_count_matches_markdown():
-    rows = ex.parse_md(MD)
-    assert len(rows) == _count_date_rows(MD.read_text(encoding="utf-8"))
-    assert len(rows) > 0
+# --- markdown parser (against a controlled fixture) ---
 
 
-def test_every_row_has_valid_status():
-    rows = ex.parse_md(MD)
-    valid = {"todo", "applied", "rejected", "logged"}
-    assert all(r["status"] in valid for r in rows)
-    # the markdown has both done (Resultados recentes) and pending (Próximas hipóteses)
-    statuses = {r["status"] for r in rows}
-    assert "todo" in statuses
+def test_parse_md_fields_and_status(tmp_path):
+    rows = ex.parse_md(_sample_md(tmp_path))
+    assert len(rows) == 3
+    by_idea = {r["idea"]: r for r in rows}
+    assert by_idea["A ideia aplicada"]["status"] == "applied"
+    assert by_idea["G1 ideia rejeitada"]["status"] == "rejected"
+    assert by_idea["C ideia futura"]["status"] == "todo"  # under Próximas hipóteses
+    assert by_idea["G1 ideia rejeitada"]["tags"] == "G1"
 
 
-def test_command_with_internal_pipe_is_folded_not_split():
-    # the "git archive <ref> | tar -x" row must keep its pipe inside the command,
+def test_parse_md_folds_command_pipe(tmp_path):
+    rows = ex.parse_md(_sample_md(tmp_path))
+    rej = next(r for r in rows if r["idea"] == "G1 ideia rejeitada")
+    # the command held an internal ' | ' (git archive ... | tar -x ...): must stay in command,
     # not leak into the structured before/after/result/decision fields.
-    rows = ex.parse_md(MD)
-    piped = [r for r in rows if "git archive" in r["command"] and "tar" in r["command"]]
-    assert piped, "expected a row whose command contains a folded ' | '"
-    assert "|" in piped[0]["command"]
+    assert "tar -x foo" in rej["command"]
+    assert rej["metric_before"] == "b2"
+    assert rej["decision"].startswith("rejeitar")
 
 
-def test_import_roundtrips_into_duckdb(tmp_path):
+def test_import_md_roundtrips(tmp_path):
     db = tmp_path / "experiments.duckdb"
-    n = ex.import_md(MD, db)
-    assert n == _count_date_rows(MD.read_text(encoding="utf-8"))
+    n = ex.import_md(_sample_md(tmp_path), db)
+    assert n == 3
     con = ex.connect(db)
     try:
         (count,) = con.execute("SELECT COUNT(*) FROM experiments").fetchone()
-        distinct_status = {s for (s,) in con.execute("SELECT DISTINCT status FROM experiments").fetchall()}
     finally:
         con.close()
-    assert count == n
-    assert distinct_status <= {"todo", "applied", "rejected", "logged"}
+    assert count == 3
 
 
-def test_export_preserves_row_count(tmp_path):
+def test_export_is_standalone_and_preserves_rows(tmp_path):
     db = tmp_path / "experiments.duckdb"
-    ex.import_md(MD, db)
-    out = tmp_path / "regenerated.md"
-    ex.export_md(db, MD, out)
-    assert _count_date_rows(out.read_text(encoding="utf-8")) == _count_date_rows(MD.read_text(encoding="utf-8"))
+    ex.import_md(_sample_md(tmp_path), db)
+    out = tmp_path / "dump.md"
+    ex.export_md(db, out)
+    assert _count_date_rows(out.read_text(encoding="utf-8")) == 3
 
 
-def test_report_has_all_sections(tmp_path):
-    db = tmp_path / "experiments.duckdb"
-    ex.import_md(MD, db)
-    report = ex.report_md(db)
-    for needle in ("# Relatório de Experimentos", "Aplicados", "Rejeitados", "Pendentes", "Por família"):
-        assert needle in report
+# --- DB-native add flow (the canonical way now) ---
 
 
 def test_add_experiment_is_tracked(tmp_path):
     db = tmp_path / "experiments.duckdb"
-    base = ex.import_md(MD, db)
-    new_id = ex.add_experiment(db, date="2026-06-09", idea="PZ test hypothesis", status="todo")
+    new_id = ex.add_experiment(db, date="2026-06-09", idea="PZ native add", status="todo")
     con = ex.connect(db)
     try:
         (total,) = con.execute("SELECT COUNT(*) FROM experiments").fetchone()
         (status,) = con.execute("SELECT status FROM experiments WHERE id = ?", [new_id]).fetchone()
     finally:
         con.close()
-    assert total == base + 1
+    assert total == 1
     assert status == "todo"
 
 
 def test_add_requires_date_and_idea(tmp_path):
     db = tmp_path / "experiments.duckdb"
-    ex.import_md(MD, db)
     with pytest.raises(ValueError):
         ex.add_experiment(db, idea="missing date")
+
+
+def test_report_has_all_sections(tmp_path):
+    db = tmp_path / "experiments.duckdb"
+    ex.import_md(_sample_md(tmp_path), db)
+    report = ex.report_md(db)
+    for needle in ("# Relatório de Experimentos", "Aplicados", "Rejeitados", "Pendentes"):
+        assert needle in report
 
 
 # --- todo.md task tracking (separate `tasks` table; must not touch experiments) ---
@@ -120,7 +143,6 @@ def test_parse_todo_matches_toplevel_checkboxes():
 
 
 def test_parse_todo_skips_manual_reference_section():
-    # the "# MANUAL" section is reference prose, never tracked as tasks
     assert not any("MANUAL" in (t["section"] or "") for t in ex.parse_todo(TODO))
 
 
@@ -130,7 +152,7 @@ def test_parse_todo_folds_subitems_into_notes():
 
 def test_import_tasks_is_isolated_from_experiments(tmp_path):
     db = tmp_path / "experiments.duckdb"
-    n_exp = ex.import_md(MD, db)
+    ex.add_experiment(db, date="2026-06-09", idea="native exp", status="logged")
     n_tasks = ex.import_tasks(TODO, db)
     con = ex.connect(db)
     try:
@@ -139,13 +161,12 @@ def test_import_tasks_is_isolated_from_experiments(tmp_path):
     finally:
         con.close()
     assert task_count == n_tasks > 0
-    # importing tasks must NOT change the experiment rows (no conflict / no pollution)
-    assert exp_count == n_exp == _count_date_rows(MD.read_text(encoding="utf-8"))
+    assert exp_count == 1  # importing tasks must NOT touch experiments
 
 
 def test_report_includes_tasks_section(tmp_path):
     db = tmp_path / "experiments.duckdb"
-    ex.import_md(MD, db)
+    ex.add_experiment(db, date="2026-06-09", idea="native exp", status="applied")
     ex.import_tasks(TODO, db)
     report = ex.report_md(db)
     assert "# Tarefas (todo.md)" in report

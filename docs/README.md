@@ -34,6 +34,6 @@ Para entender o projeto do zero (ex.: leitor de portfólio):
 Ficam na raiz e são **registros append-only**, mantidos para continuidade — não
 para um leitor de portfólio:
 
-- [`../EXPERIMENTS.md`](../EXPERIMENTS.md) — registro de ablações (uma linha por hipótese, com veredito).
+- `experiments.duckdb` — store de ablações (status feito/rejeitado/todo); relatório em [`EXPERIMENTS_REPORT.md`](EXPERIMENTS_REPORT.md).
 - [`../todo.md`](../todo.md) — journal de trabalho em andamento (roadmap, threads, checkboxes).
 - [`../AGENTS.md`](../AGENTS.md) — instruções para o executor de IA (harness Codex), não documentação do projeto.

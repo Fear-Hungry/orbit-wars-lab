@@ -1,7 +1,7 @@
 > **Log de trabalho interno (não é documentação curada).** A documentação de portfólio,
 > com uma fonte de verdade por tópico, está em [`docs/`](docs/README.md). O histórico
 > detalhado (experimentos rejeitados, resultados por item) vive no **git** e em
-> `EXPERIMENTS.md` — este arquivo fica enxuto, só com o que atacar e o estado atual.
+> `experiments.duckdb` (DB) — este arquivo (todo.md) fica enxuto, só com o que atacar e o estado atual.
 
 ---
 
@@ -61,7 +61,7 @@ Estado operacional curto:
 - **Producer é a melhor submissão operacional atual** (~1200 LB). Congelar como default até existir candidato provado.
 - **OEP é útil como adversário/professor** (~1100 LB), mas não como linha de tuning: knobs/overlays OEP já foram atacados e não devem voltar sem hipótese nova.
 - **PPO atual ainda é fraco** (`-1.0` vs Producer nos registros antigos). O próximo ataque é imitação + currículo forte, não PPO do zero contra heurísticas fracas.
-- **Histórico detalhado fechado vive em `EXPERIMENTS.md`**. Este arquivo deve ficar só com o que ainda vamos atacar.
+- **Histórico detalhado fechado vive no DB `experiments.duckdb`** (`make experiments-report`). Este arquivo deve ficar só com o que ainda vamos atacar.
 - **Decidir só com evidência pareada suficiente**: 16 seeds = triagem; 96 seeds decide. Score Kaggle precisa estabilizar antes de conclusão.
 
 ## 🧭 SEGUIR AGORA — lição do tópico Kaggle 704741 ("Lessons learned so far")
@@ -181,7 +181,7 @@ PPO direto do zero contra eles provavelmente perde tudo; a rota testável é **i
   - [ ] **Gate 2 decisor:** 96 seeds pareadas vs Producer e OEP, com cometas ligados e registro 2p/4p separado.
   - [ ] **Gate 3 top-5 proxy:** incluir pelo menos um agente público forte do benchmark comunitário antes de submeter.
   - [ ] **Métricas obrigatórias:** `mean_score_margin`, win rate, paired delta, worst decile, crash/timeout/invalid, mean/p95/max decision ms, 2p e 4p separados.
-  - [ ] **Registro:** adicionar linha em `EXPERIMENTS.md` com baseline, candidato, comandos, artefatos, margem antes/depois e decisão.
+  - [ ] **Registro:** `python -m python.lab.experiments add` (DB) com baseline, candidato, comandos, margem antes/depois e decisão; commitar `experiments.duckdb`.
   - [ ] **Correto quando:** `crash/timeout/invalid=0`, margem pareada não-negativa vs Producer/OEP, sem regressão clara em 4p, e top-5 proxy não contradiz a promoção.
 
 ## 🧨 MAIS OPÇÕES DE EXPERIMENTOS — objetivo TOP 5
@@ -301,7 +301,7 @@ Força da evidência: **forte** para imitação+RL e opponent pool; **parcial** 
 - [ ] **T12. Critério de corte para matar linha cedo.**
   - [ ] **Definir antes de rodar:** cada família precisa declarar métrica-alvo, custo máximo, seeds de triagem, gate decisor e condição de parada.
   - [ ] **Kill criteria padrão:** 3 ciclos sem melhora pareada, `crash/timeout/invalid>0`, regressão 4p grave, `explained_variance` ruim persistente ou custo acima do orçamento.
-  - [ ] **Registro:** toda morte de linha entra em `EXPERIMENTS.md` com motivo técnico, para não ressuscitar tuning morto.
+  - [ ] **Registro:** toda morte de linha vira `experiments add --status rejected` (DB) com motivo técnico, para não ressuscitar tuning morto.
   - [ ] **Reabertura:** só reabrir família se houver evidência nova: oponente novo, replay mining novo, bug corrigido ou hipótese diferente.
   - [ ] **Correto quando:** o backlog fica enxuto e nenhuma linha morta volta por intuição; o próximo experimento sempre aponta para um padrão medido.
 

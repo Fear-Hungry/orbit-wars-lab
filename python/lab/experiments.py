@@ -1,15 +1,15 @@
 """Experiment tracking store backed by DuckDB.
 
-Migrates the hand-written ``EXPERIMENTS.md`` log (one line per tested hypothesis)
-into a queryable DuckDB table, so "what was tried / what is still pending" is
-trackable without scrolling a 120 KB markdown file. The markdown stays the
-human-readable view (regenerable via ``export``); the DuckDB file is the
-queryable store.
+``experiments.duckdb`` is the **canonical, git-tracked store** of tested
+hypotheses (it replaced the old hand-written 120 KB ``EXPERIMENTS.md``). Add
+experiments with ``add`` (then commit the ``.duckdb``); read with
+``list``/``query``/``stats``/``report``; dump a markdown view with ``export``.
+``parse_md``/``import_md`` remain available to bulk-load from a markdown dump.
 
-Row format in EXPERIMENTS.md (7 ` | `-separated fields, commands may contain
-their own ``|`` which the parser folds back into the command field)::
+Experiment fields (the ``add`` columns; commands may contain their own ``|``,
+which ``parse_md`` folds back into the command field)::
 
-    YYYY-MM-DD | idea | command | before | after | result | decision
+    date | idea | command | before | after | result | decision
 
 Status is derived so the log is trackable:
 - rows under ``## Próximas hipóteses`` -> ``todo`` (not done yet);
@@ -22,13 +22,13 @@ DB file) so they never pollute the experiment metrics. ``import`` rebuilds both;
 
 CLI::
 
-    python -m python.lab.experiments import [--md EXPERIMENTS.md] [--todo todo.md] [--db experiments.duckdb]
+    python -m python.lab.experiments add --date 2026-06-09 --idea "..." [--command ...] [--decision ...] [--status ...]
+    python -m python.lab.experiments import [--todo todo.md] [--md dump.md] [--db experiments.duckdb]
     python -m python.lab.experiments list   [--status todo] [--since 2026-06-01] [--limit N]
     python -m python.lab.experiments tasks  [--status todo|wip|done]
     python -m python.lab.experiments query  "SELECT ... FROM experiments ..."
     python -m python.lab.experiments stats
-    python -m python.lab.experiments add --date 2026-06-09 --idea "..." [--command ...] [--decision ...] [--status ...]
-    python -m python.lab.experiments export [--out EXPERIMENTS.generated.md]
+    python -m python.lab.experiments export [--out EXPERIMENTS.export.md]
     python -m python.lab.experiments report [--out docs/EXPERIMENTS_REPORT.md]
 """
 
@@ -309,41 +309,32 @@ def add_experiment(db_path: Path = DEFAULT_DB, **fields: Any) -> int:
     return new_id
 
 
-def export_md(db_path: Path = DEFAULT_DB, md_path: Path = DEFAULT_MD, out_path: Path | None = None) -> Path:
-    """Regenerate the markdown view: keep the curated prose, replace data rows from the DB.
-
-    Non-destructive by default (writes to ``out_path``; never overwrites the
-    source unless explicitly told to).
+def export_md(db_path: Path = DEFAULT_DB, out_path: Path | None = None) -> Path:
+    """Dump the experiments table to a standalone markdown view (grouped by
+    section), for reading/recovery. Generated read-only — the DB is canonical.
     """
     con = connect(db_path)
     try:
-        by_section: dict[str, list[str]] = {}
-        for (section, raw, date, idea, command, b, a, result, decision) in con.execute(
+        rows = con.execute(
             "SELECT section, raw, date, idea, command, metric_before, metric_after, result, decision "
             "FROM experiments ORDER BY id"
-        ).fetchall():
-            line = raw or f"{date} | {idea} | {command} | {b} | {a} | {result} | {decision}"
-            by_section.setdefault(section, []).append(line)
+        ).fetchall()
     finally:
         con.close()
 
-    out_lines: list[str] = []
-    emitted: set[str] = set()
-    in_data_section = False
-    for line in md_path.read_text(encoding="utf-8").splitlines():
-        if line.startswith("## "):
-            section = line[3:].strip()
-            in_data_section = section in by_section
-            out_lines.append(line)
-            if in_data_section and section not in emitted:
-                out_lines.append("")
-                out_lines.extend(by_section[section])
-                emitted.add(section)
-            continue
-        if in_data_section and _DATE_RE.match(line):
-            continue  # replaced by DB rows above
-        out_lines.append(line)
-    target = out_path or (md_path.with_suffix(".generated.md"))
+    by_section: dict[str, list[str]] = {}
+    order: list[str] = []
+    for (section, raw, date, idea, command, b, a, result, decision) in rows:
+        line = raw or f"{date} | {idea} | {command} | {b} | {a} | {result} | {decision}"
+        if section not in by_section:
+            by_section[section] = []
+            order.append(section)
+        by_section[section].append(line)
+
+    out_lines = ["# Experimentos (gerado de experiments.duckdb — não editar à mão)", ""]
+    for section in order:
+        out_lines += [f"## {section or '(sem seção)'}", "", "```text", *by_section[section], "```", ""]
+    target = out_path or (REPO / "EXPERIMENTS.export.md")
     target.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
     return target
 
@@ -397,8 +388,8 @@ def report_md(db_path: Path = DEFAULT_DB, out_path: Path | None = None) -> str:
     out.append("# Relatório de Experimentos")
     out.append("")
     out.append(
-        f"> Gerado de `experiments.duckdb` · **{total}** experimentos · "
-        f"período **{dmin}** → **{dmax}**. Fonte editável: `EXPERIMENTS.md` (importável)."
+        f"> Gerado de `experiments.duckdb` (store git-tracked) · **{total}** experimentos · "
+        f"período **{dmin}** → **{dmax}**. Adicione com `python -m python.lab.experiments add`."
     )
     out.append("")
     out.append("## Resumo")
@@ -501,9 +492,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_imp = sub.add_parser("import", help="rebuild the DB from EXPERIMENTS.md (experiments) + todo.md (tasks)")
-    p_imp.add_argument("--md", type=Path, default=DEFAULT_MD)
+    p_imp = sub.add_parser("import", help="refresh the tasks table from todo.md (experiments are native to the committed DB)")
     p_imp.add_argument("--todo", type=Path, default=DEFAULT_TODO)
+    p_imp.add_argument("--md", type=Path, default=None, help="optional: also (re)load experiments from a markdown dump")
 
     p_list = sub.add_parser("list", help="list experiments (compact)")
     p_list.add_argument("--status", choices=("todo", "applied", "rejected", "logged"))
@@ -524,9 +515,8 @@ def main(argv: list[str] | None = None) -> int:
     for f in ("date", "idea", "command", "metric-before", "metric-after", "result", "decision", "status", "tags", "section"):
         p_add.add_argument(f"--{f}", default=None)
 
-    p_exp = sub.add_parser("export", help="regenerate a markdown view from the DB (non-destructive)")
-    p_exp.add_argument("--md", type=Path, default=DEFAULT_MD, help="source for curated prose")
-    p_exp.add_argument("--out", type=Path, default=None, help="output path (default: EXPERIMENTS.generated.md)")
+    p_exp = sub.add_parser("export", help="dump experiments to a standalone markdown view (read-only)")
+    p_exp.add_argument("--out", type=Path, default=None, help="output path (default: EXPERIMENTS.export.md)")
 
     p_rep = sub.add_parser("report", help="results report (applied/rejected/pending + per-family) as markdown")
     p_rep.add_argument("--out", type=Path, default=None, help="write to this path (default: print to stdout)")
@@ -534,9 +524,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.cmd == "import":
-        n = import_md(args.md, args.db)
         t = import_tasks(args.todo, args.db)
-        print(f"imported {n} experiments + {t} tasks -> {args.db}")
+        msg = f"refreshed {t} tasks from {args.todo}"
+        if args.md is not None:
+            n = import_md(args.md, args.db)
+            msg += f" + (re)loaded {n} experiments from {args.md}"
+        else:
+            msg += ". Experiments are native to the DB — add via 'experiments add' (then commit experiments.duckdb)."
+        print(msg)
         return 0
 
     if args.cmd == "tasks":
@@ -636,11 +631,11 @@ def main(argv: list[str] | None = None) -> int:
             tags=args.tags,
             section=args.section,
         )
-        print(f"added experiment id={new_id}")
+        print(f"added experiment id={new_id} (commit experiments.duckdb to version it)")
         return 0
 
     if args.cmd == "export":
-        target = export_md(args.db, args.md, args.out)
+        target = export_md(args.db, args.out)
         print(f"exported markdown view -> {target}")
         return 0
 
