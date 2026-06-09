@@ -39,9 +39,11 @@
   `--shaping-potential none` (de-anchor: dropa o shaping de produção); `--kl-to-ref-coef/--ref-checkpoint` (âncora KL
   ao BC, anti-drift; `launch_gated_kl` masked-safe); `--eval-every-updates/--early-stop-patience` (eval-gating keep-best).
   Smoke GPU validou os 3 juntos (eval_series pegou o drift e manteve o best). `make ppo-train-mov2`. Experimento id=119 no DB.
-- [ ] **RODAR a campanha Mov.2 e MEDIR** (próximo passo real, horas de GPU): `make ppo-train-mov2` (producer-heavy,
-  motor fresco) → `benchmark_ppo_submission` 96 seeds vs Producer.
-  - [ ] verificar: best-checkpoint **não regride** ao escalar (eval_series gated) **e** margem 96s **> -0.75** (teto P3), trajetória pra 0
+- [x] **Campanha Mov.2 rodada e MEDIDA** ✅ 2026-06-09 (id=120 DB, **REJECTED**). 2M ts (de-anchor=none + KL + eval-gating)
+  → margem 96s vs Producer = **−0.997 (PIOR que P3 −0.75)**. `--shaping-potential none` STARVA o sinal contra oponente
+  forte (perde tudo → reward esparso −1 → gradiente ~0). Levers de recompensa NÃO quebram o teto do Producer.
+- [ ] **DECISÃO — próximo lever** (recomendação no chat): **(b) focar BReP residual** (parte de jogo forte; o usuário já roda)
+  é a aposta estruturalmente melhor; **(a)** opcional fechar: Mov.2 anti-drift COM shaping mantido (~0.05, NÃO 0) p/ isolar se KL+gating ajudam.
 - [ ] **Critério decisor (vira `/goal`):** a mesmo compute do baseline, **margem normalizada vs Producer a 96 seeds > 0**
   (`make oep-promotion-gate` / `scripts.benchmark_ppo_submission`); check barato: dist. de ações no início do treino
   deixa de colapsar na do Producer (diagnósticos de `test_map_bias_invariance`).

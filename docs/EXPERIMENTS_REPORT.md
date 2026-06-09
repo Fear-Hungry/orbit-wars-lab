@@ -1,15 +1,15 @@
 # Relatório de Experimentos
 
-> Gerado de `experiments.duckdb` (store git-tracked) · **119** experimentos · período **2026-05-31** → **2026-06-09**. Adicione com `python -m python.lab.experiments add`.
+> Gerado de `experiments.duckdb` (store git-tracked) · **120** experimentos · período **2026-05-31** → **2026-06-09**. Adicione com `python -m python.lab.experiments add`.
 
 ## Resumo
 
 | status | n | % |
 |---|---:|---:|
-| ✅ aplicados | 15 | 13% |
-| ❌ rejeitados | 54 | 45% |
+| ✅ aplicados | 15 | 12% |
+| ❌ rejeitados | 55 | 46% |
 | 📋 logados | 47 | 39% |
-| ⏳ pendentes | 3 | 3% |
+| ⏳ pendentes | 3 | 2% |
 
 ## ✅ Aplicados (15) — o que entrou
 
@@ -31,10 +31,11 @@
 | 2026-06-04 | G1 | G1 Producer corrigido vs Producer bugado | bugado mirror: win=0.50… → corrigido vs bugado: wi… | G1 seguro; adotar Producer corrigido co… |
 | 2026-06-03 |  | régua honesta da heurística atual | baseline anterior não r… → vs old=0.46875, greedy=… | usar como bloqueio antes de novos commi… |
 
-## ❌ Rejeitados (54) — becos sem saída (não repetir)
+## ❌ Rejeitados (55) — becos sem saída (não repetir)
 
 | data | tag | ideia | resultado | decisão |
 |---|---|---|---|---|
+| 2026-06-09 | Mov | Mov.2 campanha: de-anchor(none)+KL-ao-BC+eval-gating, 2M ts… | de-anchor=none STARVA o sinal contra op… | REJEITAR shaping-potential=none. Pr… |
 | 2026-06-07 | P3 | P3: extensão +500k (620k total) entity PPO REGRIDE | escala cega de PPO REGRIDE: treino "sau… | melhor checkpoint = ppo_entity 120k… |
 | 2026-06-07 | P3 | P3: campanha limitada entity-init PPO (120k timesteps) — VA… | imitação->PPO com currículo forte FUNCI… | P3 validado em corrida curta; campa… |
 | 2026-06-07 | T4 | T4 cont.: entity export (Python puro) + online BC | accuracy offline de BC != margin online… | manter entity como arquitetura de i… |
@@ -105,6 +106,7 @@
 | OEP | 41 | 5 | 27 | 0 |
 | P3 | 4 | 0 | 2 | 0 |
 | E4 | 2 | 2 | 0 | 0 |
+| Mov | 2 | 0 | 1 | 0 |
 | P5 | 2 | 0 | 0 | 0 |
 | Parity | 2 | 1 | 0 | 0 |
 | Producer | 2 | 0 | 1 | 0 |
@@ -115,7 +117,6 @@
 | Fase | 1 | 0 | 0 | 0 |
 | G1 | 1 | 1 | 0 | 0 |
 | G2 | 1 | 0 | 0 | 0 |
-| Mov | 1 | 0 | 0 | 0 |
 | P0 | 1 | 0 | 0 | 0 |
 | P1 | 1 | 0 | 0 | 0 |
 | P2 | 1 | 0 | 1 | 0 |
