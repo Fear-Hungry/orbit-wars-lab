@@ -122,3 +122,52 @@
 | Thread | 1 | 0 | 0 | 0 |
 | UNLOCK | 1 | 0 | 0 | 0 |
 
+---
+
+# Tarefas (todo.md) — 11 feitas · 24 a fazer
+
+## ⏳ A fazer (24)
+
+| seção | tarefa | critério / notas |
+|---|---|---|
+| 🎯 FOCO ATUAL (2026-06-09) —… | Mov.1 — medir o efeito competitivo (a ablação diagnóstica): rodar mes… | [ ] verificar: margem > 0 → recompensa amarrava (seguir Mov… |
+| 🎯 FOCO ATUAL (2026-06-09) —… | Mov.2 — re-fontear Φ para desancorar a guia (sob compute finito Φ ain… | [ ] decidir: qual opção (a/b/c) — decisão de arquitetura, e… |
+| 🎯 FOCO ATUAL (2026-06-09) —… | Critério decisor (vira `/goal`): a mesmo compute do baseline, margem … |  |
+| 🅿️ PARKED (sessão 2026-06-0… | Bug-hunt (Workflow A): 20 reviews já rodaram (cache em `subagents/wor… |  |
+| 🧭 SEGUIR AGORA — lição do t… | Congelar o default competitivo no Producer até existir candidato prov… |  |
+| 🧭 SEGUIR AGORA — lição do t… | Auditar map bias / features assimétricas: ✅ auditoria FEITA 2026-06-0… | [x] Correção ESPACIAL aplicada (data-augmentation): ✅ 2026-… |
+| 🧭 SEGUIR AGORA — lição do t… | Rodar campanha PPO só depois dos três itens acima: milhões+ de timest… |  |
+| 🧭 SEGUIR AGORA — lição do t… | Alternativa não-RL: abandonar overlay no Producer e construir planner… |  |
+| 🧪 EXPERIMENTOS A FAZER — PP… | P3. PPO fine-tune com currículo forte. INFRA PRONTA 2026-06-07; falta… | [x] Inicialização (arch-aware): `train_ppo` seleciona a arq… |
+| 🧪 EXPERIMENTOS A FAZER — PP… | P4. Hall-of-fame/self-play só depois de sair do buraco. | [ ] Pré-condição: só iniciar quando melhor PPO/BC tiver `me… |
+| 🧪 EXPERIMENTOS A FAZER — PP… | P6. Gate de promoção PPO. | [ ] Gate 1 triagem: 16 seeds vs Producer/OEP + sanity contr… |
+| 🧨 MAIS OPÇÕES DE EXPERIMENT… | T0. Régua top-5 local antes de qualquer nova submissão. | [ ] Selecionar pool: baixar/empacotar agentes públicos fort… |
+| 🧨 MAIS OPÇÕES DE EXPERIMENT… | T1. Replay mining das nossas derrotas reais. | [ ] Coleta: usar fluxo do tópico `704849` ou script próprio… |
+| 🧨 MAIS OPÇÕES DE EXPERIMENT… | T2. DAgger / imitação iterativa com Producer+OEP. | [ ] Pré-condição: P1/P2 concluídos e uma policy BC exportáv… |
+| 🧨 MAIS OPÇÕES DE EXPERIMENT… | T3. Distilação de valor/critic a partir dos experts. | [ ] Gerar targets: rollouts de Producer/OEP com retorno fin… |
+| 🧨 MAIS OPÇÕES DE EXPERIMENT… | T4. Entity encoder / attention em vez de MLP flat. OFFLINE VENCEU (de… | [x] Design mínimo: `EntityActorCritic` (`python/agents/poli… |
+| 🧨 MAIS OPÇÕES DE EXPERIMENT… | T5. Action masking e decoder supervisionado. | [ ] Máscaras óbvias: origem sem naves, planeta inexistente,… |
+| 🧨 MAIS OPÇÕES DE EXPERIMENT… | T6. Política/treino 4p separado. | [ ] Track separado: criar config/checkpoint `phase5_4p` com… |
+| 🧨 MAIS OPÇÕES DE EXPERIMENT… | T7. Especialista de cometas. | [ ] Diagnóstico antes: usar replay mining para confirmar qu… |
+| 🧨 MAIS OPÇÕES DE EXPERIMENT… | T8. Planner standalone timeline-sim completo. | [ ] Escopo novo: não reutilizar frame OEP de “desviar do Pr… |
+| 🧨 MAIS OPÇÕES DE EXPERIMENT… | T9. Mixture-of-experts / seletor de política. | [ ] Experts elegíveis: Producer, OEP, PPO-BC, PPO-finetune,… |
+| 🧨 MAIS OPÇÕES DE EXPERIMENT… | T10. Population-based training real. | [ ] Pré-condição: PPO/BC já saiu do `-1.0` vs Producer; ant… |
+| 🧨 MAIS OPÇÕES DE EXPERIMENT… | T11. Precompute/lookup para liberar orçamento de planner. | [ ] Medição baseline: antes de otimizar, medir p50/p95/max … |
+| 🧨 MAIS OPÇÕES DE EXPERIMENT… | T12. Critério de corte para matar linha cedo. | [ ] Definir antes de rodar: cada família precisa declarar m… |
+
+## ✅ Feitas (11)
+
+| seção | tarefa |
+|---|---|
+| 🎯 FOCO ATUAL (2026-06-09) —… | Mov.1 — corrigir a FORMA do shaping para diferença de potencial ✅ 2026-06-09. |
+| 🎯 FOCO ATUAL (2026-06-09) —… | Consertar as 5 falhas de paridade (combate ativo) ✅ 2026-06-09 (`/diagnose`). Causa: `com… |
+| 🎯 FOCO ATUAL (2026-06-09) —… | CRÍTICO — consertar o build do binding Rust ✅ 2026-06-09. Causa: `uv run` (auto-sync) rei… |
+| 🎯 FOCO ATUAL (2026-06-09) —… | Migração DuckDB dos experimentos ✅ 2026-06-09 (/goal). `python/lab/experiments.py`: parse… |
+| 🧭 SEGUIR AGORA — lição do t… | Antes de novo run PPO longo, consertar instrumentação: ✅ 2026-06-07. `explained_variance`… |
+| 🧭 SEGUIR AGORA — lição do t… | Trocar o currículo fraco por oponente forte: ✅ 2026-06-07. `PHASE0_OPPONENTS` inclui Prod… |
+| 🧪 EXPERIMENTOS A FAZER — PP… | P0. Registrar adversários fortes no treino. ✅ feito e verificado 2026-06-06. |
+| 🧪 EXPERIMENTOS A FAZER — PP… | P1. Dataset de imitação Producer/OEP. ✅ feito e verificado 2026-06-06 — revelou 2 blocant… |
+| 🧪 EXPERIMENTOS A FAZER — PP… | P1.5. Cabeça `launch?` binária + move condicional (decisão do usuário; fork resolvido). ✅… |
+| 🧪 EXPERIMENTOS A FAZER — PP… | P2. Behavioral cloning antes do PPO. ✅ feito e verificado 2026-06-07 (gate atingido; BC f… |
+| 🧪 EXPERIMENTOS A FAZER — PP… | P5. Ablation de map bias/features. ✅ auditoria + tratamento (augmentation) feitos e verif… |
+

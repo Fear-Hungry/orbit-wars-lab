@@ -16,14 +16,20 @@ Status is derived so the log is trackable:
 - rows under ``## Resultados recentes`` -> ``applied`` / ``rejected`` / ``logged``
   inferred from the decision text.
 
+Work tasks from ``todo.md`` are tracked too, in a SEPARATE ``tasks`` table (same
+DB file) so they never pollute the experiment metrics. ``import`` rebuilds both;
+``report`` renders experiments and tasks in distinct sections.
+
 CLI::
 
-    python -m python.lab.experiments import [--md EXPERIMENTS.md] [--db experiments.duckdb]
+    python -m python.lab.experiments import [--md EXPERIMENTS.md] [--todo todo.md] [--db experiments.duckdb]
     python -m python.lab.experiments list   [--status todo] [--since 2026-06-01] [--limit N]
+    python -m python.lab.experiments tasks  [--status todo|wip|done]
     python -m python.lab.experiments query  "SELECT ... FROM experiments ..."
     python -m python.lab.experiments stats
     python -m python.lab.experiments add --date 2026-06-09 --idea "..." [--command ...] [--decision ...] [--status ...]
     python -m python.lab.experiments export [--out EXPERIMENTS.generated.md]
+    python -m python.lab.experiments report [--out docs/EXPERIMENTS_REPORT.md]
 """
 
 from __future__ import annotations
@@ -37,10 +43,15 @@ import duckdb
 
 REPO = Path(__file__).resolve().parents[2]
 DEFAULT_MD = REPO / "EXPERIMENTS.md"
+DEFAULT_TODO = REPO / "todo.md"
 DEFAULT_DB = REPO / "experiments.duckdb"
 
 _DATE_RE = re.compile(r"^\s*(\d{4}-\d{2}-\d{2})\s*\|")
 _TAG_RE = re.compile(r"^([A-Z][A-Za-z]*\d*[A-Za-z]?\d*|P\d|T\d|G\d|E\d|C\d)\b")
+# todo.md checklist line: indent, [ ]/[x]/[~], text. Sub-items (indented) are
+# folded into the parent task's notes; the MANUAL/reference section has none.
+_CHECKBOX_RE = re.compile(r"^(\s*)- \[([ x~])\]\s+(.*)")
+_BOX_STATUS = {"x": "done", " ": "todo", "~": "wip"}
 
 TODO_SECTION_KEY = "hipótese"  # substring of "## Próximas hipóteses"
 
@@ -75,6 +86,24 @@ CREATE TABLE IF NOT EXISTS experiments (
     tags          TEXT,
     source_line   INTEGER,
     raw           TEXT
+);
+"""
+
+# Work tasks from todo.md live in a SEPARATE table so they never pollute the
+# experiment metrics (applied/rejected/...). Same DB file, unified by `report`.
+TASK_COLUMNS = ("id", "date", "task", "status", "section", "notes", "tags", "source_line", "raw")
+
+_TASKS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS tasks (
+    id          INTEGER PRIMARY KEY,
+    date        DATE,
+    task        TEXT,
+    status      TEXT,
+    section     TEXT,
+    notes       TEXT,
+    tags        TEXT,
+    source_line INTEGER,
+    raw         TEXT
 );
 """
 
@@ -146,6 +175,7 @@ def parse_md(md_path: Path) -> list[dict[str, Any]]:
 def connect(db_path: Path) -> duckdb.DuckDBPyConnection:
     con = duckdb.connect(str(db_path))
     con.execute(_SCHEMA)
+    con.execute(_TASKS_SCHEMA)
     return con
 
 
@@ -161,6 +191,82 @@ def import_md(md_path: Path = DEFAULT_MD, db_path: Path = DEFAULT_DB, *, replace
             [[r[c] for c in COLUMNS] for r in rows],
         )
         (count,) = con.execute("SELECT COUNT(*) FROM experiments").fetchone()
+    finally:
+        con.close()
+    return int(count)
+
+
+def parse_todo(todo_path: Path) -> list[dict[str, Any]]:
+    """Parse todo.md top-level checklist items into task rows.
+
+    Sub-items (indented checkboxes, e.g. ``verificar:`` criteria) are folded into
+    the parent task's ``notes``. The ``# MANUAL`` reference section is skipped.
+    Status: ``[x]`` -> done, ``[ ]`` -> todo, ``[~]`` -> wip.
+    """
+    rows: list[dict[str, Any]] = []
+    section = ""
+    section_date: str | None = None
+    in_manual = False
+    current: dict[str, Any] | None = None
+    subs: list[str] = []
+
+    def _flush() -> None:
+        if current is not None:
+            current["notes"] = " ; ".join(subs)
+            rows.append(current)
+
+    for lineno, line in enumerate(todo_path.read_text(encoding="utf-8").splitlines(), 1):
+        if line.startswith("# "):  # level-1 header
+            in_manual = "MANUAL" in line
+            section = line[2:].strip()
+            d = re.search(r"\d{4}-\d{2}-\d{2}", line)
+            section_date = d.group(0) if d else None
+            continue
+        if line.startswith("## "):  # level-2 header
+            section = line[3:].strip()
+            d = re.search(r"\d{4}-\d{2}-\d{2}", line)
+            if d:
+                section_date = d.group(0)
+            continue
+        if in_manual:
+            continue
+        m = _CHECKBOX_RE.match(line)
+        if not m:
+            continue
+        indent, box, text = m.groups()
+        text = text.replace("**", "").strip()
+        if len(indent) == 0:  # new top-level task
+            _flush()
+            subs = []
+            current = {
+                "date": section_date,
+                "task": text,
+                "status": _BOX_STATUS[box],
+                "section": section,
+                "notes": "",
+                "tags": _derive_tags(text),
+                "source_line": lineno,
+                "raw": line.rstrip(),
+            }
+        elif current is not None:  # sub-item -> fold into the current task
+            subs.append(f"[{box if box.strip() else ' '}] {text}")
+    _flush()
+    return rows
+
+
+def import_tasks(todo_path: Path = DEFAULT_TODO, db_path: Path = DEFAULT_DB) -> int:
+    """(Re)load todo.md tasks into the ``tasks`` table. Returns row count."""
+    rows = parse_todo(todo_path)
+    for i, r in enumerate(rows, 1):
+        r["id"] = i
+    con = connect(db_path)
+    try:
+        con.execute("DELETE FROM tasks")
+        con.executemany(
+            f"INSERT INTO tasks ({', '.join(TASK_COLUMNS)}) VALUES ({', '.join('?' for _ in TASK_COLUMNS)})",
+            [[r[c] for c in TASK_COLUMNS] for r in rows],
+        )
+        (count,) = con.execute("SELECT COUNT(*) FROM tasks").fetchone()
     finally:
         con.close()
     return int(count)
@@ -278,6 +384,11 @@ def report_md(db_path: Path = DEFAULT_DB, out_path: Path | None = None) -> str:
             "SUM(CASE WHEN status='todo' THEN 1 ELSE 0 END) AS todo "
             "FROM experiments WHERE tags <> '' GROUP BY tags ORDER BY total DESC, tags"
         ).fetchall()
+        task_counts = dict(con.execute("SELECT status, COUNT(*) FROM tasks GROUP BY status").fetchall())
+        tasks_todo = con.execute(
+            "SELECT section, task, notes FROM tasks WHERE status IN ('todo', 'wip') ORDER BY id"
+        ).fetchall()
+        tasks_done = con.execute("SELECT section, task FROM tasks WHERE status = 'done' ORDER BY id").fetchall()
     finally:
         con.close()
 
@@ -339,6 +450,34 @@ def report_md(db_path: Path = DEFAULT_DB, out_path: Path | None = None) -> str:
         out.append(f"| {_md_cell(tags, 14)} | {int(t)} | {int(ap or 0)} | {int(rj or 0)} | {int(td or 0)} |")
     out.append("")
 
+    # ---- Work tasks (todo.md) — separate table, kept apart from experiment metrics ----
+    tc = task_counts
+    n_todo = int(tc.get("todo", 0)) + int(tc.get("wip", 0))
+    out.append("---")
+    out.append("")
+    out.append(f"# Tarefas (todo.md) — {int(tc.get('done', 0))} feitas · {n_todo} a fazer")
+    out.append("")
+    out.append(f"## ⏳ A fazer ({n_todo})")
+    out.append("")
+    if tasks_todo:
+        out.append("| seção | tarefa | critério / notas |")
+        out.append("|---|---|---|")
+        for section, task, notes in tasks_todo:
+            out.append(f"| {_md_cell(section, 28)} | {_md_cell(task, 70)} | {_md_cell(notes, 60)} |")
+    else:
+        out.append("_(nenhuma)_")
+    out.append("")
+    out.append(f"## ✅ Feitas ({int(tc.get('done', 0))})")
+    out.append("")
+    if tasks_done:
+        out.append("| seção | tarefa |")
+        out.append("|---|---|")
+        for section, task in tasks_done:
+            out.append(f"| {_md_cell(section, 28)} | {_md_cell(task, 90)} |")
+    else:
+        out.append("_(nenhuma)_")
+    out.append("")
+
     report = "\n".join(out) + "\n"
     if out_path is not None:
         out_path.write_text(report, encoding="utf-8")
@@ -362,8 +501,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_imp = sub.add_parser("import", help="parse EXPERIMENTS.md into the DB (replaces existing rows)")
+    p_imp = sub.add_parser("import", help="rebuild the DB from EXPERIMENTS.md (experiments) + todo.md (tasks)")
     p_imp.add_argument("--md", type=Path, default=DEFAULT_MD)
+    p_imp.add_argument("--todo", type=Path, default=DEFAULT_TODO)
 
     p_list = sub.add_parser("list", help="list experiments (compact)")
     p_list.add_argument("--status", choices=("todo", "applied", "rejected", "logged"))
@@ -374,7 +514,11 @@ def main(argv: list[str] | None = None) -> int:
     p_q = sub.add_parser("query", help="run an arbitrary read-only SQL query")
     p_q.add_argument("sql")
 
-    sub.add_parser("stats", help="counts by status / section / tag")
+    p_tasks = sub.add_parser("tasks", help="list work tasks from todo.md")
+    p_tasks.add_argument("--status", choices=("todo", "wip", "done"))
+    p_tasks.add_argument("--limit", type=int, default=40)
+
+    sub.add_parser("stats", help="counts by status / section / tag (experiments + tasks)")
 
     p_add = sub.add_parser("add", help="add one experiment")
     for f in ("date", "idea", "command", "metric-before", "metric-after", "result", "decision", "status", "tags", "section"):
@@ -391,7 +535,24 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "import":
         n = import_md(args.md, args.db)
-        print(f"imported {n} experiments -> {args.db}")
+        t = import_tasks(args.todo, args.db)
+        print(f"imported {n} experiments + {t} tasks -> {args.db}")
+        return 0
+
+    if args.cmd == "tasks":
+        con = connect(args.db)
+        try:
+            where, params = "", []
+            if args.status:
+                where, params = " WHERE status = ?", [args.status]
+            rows = con.execute(
+                f"SELECT id, status, substr(section, 1, 24), substr(task, 1, 72) FROM tasks{where} "
+                f"ORDER BY id LIMIT {int(args.limit)}",
+                params,
+            ).fetchall()
+        finally:
+            con.close()
+        _print_rows(rows, ["id", "status", "section", "task"])
         return 0
 
     if args.cmd == "list":
@@ -450,6 +611,12 @@ def main(argv: list[str] | None = None) -> int:
                     "SELECT tags, COUNT(*) FROM experiments WHERE tags <> '' GROUP BY tags ORDER BY 2 DESC LIMIT 12"
                 ).fetchall(),
                 ["tag", "n"],
+            )
+            (n_tasks,) = con.execute("SELECT COUNT(*) FROM tasks").fetchone()
+            print(f"\ntasks (todo.md): {n_tasks}")
+            _print_rows(
+                con.execute("SELECT status, COUNT(*) FROM tasks GROUP BY status ORDER BY 2 DESC").fetchall(),
+                ["status", "n"],
             )
         finally:
             con.close()
