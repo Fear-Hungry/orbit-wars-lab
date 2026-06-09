@@ -10,9 +10,7 @@ use crate::config::{
     ROTATION_RADIUS_LIMIT, SUN_RADIUS,
 };
 use crate::generator::generate_training_game;
-use crate::geometry::{
-    distance, orbital_radius, point_to_segment_distance, rotate_about_center, swept_pair_hit,
-};
+use crate::geometry::{distance, point_to_segment_distance, swept_pair_hit};
 use crate::types::{CometGroup, Fleet, GameState, Move, Planet, StepOutcome};
 
 /// A planet's motion over a single tick: position before (`old`) and after
@@ -253,8 +251,24 @@ impl Game {
             let old = [planet.x, planet.y];
             let mut new = old;
             if let Some(initial) = initial_by_id.get(&planet.id) {
-                if orbital_radius(initial.x, initial.y) + planet.radius < ROTATION_RADIUS_LIMIT {
-                    new = rotate_about_center(initial.x, initial.y, rotation_angle);
+                let dx = initial.x - CENTER;
+                let dy = initial.y - CENTER;
+                let r = (dx * dx + dy * dy).sqrt();
+                if r + planet.radius < ROTATION_RADIUS_LIMIT {
+                    // Replicate the official interpreter's EXACT float path:
+                    // reconstruct from polar (r, atan2(dy, dx)) and add the
+                    // rotation to the angle, rather than a matrix rotation of the
+                    // Cartesian point. The two are mathematically identical but
+                    // round differently (sqrt+atan2+cos(sum) vs a linear combo);
+                    // matching the official ops bit-for-bit is what stops a
+                    // knife-edge fleet/planet collision (e.g. a fleet launched
+                    // radius+0.1 from an orbiting planet) from flipping and
+                    // desyncing combat. See docs/PARITY.md.
+                    let current_angle = dy.atan2(dx) + rotation_angle;
+                    new = [
+                        CENTER + r * current_angle.cos(),
+                        CENTER + r * current_angle.sin(),
+                    ];
                 }
             }
             paths.push(PlanetPath {
@@ -624,6 +638,7 @@ fn comet_paths_are_valid(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::rotate_about_center;
     use crate::types::Planet;
     use rand_chacha::rand_core::SeedableRng;
 
