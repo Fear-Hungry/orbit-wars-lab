@@ -34,10 +34,14 @@
   - [ ] **AÇÃO SUA:** seu eval em background (`scripts.eval_brep_direct` no `c00.pt`) foi iniciado com `uv run` puro →
     está rodando no **motor STALE (pré-fix de paridade)**. Matar e relançar via `make`/`--no-sync` para usar o motor correto.
   - [ ] opcional: `uv cache clean orbit-wars-lab` (remove o wheel stale; exige nenhum processo uv segurando o lock)
-- [ ] **Mov.2 — re-fontear Φ para desancorar a guia** (sob compute finito Φ ainda guia para o estilo Producer).
-  Escolher: (a) Φ = valor do crítico `V(s)` [recomendado]; (b) recozer `base_shaping_scale` a **0** (hoje para em 0.15,
-  `train_ppo.py:79-80`) + apoiar no reward esparso `gym_env.py:119` e tunar GAE-λ; (c) só potencial terminal.
-  - [ ] decidir: qual opção (a/b/c) — decisão de arquitetura, embasar antes de codar
+- [x] **Mov.2 — implementado** ✅ 2026-06-09 (`/goal`). A evidência do P3 (DB) reformulou: o gargalo é **drift de
+  recompensa** (PPO melhora sobre BC e REGRIDE ao escalar), não representação. 3 knobs compostos em `train_ppo`:
+  `--shaping-potential none` (de-anchor: dropa o shaping de produção); `--kl-to-ref-coef/--ref-checkpoint` (âncora KL
+  ao BC, anti-drift; `launch_gated_kl` masked-safe); `--eval-every-updates/--early-stop-patience` (eval-gating keep-best).
+  Smoke GPU validou os 3 juntos (eval_series pegou o drift e manteve o best). `make ppo-train-mov2`. Experimento id=119 no DB.
+- [ ] **RODAR a campanha Mov.2 e MEDIR** (próximo passo real, horas de GPU): `make ppo-train-mov2` (producer-heavy,
+  motor fresco) → `benchmark_ppo_submission` 96 seeds vs Producer.
+  - [ ] verificar: best-checkpoint **não regride** ao escalar (eval_series gated) **e** margem 96s **> -0.75** (teto P3), trajetória pra 0
 - [ ] **Critério decisor (vira `/goal`):** a mesmo compute do baseline, **margem normalizada vs Producer a 96 seeds > 0**
   (`make oep-promotion-gate` / `scripts.benchmark_ppo_submission`); check barato: dist. de ações no início do treino
   deixa de colapsar na do Producer (diagnósticos de `test_map_bias_invariance`).

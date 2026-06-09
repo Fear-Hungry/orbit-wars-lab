@@ -1,14 +1,14 @@
 # Relatório de Experimentos
 
-> Gerado de `experiments.duckdb` (store git-tracked) · **118** experimentos · período **2026-05-31** → **2026-06-09**. Adicione com `python -m python.lab.experiments add`.
+> Gerado de `experiments.duckdb` (store git-tracked) · **119** experimentos · período **2026-05-31** → **2026-06-09**. Adicione com `python -m python.lab.experiments add`.
 
 ## Resumo
 
 | status | n | % |
 |---|---:|---:|
 | ✅ aplicados | 15 | 13% |
-| ❌ rejeitados | 54 | 46% |
-| 📋 logados | 46 | 39% |
+| ❌ rejeitados | 54 | 45% |
+| 📋 logados | 47 | 39% |
 | ⏳ pendentes | 3 | 3% |
 
 ## ✅ Aplicados (15) — o que entrou
@@ -115,6 +115,7 @@
 | Fase | 1 | 0 | 0 | 0 |
 | G1 | 1 | 1 | 0 | 0 |
 | G2 | 1 | 0 | 0 | 0 |
+| Mov | 1 | 0 | 0 | 0 |
 | P0 | 1 | 0 | 0 | 0 |
 | P1 | 1 | 0 | 0 | 0 |
 | P2 | 1 | 0 | 1 | 0 |
