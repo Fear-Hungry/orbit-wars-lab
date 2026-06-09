@@ -1,20 +1,21 @@
 # Relatório de Experimentos
 
-> Gerado de `experiments.duckdb` · **117** experimentos · período **2026-05-31** → **2026-06-07**. Fonte editável: `EXPERIMENTS.md` (importável).
+> Gerado de `experiments.duckdb` · **118** experimentos · período **2026-05-31** → **2026-06-09**. Fonte editável: `EXPERIMENTS.md` (importável).
 
 ## Resumo
 
 | status | n | % |
 |---|---:|---:|
-| ✅ aplicados | 14 | 12% |
+| ✅ aplicados | 15 | 13% |
 | ❌ rejeitados | 54 | 46% |
 | 📋 logados | 46 | 39% |
 | ⏳ pendentes | 3 | 3% |
 
-## ✅ Aplicados (14) — o que entrou
+## ✅ Aplicados (15) — o que entrou
 
 | data | tag | ideia | antes → depois | decisão |
 |---|---|---|---|---|
+| 2026-06-09 | Re | Re-validação da régua decisora no motor corrigido (paridade) | recordado: submission.p… → re-run -1.00000 (8s, mo… | régua confirmada no motor corrigido; fu… |
 | 2026-06-07 | Paraleliz… | Paralelizar opponent (threads E processos) — AMBOS FALHAM | sequencial 250-275 SPS → THREADS (ThreadPoolExec… | default revertido p/ sequencial (oppone… |
 | 2026-06-07 | T4 | T4: entity encoder (masked pooling) vs FlatActorCritic — comparação c… | flat colapsa (launchF1 … → entity: launchF1=0.60, … | aceitar entity como caminho; pendente: … |
 | 2026-06-06 | E4 | E4 campanha self-play league rodada (genuína tentativa de bater o Pro… | hipótese: self-play lea… → campanha rodou end-to-e… | manter Producer 1231.9 como melhor bot.… |
@@ -119,6 +120,7 @@
 | P2 | 1 | 0 | 1 | 0 |
 | PPO | 1 | 0 | 0 | 0 |
 | Paralelizar | 1 | 1 | 0 | 0 |
+| Re | 1 | 1 | 0 | 0 |
 | Thread | 1 | 0 | 0 | 0 |
 | UNLOCK | 1 | 0 | 0 | 0 |
 
