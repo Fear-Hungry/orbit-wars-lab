@@ -91,6 +91,7 @@ def _train_chunk(prev: str, ckpt: Path, args: argparse.Namespace, chunk: int, lo
         "--rollout-num-envs", str(args.rollout_num_envs),
         "--rollout-steps", str(args.rollout_steps),
         "--ent-coef", str(args.ent_coef),
+        "--reward-mode", args.reward_mode,
         "--total-timesteps", str(args.chunk_timesteps),
         "--seed", str(args.seed + chunk),
     ]
@@ -127,6 +128,7 @@ def main() -> None:
     parser.add_argument("--rollout-steps", type=int, default=256)
     parser.add_argument("--rollout-num-envs", type=int, default=16)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--reward-mode", choices=("legacy", "dense_potential"), default="legacy")
     parser.add_argument("--ent-coef", type=float, default=0.005)
     parser.add_argument("--eval-seeds", type=int, default=16)
     parser.add_argument("--eval-episode-steps", type=int, default=256)

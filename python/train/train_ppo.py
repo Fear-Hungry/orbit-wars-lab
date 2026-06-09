@@ -521,6 +521,8 @@ def _collect_batched_rollout_segment(
         ship_margin_scale=training_cfg.ship_margin_scale,
         base_shaping_scale=base_shaping_scale,
         comet_shaping_scale=comet_shaping_scale,
+        reward_mode=training_cfg.reward_mode,
+        terminal_reward_scale=training_cfg.terminal_reward_scale,
     )
     backend = RustBatchBackend(
         num_envs=num_envs,
@@ -597,23 +599,29 @@ def _collect_batched_rollout_segment(
             if not active[env_index]:
                 dones_row[env_index] = 1.0
                 continue
-            base_reward = reward_env._base_shaping_reward(
-                previous_state,
-                next_state,
-                player=0,
-                player_moves=player_moves_by_env[env_index],
-            )
-            ship_margin_reward = reward_env._ship_margin_reward(previous_state, next_state, player=0)
-            comet_reward = reward_env._comet_auxiliary_reward(previous_state, next_state, player=0)
-            reward = (
-                base_shaping_scale * base_reward
-                + ship_margin_reward
-                + comet_shaping_scale * comet_reward
-            )
+            if reward_env.reward_mode == "dense_potential":
+                # B3 PBRS in the batched/GPU path too: F = γ·Φ(s') − Φ(s) per env.
+                phi_prev, _ = reward_env._dense_potential(previous_state, player=0)
+                phi_next, _ = reward_env._dense_potential(next_state, player=0)
+                reward = reward_env.reward_gamma * phi_next - phi_prev
+            else:
+                base_reward = reward_env._base_shaping_reward(
+                    previous_state,
+                    next_state,
+                    player=0,
+                    player_moves=player_moves_by_env[env_index],
+                )
+                ship_margin_reward = reward_env._ship_margin_reward(previous_state, next_state, player=0)
+                comet_reward = reward_env._comet_auxiliary_reward(previous_state, next_state, player=0)
+                reward = (
+                    base_shaping_scale * base_reward
+                    + ship_margin_reward
+                    + comet_shaping_scale * comet_reward
+                )
             done = bool(outcome.get("done", False))
             if done:
                 rewards = outcome.get("rewards", [])
-                reward += float(rewards[0]) if rewards else 0.0
+                reward += reward_env.terminal_reward_scale * (float(rewards[0]) if rewards else 0.0)
 
             rewards_row[env_index] = float(reward)
             dones_row[env_index] = float(done)
