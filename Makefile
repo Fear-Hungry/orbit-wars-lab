@@ -1,4 +1,4 @@
-.PHONY: install build sync-binding verify-binding test smoke bench fmt lint clean lab-doctor lab-heuristics lab-quick lab-eval lab-league lab-submission experiments-import experiments-report experiments-stats gate-check gate-check-final oep-promotion-gate ppo-train-targeted ppo-select ppo-select-targeted ppo-bench-exported ppo-select-exported docker-build docker-shell docker-codex docker-smoke docker-test docker-train docker-gpu-build docker-gpu-shell docker-gpu-codex docker-gpu-check docker-gpu-train
+.PHONY: install build sync-binding verify-binding test smoke bench fmt lint clean lab-doctor lab-heuristics lab-quick lab-eval lab-league lab-submission experiments-import experiments-report experiments-stats gate-check gate-check-final oep-promotion-gate ppo-train-targeted ppo-train-mov2 ppo-select ppo-select-targeted ppo-bench-exported ppo-select-exported docker-build docker-shell docker-codex docker-smoke docker-test docker-train docker-gpu-build docker-gpu-shell docker-gpu-codex docker-gpu-check docker-gpu-train
 
 PPO_SEED ?= 11
 PPO_TIMESTEPS ?= 32768
@@ -100,6 +100,17 @@ oep-promotion-gate:
 
 ppo-train-targeted:
 	$(UV_RUN) python -m python.train.train_ppo --seed $(PPO_SEED) --training-track phase0_2p --num-players 2 --opponents $(PPO_TARGETED_OPPONENTS) --total-timesteps $(PPO_TIMESTEPS) --rollout-steps 256 --update-epochs 4 --minibatch-size 256 --learning-rate $(PPO_LEARNING_RATE) --ship-margin-scale $(PPO_SHIP_MARGIN_SCALE) --checkpoint-in $(PPO_CHECKPOINT_IN) --checkpoint-out $(PPO_CHECKPOINT_OUT) --decoder-max-moves-per-turn $(PPO_DECODER_MAX_MOVES) --decoder-min-ships-to-launch $(PPO_DECODER_MIN_SHIPS) --decoder-reserve-home-ships $(PPO_DECODER_RESERVE)
+
+# Movement 2 campaign: de-anchored reward (no production shaping) + KL-to-BC anchor
+# + eval-gating (keep-best by paired margin, early-stop on drift). Warm-start from a
+# BC/entity checkpoint (PPO_CHECKPOINT_IN, also the KL reference). GPU; fresh engine.
+PPO_KL_COEF ?= 0.05
+ppo-train-mov2:
+	$(UV_RUN) python -m python.train.train_ppo --seed $(PPO_SEED) --policy-arch entity --num-players 2 \
+	  --opponents producer,greedy,oep --total-timesteps $(PPO_TIMESTEPS) --rollout-steps 256 --rollout-num-envs 16 \
+	  --device cuda --checkpoint-in $(PPO_CHECKPOINT_IN) --checkpoint-out $(PPO_CHECKPOINT_OUT) \
+	  --shaping-potential none --kl-to-ref-coef $(PPO_KL_COEF) \
+	  --eval-every-updates 20 --eval-seeds 8 --eval-opponent producer --early-stop-patience 8
 
 ppo-select:
 	$(UV_RUN) python -m scripts.select_ppo_checkpoint 'artifacts/ppo/*.pt'
