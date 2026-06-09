@@ -5,6 +5,55 @@
 
 ---
 
+# 🎯 FOCO ATUAL (2026-06-09) — desancorar a recompensa do Producer (Alavanca A)
+
+> Causa-raiz do teto vs Producer, com endereço no código. Embasamento: Ng/Harada/Russell 1999 (PBRS
+> invariância só na forma de diferença); Devlin & Kudenko 2012 (dynamic PBRS / Φ = valor do crítico);
+> Wu 2024 (Q-shaping). Bug-hunt + DuckDB ficaram PARKED (fim deste arquivo) — esforço pesado demais.
+
+- [x] **Mov.1 — corrigir a FORMA do shaping para diferença de potencial** ✅ 2026-06-09.
+  `gym_env.py`: extraído `_state_potential(s)`=Φ; `_base_shaping_reward` agora retorna `γ·Φ(s') − Φ(s)` com
+  zeragem terminal (`Φ(terminal)≡0`); `step()` passa `done`; novo param `shaping_gamma`. `train_ppo.py`: path
+  batched passa `done=done` (mesmo método reusado → cobre single-env E batched/GPU); `shaping_gamma=training_cfg.gamma`
+  nos 2 call-sites (PBRS no mesmo γ do GAE). Embasamento: Ng/Harada/Russell 1999.
+  - [x] verificar: teste de telescoping discounted `Σ_t γ^t·F_t == γ^N·Φ(s_N) − Φ(s_0)` — `tests/test_reward_shaping.py` (3 casos) PASS
+  - [x] verificar: `test_training_phase0` PASS (15) + lint limpo nos arquivos mudados
+- [ ] **Mov.1 — medir o efeito competitivo** (a ablação diagnóstica): rodar mesmo-compute do baseline e ler margem vs Producer a 96 seeds.
+  - [ ] verificar: margem **> 0** → recompensa amarrava (seguir Mov.2); margem **~0** → é representação (Alavanca B, Tavakoli 2017)
+
+- [x] **Consertar as 5 falhas de paridade (combate ativo)** ✅ 2026-06-09 (`/diagnose`). Causa: `compute_planet_paths`
+  em `step.rs` usava rotação MATRICIAL; o oficial usa POLAR (`r·cos(atan2+ωt)`) — float-diferente (~1e-10), virava
+  colisão knife-edge de frota recém-lançada. Fix: replicar o caminho polar exato. Verificado: `test_parity_actions` 4/4
+  + `test_movement_fidelity` + suíte **222 passed** (com `.so` fresco) + `cargo test` 18. Detalhe: [[project_simulator_parity]].
+- [x] **CRÍTICO — consertar o build do binding Rust** ✅ 2026-06-09. Causa: `uv run` (auto-sync) reinstala
+  `orbit-wars-lab` de um wheel STALE em cache e reverte o `.so` fresco → motor VELHO silenciosamente. Fix no `Makefile`:
+  novo `UV_RUN = uv run --no-sync` em TODOS os alvos que rodam código; `make build` agora chama `sync-binding`
+  (force-copy de `target/release/liborbit_wars_rs.so` → venv); novo `make verify-binding`. Documentado em
+  `docs/PARITY.md` "Frescor do binding". Detalhe: [[build_uv_reverts_fresh_so]]. Verificado: `make build` sincroniza,
+  `uv run --no-sync` preserva (paridade passa). 
+  - [ ] **AÇÃO SUA:** seu eval em background (`scripts.eval_brep_direct` no `c00.pt`) foi iniciado com `uv run` puro →
+    está rodando no **motor STALE (pré-fix de paridade)**. Matar e relançar via `make`/`--no-sync` para usar o motor correto.
+  - [ ] opcional: `uv cache clean orbit-wars-lab` (remove o wheel stale; exige nenhum processo uv segurando o lock)
+- [ ] **Mov.2 — re-fontear Φ para desancorar a guia** (sob compute finito Φ ainda guia para o estilo Producer).
+  Escolher: (a) Φ = valor do crítico `V(s)` [recomendado]; (b) recozer `base_shaping_scale` a **0** (hoje para em 0.15,
+  `train_ppo.py:79-80`) + apoiar no reward esparso `gym_env.py:119` e tunar GAE-λ; (c) só potencial terminal.
+  - [ ] decidir: qual opção (a/b/c) — decisão de arquitetura, embasar antes de codar
+- [ ] **Critério decisor (vira `/goal`):** a mesmo compute do baseline, **margem normalizada vs Producer a 96 seeds > 0**
+  (`make oep-promotion-gate` / `scripts.benchmark_ppo_submission`); check barato: dist. de ações no início do treino
+  deixa de colapsar na do Producer (diagnósticos de `test_map_bias_invariance`).
+
+- [x] **Migração DuckDB dos experimentos** ✅ 2026-06-09 (/goal). `python/lab/experiments.py`: parser do
+  `EXPERIMENTS.md` (folda pipes internos de comando) → `experiments.duckdb`; status derivado por seção/decisão
+  (feito/rejeitado/logado/**todo**); CLI `import|list|query|stats|add|export|**report**`; `make experiments-{import,report,stats}`.
+  117 importados, export round-trip 117=117, **relatório** em `docs/EXPERIMENTS_REPORT.md` (14 aplicados/54 rejeitados/3 pendentes).
+  `duckdb` no `pyproject` (extra `lab`); `.duckdb` gitignored. Teste: `tests/test_experiments_db.py` 8 passed.
+
+## 🅿️ PARKED (sessão 2026-06-09, esforço pesado — retomar leve se quiser)
+- [ ] **Bug-hunt** (Workflow A): 20 reviews já rodaram (cache em `subagents/workflows/wf_0ad11f4e-7db`). Se retomar:
+  triar à mão a partir do cache, sem novo fan-out de verificação.
+
+---
+
 # 🎯 ATACAR AGORA — objetivo top 5
 
 Estado operacional curto:
@@ -224,6 +273,23 @@ Força da evidência: **forte** para imitação+RL e opponent pool; **parcial** 
   - [ ] **Exploit/explore:** promover por margem pareada em eval fixo, não por reward médio de treino.
   - [ ] **Lineage:** todo checkpoint precisa registrar pai, hparams, dataset hash, opponent mix e evals.
   - [ ] **Correto quando:** pelo menos um braço melhora contra Producer/OEP e não esquece hall-of-fame; se população converge para heurística fraca, resetar curriculum.
+
+  ### DESENHO CONCRETO — PBT-sobre-PPO (workflow `pbt-over-ppo-design`, 2026-06-09)
+  > Lit: PBT (Jaderberg 2017, arXiv:1711.09846) + sensibilidade hparam PPO (Andrychowicz 2020, arXiv:2006.05990; Engstrom 2020, arXiv:2005.12729). **Honestidade: força FRACA no "vai cruzar 0"** — RL batendo heurística 1228 é projeto multi-dia (EXPERIMENTS l.82); orçar **3-5 runs overnight**, esperar muitas gerações VERMELHAS. Cross-ref [[ppo_two_structural_ceilings]] (PBRS Φ = objetivo do Producer; genes de shaping são suspeitos).
+  > **Schedule medido (RTX 5060 Ti, 8 cores):** 1 membro 273 SPS; 2 concorrentes 438 agregado (joelho); **3+ REGRIDE** (CPU env-step binda, não VRAM). → pop **6**, time-share em **3 ondas de 2**, chunk **60k ts**, **12 gerações** ≈ **8-9h overnight**. Warm-start: **TODOS de `artifacts/ppo/ppo_entity.pt`** (−0.75); `bc_entity.pt` = referência KL congelada (papel diferente).
+  > **Genoma (atenção):** `lr`[5e-5,1e-3] >> `beta_kl`(KL-ao-BC) > `gae_lambda`[.9,.99] ~ `gamma` ~ `update_epochs`[2,10] > `vf_coef`~`clip_coef`~`ent_coef`(floor .003) > shaping/decoder. Exploit = bottom-2 copiam ckpt+hparams de top-2; explore = perturbar ×{0.8,1.25}.
+
+  - [ ] **PRÉ-CONDIÇÃO 1 — patch `benchmark_submission.py` (gate inverificável sem isto):** em `_run_match` coletar wall-clock por decisão → `summary['p95_decision_ms']=percentile(95)`; em `_summary_from_records` adicionar `seat0_margin`/`seat1_margin` (split por assento, não só média).
+    - [ ] verificar: `benchmark_ppo_submission` em `ppo_entity.pt` a 4 seeds mostra `p95_decision_ms`, `seat0_margin`, `seat1_margin` no JSON.
+  - [ ] **PRÉ-CONDIÇÃO 2 — patch `train_ppo.py` (anti-drift + WSL):** flags `--beta-kl` + `--bc-ref-checkpoint`; carregar π_BC congelado de `bc_entity.pt`; somar `+beta_kl*KL(π‖π_BC)` à loss (P3 l.111); clampar `ent_coef` annealed em floor 0.003; `os._exit(0)` após o `torch.save` final.
+    - [ ] verificar: smoke 4k-ts `--beta-kl 0.05` completa, **sai limpo (sem hang)** e loga termo `kl_to_bc`.
+  - [ ] **PRÉ-CONDIÇÃO 3 — generalizar `ppo_campaign.py` p/ população (orquestrador PBT):** estado `members[]` {ckpt, hparams, seed, best_margin, history}; treino via `subprocess.Popen` em ondas de 2 (NUNCA ProcessPool — trava no WSL); eval **serial `jobs=1`** (forçar; `_margin()` usa jobs=8 hoje); exploit (bottom-2←top-2) + explore (`_perturb` por gene); patience na top member; `campaign_report.json`/geração c/ seat-split + pareto. `population_size=1` = comportamento atual (backward-compat).
+    - [ ] verificar: smoke `tests/` pop=2 gen=2 chunk 4k 2 seeds `--device cuda` roda ponta-a-ponta, sem ProcessPool, gera `campaign_report.json` com margem+seat por membro e exploit copia checkpoint.
+  - [ ] **3 seed-sets disjuntos (assert pairwise-empty):** train=`range(0,N)`, fitness=`range(1000,1016)` (16), frozen=`range(9000,9064)` (64). Frozen tocado **uma vez** no vencedor (anti seed-overfit, Cobbe 2018).
+  - [ ] **LANÇAR run overnight:** `ppo_campaign --init artifacts/ppo/ppo_entity.pt --bc-ref-checkpoint artifacts/bc/bc_entity.pt --out-dir artifacts/pbt --population-size 6 --generations 12 --chunk-timesteps 60000 --concurrency 2 --device cuda --eval-opponents producer --eval-episode-steps 500 --fitness-seeds 1000..1015 --policy-arch entity`.
+    - [ ] verificar (2 primeiras gerações): sem hang; margens logadas; `nvidia-smi` mostra 2 procs ~800MiB.
+  - [ ] **GATE FROZEN (vencedor, /goal):** `benchmark_ppo_submission --checkpoint artifacts/pbt/best.pt --opponents producer --episode-steps 500 --jobs 1 --seeds 9000..9063` (2p **E** 4p).
+    - [ ] verificar (condição /goal): `seat0_margin>0 AND seat1_margin>0 AND mean_score_margin>0 AND crash=timeout=invalid=0 AND p95_decision_ms<700`; 4p sem crash/timeout/invalid e margin≥0. **PASS frozen é necessário, não suficiente** (gate humano 96 seeds é a palavra final).
 
 - [ ] **T11. Precompute/lookup para liberar orçamento de planner.**
   - [ ] **Medição baseline:** antes de otimizar, medir p50/p95/max decision ms e hotspots do planner/decoder atual.
