@@ -59,6 +59,7 @@ class OrbitWarsGymEnv(gym.Env):
         ship_margin_scale: float = 0.0,
         base_shaping_scale: float = 1.0,
         comet_shaping_scale: float = 0.0,
+        shaping_gamma: float = 0.99,
         four_player_vulnerability_scale: float = 0.0,
         four_player_leader_scale: float = 0.0,
         four_player_third_player_scale: float = 0.0,
@@ -74,6 +75,10 @@ class OrbitWarsGymEnv(gym.Env):
         self.ship_margin_scale = float(ship_margin_scale)
         self.base_shaping_scale = float(base_shaping_scale)
         self.comet_shaping_scale = float(comet_shaping_scale)
+        # Discount for potential-based shaping F = γ·Φ(s') − Φ(s). Must match the
+        # RL discount used by GAE for the shaping to stay policy-invariant
+        # (Ng, Harada & Russell 1999).
+        self.shaping_gamma = float(shaping_gamma)
         self.four_player_vulnerability_scale = float(four_player_vulnerability_scale)
         self.four_player_leader_scale = float(four_player_leader_scale)
         self.four_player_third_player_scale = float(four_player_third_player_scale)
@@ -98,8 +103,11 @@ class OrbitWarsGymEnv(gym.Env):
         outcomes, states = self.backend.step_with_states(actions)
         next_state = states[0]
         self.state = next_state
+        done = bool(outcomes[0]["done"])
         obs = encode_state(self.state, player=0, cfg=self.encoder_cfg)
-        base_shaping_reward = self._base_shaping_reward(previous_state, next_state, player=0, player_moves=actions[0][0])
+        base_shaping_reward = self._base_shaping_reward(
+            previous_state, next_state, player=0, player_moves=actions[0][0], done=done
+        )
         ship_margin_reward = self._ship_margin_reward(previous_state, next_state, player=0)
         comet_shaping_reward = self._comet_auxiliary_reward(previous_state, next_state, player=0)
         vulnerability_reward, leader_reward, third_player_reward = self._four_player_strategic_reward(
@@ -115,9 +123,9 @@ class OrbitWarsGymEnv(gym.Env):
             + self.four_player_leader_scale * leader_reward
             + self.four_player_third_player_scale * third_player_reward
         )
-        if outcomes[0]["done"]:
+        if done:
             reward += float(outcomes[0]["rewards"][0])
-        terminated = bool(outcomes[0]["done"])
+        terminated = done
         truncated = False
         sun_losses, border_losses = self._loss_counts(previous_state, next_state, player=0, player_moves=actions[0][0])
         info = {
@@ -133,6 +141,19 @@ class OrbitWarsGymEnv(gym.Env):
         }
         return obs, reward, terminated, truncated, info
 
+    def _state_potential(self, state: dict[str, Any], *, player: int) -> float:
+        """Shaping potential Φ(s): opponent-relative production/territory advantage.
+
+        Pure function of the state (no transition info). Used only inside the
+        potential-difference shaping term γ·Φ(s') − Φ(s); see _base_shaping_reward.
+        """
+        planets = state.get("planets", [])
+        own_prod = sum(planet_production(p) for p in planets if planet_owner(p) == player)
+        enemy_prod = sum(planet_production(p) for p in planets if planet_owner(p) not in (-1, player))
+        own_planets = sum(1 for p in planets if planet_owner(p) == player)
+        enemy_planets = sum(1 for p in planets if planet_owner(p) not in (-1, player))
+        return 0.002 * (own_prod - enemy_prod) + 0.001 * (own_planets - enemy_planets)
+
     def _base_shaping_reward(
         self,
         previous_state: dict[str, Any],
@@ -140,16 +161,21 @@ class OrbitWarsGymEnv(gym.Env):
         *,
         player: int,
         player_moves: list[list[float]],
+        done: bool = False,
     ) -> float:
-        planets = state.get("planets", [])
-        own_prod = sum(planet_production(p) for p in planets if planet_owner(p) == player)
-        enemy_prod = sum(planet_production(p) for p in planets if planet_owner(p) not in (-1, player))
-        own_planets = sum(1 for p in planets if planet_owner(p) == player)
-        enemy_planets = sum(1 for p in planets if planet_owner(p) not in (-1, player))
+        # Potential-based shaping in the difference form F = γ·Φ(s') − Φ(s)
+        # (Ng, Harada & Russell 1999): this is policy-invariant, unlike the
+        # previous raw Φ(s') term which biased the optimum toward the
+        # production-greedy (Producer-like) basin. The terminal state takes
+        # Φ ≡ 0 by convention, so over an episode the shaping telescopes to a
+        # boundary term and adds no spurious value at termination — the true
+        # game outcome is added separately by step()/the rollout loop.
+        prev_potential = self._state_potential(previous_state, player=player)
+        next_potential = 0.0 if done else self._state_potential(state, player=player)
+        shaping = self.shaping_gamma * next_potential - prev_potential
         sun_losses, border_losses = self._loss_counts(previous_state, state, player=player, player_moves=player_moves)
         return (
-            0.002 * (own_prod - enemy_prod)
-            + 0.001 * (own_planets - enemy_planets)
+            shaping
             - self.sun_loss_penalty * sun_losses
             - self.border_loss_penalty * border_losses
         )
@@ -277,11 +303,18 @@ class OrbitWarsGymEnv(gym.Env):
         sun_losses = 0
         border_losses = 0
 
+        prev_planets = previous_state.get("planets", [])
         for fleet in previous_state.get("fleets", []):
             if fleet_owner(fleet) != player or fleet_id(fleet) in next_ids:
                 continue
             start = (fleet_x(fleet), fleet_y(fleet))
             end = self._fleet_endpoint(start, fleet_angle(fleet), fleet_ships(fleet))
+            arrived = any(
+                math.hypot(end[0] - planet_x(p), end[1] - planet_y(p)) <= planet_radius(p) + 1.0
+                for p in prev_planets
+            )
+            if arrived:
+                continue
             if self._hits_border(end):
                 border_losses += 1
             elif self._crosses_sun(start, end):

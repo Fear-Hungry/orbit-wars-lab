@@ -333,6 +333,7 @@ def _collect_single_env_rollout_segment(
         ship_margin_scale=training_cfg.ship_margin_scale,
         base_shaping_scale=base_shaping_scale,
         comet_shaping_scale=comet_shaping_scale,
+        shaping_gamma=training_cfg.gamma,
         four_player_vulnerability_scale=four_player_vulnerability_scale,
         four_player_leader_scale=four_player_leader_scale,
         four_player_third_player_scale=four_player_third_player_scale,
@@ -497,6 +498,7 @@ def _collect_batched_rollout_segment(
         ship_margin_scale=training_cfg.ship_margin_scale,
         base_shaping_scale=base_shaping_scale,
         comet_shaping_scale=comet_shaping_scale,
+        shaping_gamma=training_cfg.gamma,
     )
     backend = RustBatchBackend(
         num_envs=num_envs,
@@ -573,11 +575,13 @@ def _collect_batched_rollout_segment(
             if not active[env_index]:
                 dones_row[env_index] = 1.0
                 continue
+            done = bool(outcome.get("done", False))
             base_reward = reward_env._base_shaping_reward(
                 previous_state,
                 next_state,
                 player=0,
                 player_moves=player_moves_by_env[env_index],
+                done=done,
             )
             ship_margin_reward = reward_env._ship_margin_reward(previous_state, next_state, player=0)
             comet_reward = reward_env._comet_auxiliary_reward(previous_state, next_state, player=0)
@@ -586,7 +590,6 @@ def _collect_batched_rollout_segment(
                 + ship_margin_reward
                 + comet_shaping_scale * comet_reward
             )
-            done = bool(outcome.get("done", False))
             if done:
                 rewards = outcome.get("rewards", [])
                 reward += float(rewards[0]) if rewards else 0.0
@@ -954,6 +957,7 @@ def build_phase0_env(
     ship_margin_scale: float = 0.0,
     base_shaping_scale: float = 1.0,
     comet_shaping_scale: float = 0.0,
+    shaping_gamma: float = 0.99,
     four_player_vulnerability_scale: float = 0.0,
     four_player_leader_scale: float = 0.0,
     four_player_third_player_scale: float = 0.0,
@@ -975,6 +979,7 @@ def build_phase0_env(
         ship_margin_scale=ship_margin_scale,
         base_shaping_scale=base_shaping_scale,
         comet_shaping_scale=comet_shaping_scale,
+        shaping_gamma=shaping_gamma,
         four_player_vulnerability_scale=four_player_vulnerability_scale,
         four_player_leader_scale=four_player_leader_scale,
         four_player_third_player_scale=four_player_third_player_scale,
