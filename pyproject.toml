@@ -32,6 +32,9 @@ train = [
     "tensorboard>=2.16",
     "torch>=2.2",
 ]
+lab = [
+    "duckdb>=1.0",
+]
 
 [tool.maturin]
 manifest-path = "crates/orbit_wars_py/Cargo.toml"

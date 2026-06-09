@@ -1,5 +1,13 @@
 # Experimentos
 
+> **Agora rastreável via banco de dados.** Este log é importável para um store
+> DuckDB (`experiments.duckdb`) com status por experimento (feito / rejeitado /
+> pendente). Comandos: `make experiments-import` (carrega este arquivo no DB),
+> `make experiments-stats` (resumo), `make experiments-report` (gera
+> [`docs/EXPERIMENTS_REPORT.md`](docs/EXPERIMENTS_REPORT.md) — relatório de
+> resultados). CLI completo: `python -m python.lab.experiments {import,list,query,stats,add,report,export}`.
+> Este markdown segue sendo a fonte editável; o DB é a camada de consulta.
+
 ## Sobre a competição (Orbit Wars)
 
 Competição Kaggle de simulação (`orbit-wars`): um jogo de estratégia orbital em
