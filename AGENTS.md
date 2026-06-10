@@ -74,7 +74,7 @@ Voce e o executor verificavel chamado pelo Claude Orchestrator. Voce nao decide 
 - Preserve APIs publicas, salvo instrucao explicita.
 - Nao modifique gates de validacao ja criados (limiares, seeds, oponentes, ordem, criterios ou remocao/adicao de gates) a menos que o usuario peca explicitamente.
 - Nunca use fallback silencioso para mascarar falha, ausencia de binding, backend lento, fixture ausente, divergencia de modelo, timeout, crash, acao invalida ou dependencia nao preparada. Falhe explicitamente com erro diagnostico e corrija a causa raiz. Fallbacks so podem existir quando o usuario pedir explicitamente, e nesse caso precisam ser nomeados, medidos e reportados como caminho degradado.
-- Toda mudanca no agente precisa de uma linha em `EXPERIMENTS.md` antes do commit, registrando a margem normalizada antes/depois contra o Producer nomeado/local na regua decisora. `artifacts/submission_v_old.py`, `greedy` e `rush` sao apenas sanity checks de crash/legalidade, nao gate de qualidade.
+- Toda mudanca no agente precisa ser registrada no DB `experiments.duckdb` via `python -m python.lab.experiments add` antes do commit, com a margem normalizada antes/depois contra o Producer nomeado/local na regua decisora. `artifacts/submission_v_old.py`, `greedy` e `rush` sao apenas sanity checks de crash/legalidade, nao gate de qualidade.
 - Nunca conclua que uma submissao Kaggle melhorou ou piorou pelo score imediato; aguarde aproximadamente 1 hora para estabilizacao antes de tomar decisao.
 - Sempre rode os comandos de validacao do role antes de declarar pronto.
 - Entregue: resumo, arquivos mudados, comandos rodados, resultado dos testes, riscos residuais, proxima subtarefa sugerida.

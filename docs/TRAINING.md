@@ -10,7 +10,7 @@ Producer) ainda for o candidato ativo. A ativação do PPO só volta para a fila
 quando uma destas condições for verdadeira:
 
 - OEP passa o gate de promoção contra Producer e vira baseline a ser batido por aprendizado;
-- OEP esgota o ganho mensurável contra Producer, com experimentos registrados em [`../EXPERIMENTS.md`](../EXPERIMENTS.md);
+- OEP esgota o ganho mensurável contra Producer, com experimentos registrados no store `experiments.duckdb` (`make experiments-report`);
 - surge oponente externo forte que exija diversidade de política em vez de busca sobre o planner.
 
 Quando ativado, PPO deve treinar contra Producer/heurístico e só gerar candidato

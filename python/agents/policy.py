@@ -19,23 +19,69 @@ PLANET_N, PLANET_F = 96, 14
 FLEET_N, FLEET_F = 256, 10
 
 
+def _masked_categoricals(
+    out: dict[str, torch.Tensor], masks: dict[str, torch.Tensor] | None
+) -> tuple[Categorical, list[Categorical]]:
+    """Build the launch + move Categoricals with the action mask applied.
+
+    The same mask must be supplied at sampling and update time so the PPO
+    importance ratio stays correct (see action_masks).
+    """
+
+    def _logits(key: str) -> torch.Tensor:
+        logits = out[key]
+        if masks is not None and key in masks:
+            logits = logits.masked_fill(~masks[key].bool(), float("-inf"))
+        return logits
+
+    launch_dist = Categorical(logits=_logits("launch"))
+    move_dists = [Categorical(logits=_logits(k)) for k in MOVE_KEYS]
+    return launch_dist, move_dists
+
+
+def _safe_categorical_kl(cur: Categorical, ref: Categorical) -> torch.Tensor:
+    """KL(cur || ref) per row, robust to masked positions.
+
+    cur/ref .logits are log-softmax with ``-inf`` at masked positions, so the raw
+    ``logp - logq`` is ``(-inf) - (-inf) = nan`` there. We zero the diff with
+    ``where`` BEFORE multiplying by ``p`` — zeroing only the final term still leaks
+    a ``0 * nan = nan`` gradient into ``p`` (and thus the logits). Cleaning ``diff``
+    first keeps both the value and the gradient finite at masked positions.
+    """
+    diff = cur.logits - ref.logits
+    diff = torch.where(torch.isfinite(diff), diff, torch.zeros_like(diff))
+    return (cur.probs * diff).sum(-1)
+
+
+def launch_gated_kl(
+    cur_out: dict[str, torch.Tensor],
+    ref_out: dict[str, torch.Tensor],
+    masks: dict[str, torch.Tensor] | None = None,
+) -> torch.Tensor:
+    """Per-sample KL(cur || ref) for the launch-gated multi-discrete policy.
+
+    Mirrors the entropy gating (line below): ``KL(launch) + P_cur(launch=1) *
+    Σ KL(move)`` — the move heads only matter when the turn actually launches.
+    Both policies must share the same ``masks``. Used as an anti-drift anchor to
+    a reference (e.g. BC-init) policy during PPO fine-tuning.
+    """
+    cur_launch, cur_moves = _masked_categoricals(cur_out, masks)
+    ref_launch, ref_moves = _masked_categoricals(ref_out, masks)
+    kl = _safe_categorical_kl(cur_launch, ref_launch)
+    p_launch = cur_launch.probs[:, 1]
+    move_kl = torch.stack(
+        [_safe_categorical_kl(c, r) for c, r in zip(cur_moves, ref_moves, strict=True)], dim=-1
+    ).sum(-1)
+    return kl + p_launch * move_kl
+
+
 def _action_value_from_heads(
     out: dict[str, torch.Tensor],
     action: torch.Tensor | None,
     masks: dict[str, torch.Tensor] | None,
 ):
     """Shared launch-gated sampling/log-prob/entropy used by every policy head set."""
-
-    def _logits(key: str) -> torch.Tensor:
-        logits = out[key]
-        if masks is not None and key in masks:
-            # The same mask must be supplied at sampling and update time so the
-            # PPO importance ratio stays correct (see action_masks).
-            logits = logits.masked_fill(~masks[key].bool(), float("-inf"))
-        return logits
-
-    launch_dist = Categorical(logits=_logits("launch"))
-    move_dists = [Categorical(logits=_logits(k)) for k in MOVE_KEYS]
+    launch_dist, move_dists = _masked_categoricals(out, masks)
     if action is None:
         launch_a = launch_dist.sample()
         move_a = torch.stack([d.sample() for d in move_dists], dim=-1)

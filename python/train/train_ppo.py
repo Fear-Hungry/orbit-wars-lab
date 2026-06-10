@@ -15,12 +15,15 @@ from typing import Any
 import gymnasium as gym
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from python.agents.policy import (
     CandidateSelectorActorCritic,
     EntityActorCritic,
     FlatActorCritic,
     ProducerResidualBranchActorCritic,
+    _action_value_from_heads,
+    launch_gated_kl,
 )
 
 _POLICY_ARCHS = {
@@ -112,6 +115,23 @@ class Phase0TrainingConfig:
     decoder_reserve_home_ships: int = 8
     decoder_fractions: tuple[float, ...] = (0.10, 0.25, 0.50, 0.75)
     decoder_angle_offsets: tuple[float, ...] = (-0.261799, -0.130899, 0.0, 0.130899, 0.261799)
+    # --- Movement 2 (de-anchor the reward + anti-drift on scaling) ---
+    # De-anchor: "none" forces the production/territory base shaping to 0 (the
+    # potential that equals the Producer's greedy objective). "producer" keeps it.
+    shaping_potential: str = "producer"
+    # KL-to-reference anchor: penalise divergence from a frozen reference policy
+    # (e.g. the BC init / --checkpoint-in) to stop the policy drifting off the good
+    # init while it over-optimises the shaping (the P3 620k regression). 0 = off.
+    kl_to_ref_coef: float = 0.0
+    ref_checkpoint: str | None = None  # default: fall back to checkpoint_in
+    # Eval-gating: periodic in-loop margin eval vs an opponent; keep the BEST
+    # checkpoint by margin and early-stop on regression. The P3 regression proved
+    # "healthy curves" lie — only the paired margin catches the drift. 0 = off.
+    eval_every_updates: int = 0
+    eval_seeds: int = 8
+    eval_opponent: str = "producer"
+    eval_max_steps: int = 600
+    early_stop_patience: int = 0  # consecutive evals without improvement before stopping; 0 = off
 
 
 @dataclass
@@ -261,8 +281,16 @@ def _linear_schedule(start: float, end: float, progress: float) -> float:
 
 
 def shaping_scales(training_cfg: Phase0TrainingConfig, progress: float) -> tuple[float, float]:
+    # Movement 2 de-anchor: drop the production/territory base shaping entirely
+    # (its potential equals the Producer's greedy objective, which biases the
+    # policy toward the Producer basin) and lean on the sparse outcome reward.
+    base = (
+        0.0
+        if training_cfg.shaping_potential == "none"
+        else _linear_schedule(training_cfg.base_shaping_scale_start, training_cfg.base_shaping_scale_end, progress)
+    )
     return (
-        _linear_schedule(training_cfg.base_shaping_scale_start, training_cfg.base_shaping_scale_end, progress),
+        base,
         _linear_schedule(training_cfg.comet_shaping_scale_start, training_cfg.comet_shaping_scale_end, progress),
     )
 
@@ -360,6 +388,7 @@ def _collect_single_env_rollout_segment(
         ship_margin_scale=training_cfg.ship_margin_scale,
         base_shaping_scale=base_shaping_scale,
         comet_shaping_scale=comet_shaping_scale,
+        shaping_gamma=training_cfg.gamma,
         four_player_vulnerability_scale=four_player_vulnerability_scale,
         four_player_leader_scale=four_player_leader_scale,
         four_player_third_player_scale=four_player_third_player_scale,
@@ -536,6 +565,7 @@ def _collect_batched_rollout_segment(
         comet_shaping_scale=comet_shaping_scale,
         reward_mode=training_cfg.reward_mode,
         terminal_reward_scale=training_cfg.terminal_reward_scale,
+        shaping_gamma=training_cfg.gamma,
     )
     backend = RustBatchBackend(
         num_envs=num_envs,
@@ -612,6 +642,7 @@ def _collect_batched_rollout_segment(
             if not active[env_index]:
                 dones_row[env_index] = 1.0
                 continue
+            done = bool(outcome.get("done", False))
             if reward_env.reward_mode in ("dense_potential", "relative_margin"):
                 # B3 PBRS in the batched/GPU path too: F = γ·Φ(s') − Φ(s) per env.
                 # _potential dispatches to shares-Φ (dense_potential) or margin-Φ (relative_margin).
@@ -624,6 +655,7 @@ def _collect_batched_rollout_segment(
                     next_state,
                     player=0,
                     player_moves=player_moves_by_env[env_index],
+                    done=done,
                 )
                 ship_margin_reward = reward_env._ship_margin_reward(previous_state, next_state, player=0)
                 comet_reward = reward_env._comet_auxiliary_reward(previous_state, next_state, player=0)
@@ -632,7 +664,6 @@ def _collect_batched_rollout_segment(
                     + ship_margin_reward
                     + comet_shaping_scale * comet_reward
                 )
-            done = bool(outcome.get("done", False))
             if done:
                 rewards = outcome.get("rewards", [])
                 reward += reward_env.terminal_reward_scale * (float(rewards[0]) if rewards else 0.0)
@@ -881,20 +912,21 @@ def _collect_brep_rollout_segment(
             if not active[env_index]:
                 dones_row[env_index] = 1.0
                 continue
+            done = bool(outcome.get("done", False))
             if reward_env.reward_mode in ("dense_potential", "relative_margin"):
                 phi_prev, _ = reward_env._potential(previous_state, player=agent_player)
                 phi_next, _ = reward_env._potential(next_state, player=agent_player)
                 reward = reward_env.reward_gamma * phi_next - phi_prev
             else:
                 base_reward = reward_env._base_shaping_reward(
-                    previous_state, next_state, player=agent_player, player_moves=player_moves_by_env[env_index]
+                    previous_state, next_state, player=agent_player,
+                    player_moves=player_moves_by_env[env_index], done=done,
                 )
                 ship_margin_reward = reward_env._ship_margin_reward(previous_state, next_state, player=agent_player)
                 comet_reward = reward_env._comet_auxiliary_reward(previous_state, next_state, player=agent_player)
                 reward = (
                     base_shaping_scale * base_reward + ship_margin_reward + comet_shaping_scale * comet_reward
                 )
-            done = bool(outcome.get("done", False))
             if done:
                 rewards = outcome.get("rewards", [])
                 reward += reward_env.terminal_reward_scale * (float(rewards[agent_player]) if rewards else 0.0)
@@ -1038,15 +1070,18 @@ def _ppo_update(
     optimizer: torch.optim.Optimizer,
     batch: dict[str, torch.Tensor],
     cfg: Phase0TrainingConfig,
+    ref_model: nn.Module | None = None,
 ) -> dict[str, float]:
     batch_size = batch["observations"].shape[0]
     permutation = np.arange(batch_size)
+    use_kl_ref = ref_model is not None and cfg.kl_to_ref_coef > 0.0
     stats: dict[str, float] = {
         "policy_loss": 0.0,
         "value_loss": 0.0,
         "entropy": 0.0,
         "approx_kl": 0.0,
         "clipfrac": 0.0,
+        "kl_to_ref": 0.0,
     }
     update_steps = 0
 
@@ -1069,7 +1104,16 @@ def _ppo_update(
             advantage_mb = (advantage_mb - advantage_mb.mean()) / (advantage_mb.std(unbiased=False) + 1e-8)
 
             # Same mask as sampling time -> the PPO importance ratio stays correct.
-            _, new_logprob, entropy, new_value = model.get_action_and_value(obs_mb, action_mb, masks=mask_mb)
+            # Launch-head archs (flat/entity) share one forward between the PPO terms
+            # (_action_value_from_heads) and the KL-to-reference anchor below; the
+            # single-head archs (candidate selector, BReP) have their own
+            # get_action_and_value and no launch-gated KL.
+            if isinstance(model, (CandidateSelectorActorCritic, ProducerResidualBranchActorCritic)):
+                cur_out = None
+                _, new_logprob, entropy, new_value = model.get_action_and_value(obs_mb, action_mb, masks=mask_mb)
+            else:
+                cur_out = model(obs_mb)
+                _, new_logprob, entropy, new_value = _action_value_from_heads(cur_out, action_mb, mask_mb)
             log_ratio = new_logprob - old_logprob_mb
             ratio = log_ratio.exp()
 
@@ -1080,6 +1124,14 @@ def _ppo_update(
             entropy_loss = entropy.mean()
 
             loss = policy_loss + cfg.vf_coef * value_loss - cfg.ent_coef * entropy_loss
+
+            kl_to_ref_val = 0.0
+            if use_kl_ref and cur_out is not None:
+                with torch.no_grad():
+                    ref_out = ref_model(obs_mb)
+                kl_ref = launch_gated_kl(cur_out, ref_out, mask_mb).mean()
+                loss = loss + cfg.kl_to_ref_coef * kl_ref
+                kl_to_ref_val = float(kl_ref.item())
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -1094,6 +1146,7 @@ def _ppo_update(
             stats["entropy"] += float(entropy_loss.item())
             stats["approx_kl"] += approx_kl
             stats["clipfrac"] += clipfrac
+            stats["kl_to_ref"] += kl_to_ref_val
             update_steps += 1
 
     if update_steps:
@@ -1143,6 +1196,74 @@ def _load_checkpoint(path: str, device: torch.device) -> dict[str, Any]:
     return checkpoint
 
 
+def _greedy_action(out: dict[str, torch.Tensor], masks: dict[str, torch.Tensor] | None):
+    """Deterministic (argmax) launch-gated action as the env step input
+    ``[launch, source, target, frac, offset]``."""
+
+    def pick(key: str) -> torch.Tensor:
+        logits = out[key]
+        if masks is not None and key in masks:
+            logits = logits.masked_fill(~masks[key].bool(), float("-inf"))
+        return logits.argmax(dim=-1)
+
+    cols = [pick("launch")] + [pick(k) for k in ("source", "target", "frac", "offset")]
+    return torch.stack(cols, dim=-1).squeeze(0).cpu().numpy()
+
+
+def _evaluate_margin(
+    model: nn.Module,
+    training_cfg: Phase0TrainingConfig,
+    *,
+    opponent_name: str,
+    seeds: int,
+    device: torch.device,
+) -> float:
+    """Seat-0 in-loop margin proxy vs an opponent, for keep-best / early-stop gating.
+
+    NOT the promotion gate (that stays the separate both-seat 96-seed benchmark) —
+    a cheap, consistent relative signal so the loop keeps the best checkpoint and
+    early-stops on drift. Greedy actions; final normalized score margin in [-1, 1].
+    """
+    was_training = model.training
+    model.eval()
+    margins: list[float] = []
+    for seed in range(int(seeds)):
+        env = build_phase0_env(
+            seed=seed,
+            num_players=training_cfg.num_players,
+            opponent_name=opponent_name,
+            enable_comets=training_cfg.enable_comets,
+            decoder_cfg=decoder_config(training_cfg),
+            base_shaping_scale=0.0,
+        )
+        obs_np, _ = env.reset(seed=seed)
+        last_scores: list[float] = [0.0, 0.0]
+        for _ in range(int(training_cfg.eval_max_steps)):
+            obs_t = torch.as_tensor(obs_np, dtype=torch.float32, device=device).unsqueeze(0)
+            masks = split_masks(
+                torch.as_tensor(
+                    build_action_masks(env.state, 0, min_ships_to_launch=training_cfg.decoder_min_ships_to_launch),
+                    dtype=torch.bool,
+                    device=device,
+                ).unsqueeze(0)
+            )
+            with torch.no_grad():
+                out = model(obs_t)
+            obs_np, _, done, _, info = env.step(_greedy_action(out, masks))
+            scores = info.get("scores") or None
+            if scores:
+                last_scores = list(scores)
+            if done:
+                break
+        s0 = float(last_scores[0]) if len(last_scores) > 0 else 0.0
+        s1 = float(last_scores[1]) if len(last_scores) > 1 else 0.0
+        denom = max(abs(s0) + abs(s1), 1.0)
+        margins.append((s0 - s1) / denom)
+    if was_training:
+        model.train()
+    return float(np.mean(margins)) if margins else 0.0
+
+
 def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
     started_at = time.perf_counter()
     _set_seed(training_cfg.seed)
@@ -1181,6 +1302,27 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
     latest_update_stats: dict[str, float] = {}
     update_series: list[dict[str, float]] = []
 
+    # Movement 2: frozen reference policy for the KL anti-drift anchor (defaults to
+    # the warm-start / BC checkpoint).
+    ref_model: nn.Module | None = None
+    ref_path = training_cfg.ref_checkpoint or training_cfg.checkpoint_in
+    if training_cfg.kl_to_ref_coef > 0.0 and ref_path:
+        ref_ckpt = _load_checkpoint(ref_path, device)
+        ref_arch = str((ref_ckpt.get("summary") or {}).get("arch", policy_arch))
+        ref_model = _build_policy(ref_arch, observation_dim()).to(device)
+        ref_model.load_state_dict(ref_ckpt["model_state_dict"])
+        ref_model.eval()
+        for param in ref_model.parameters():
+            param.requires_grad_(False)
+
+    # Movement 2: eval-gating state (keep-best by margin + early-stop on drift).
+    eval_series: list[dict[str, float]] = []
+    best_eval_margin = float("-inf")
+    best_eval_update = -1
+    best_state: dict[str, torch.Tensor] | None = None
+    evals_since_best = 0
+    early_stopped = False
+
     while total_timesteps < training_cfg.total_timesteps:
         segments: list[RolloutSegment] = []
         for opponent_idx, opponent_name in enumerate(opponents):
@@ -1205,11 +1347,35 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
             total_timesteps += int(segment.observations.shape[0])
             all_episode_metrics.extend(segment.episode_metrics)
         batch = _concat_segments(segments)
-        latest_update_stats = _ppo_update(model, optimizer, batch, training_cfg)
+        latest_update_stats = _ppo_update(model, optimizer, batch, training_cfg, ref_model=ref_model)
         update_series.append(
             {"update": float(update_idx), "timesteps": float(total_timesteps), **latest_update_stats}
         )
         update_idx += 1
+
+        # Movement 2: eval-gating. Periodically measure the paired margin (the only
+        # thing that caught the P3 drift); keep the BEST checkpoint and early-stop.
+        if training_cfg.eval_every_updates > 0 and update_idx % training_cfg.eval_every_updates == 0:
+            eval_margin = _evaluate_margin(
+                model,
+                training_cfg,
+                opponent_name=training_cfg.eval_opponent,
+                seeds=training_cfg.eval_seeds,
+                device=device,
+            )
+            eval_series.append(
+                {"update": float(update_idx), "timesteps": float(total_timesteps), "eval_margin": eval_margin}
+            )
+            if eval_margin > best_eval_margin:
+                best_eval_margin = eval_margin
+                best_eval_update = update_idx
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                evals_since_best = 0
+            else:
+                evals_since_best += 1
+                if training_cfg.early_stop_patience > 0 and evals_since_best >= training_cfg.early_stop_patience:
+                    early_stopped = True
+                    break
 
     elapsed_seconds = max(time.perf_counter() - started_at, 1e-9)
     summary = {
@@ -1235,6 +1401,9 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
         "ship_margin_scale": training_cfg.ship_margin_scale,
         "base_shaping_scale_start": training_cfg.base_shaping_scale_start,
         "base_shaping_scale_end": training_cfg.base_shaping_scale_end,
+        "shaping_potential": training_cfg.shaping_potential,
+        "kl_to_ref_coef": training_cfg.kl_to_ref_coef,
+        "ref_checkpoint": ref_path if training_cfg.kl_to_ref_coef > 0.0 else None,
         "comet_shaping_scale_start": training_cfg.comet_shaping_scale_start,
         "comet_shaping_scale_end": training_cfg.comet_shaping_scale_end,
         "four_player_vulnerability_scale_start": training_cfg.four_player_vulnerability_scale_start,
@@ -1250,13 +1419,24 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
     summary.update(_aggregate_episode_metrics(all_episode_metrics))
     summary.update({f"last_{key}": value for key, value in latest_update_stats.items()})
     summary["update_series"] = update_series
+    eval_gated = training_cfg.eval_every_updates > 0 and best_state is not None
+    summary["eval_series"] = eval_series
+    summary["eval_gated"] = eval_gated
+    summary["best_eval_margin"] = best_eval_margin if eval_gated else None
+    summary["best_eval_update"] = best_eval_update if eval_gated else None
+    summary["early_stopped"] = early_stopped
+    summary["checkpoint_selection"] = "best_eval_margin" if eval_gated else "final"
 
     if training_cfg.checkpoint_out:
+        # Movement 2: with eval-gating on, persist the BEST checkpoint by paired
+        # margin (the final/drifted model is worse — the whole point of gating);
+        # otherwise the final model.
+        save_state = best_state if eval_gated else model.state_dict()
         checkpoint_path = Path(training_cfg.checkpoint_out)
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
             {
-                "model_state_dict": model.state_dict(),
+                "model_state_dict": save_state,
                 "optimizer_state_dict": optimizer.state_dict(),
                 "config": asdict(training_cfg),
                 "summary": summary,
@@ -1278,6 +1458,7 @@ def build_phase0_env(
     ship_margin_scale: float = 0.0,
     base_shaping_scale: float = 1.0,
     comet_shaping_scale: float = 0.0,
+    shaping_gamma: float = 0.99,
     four_player_vulnerability_scale: float = 0.0,
     four_player_leader_scale: float = 0.0,
     four_player_third_player_scale: float = 0.0,
@@ -1305,6 +1486,7 @@ def build_phase0_env(
         ship_margin_scale=ship_margin_scale,
         base_shaping_scale=base_shaping_scale,
         comet_shaping_scale=comet_shaping_scale,
+        shaping_gamma=shaping_gamma,
         four_player_vulnerability_scale=four_player_vulnerability_scale,
         four_player_leader_scale=four_player_leader_scale,
         four_player_third_player_scale=four_player_third_player_scale,
@@ -1366,6 +1548,20 @@ def main():
     parser.add_argument("--decoder-max-moves-per-turn", type=int, default=8)
     parser.add_argument("--decoder-min-ships-to-launch", type=int, default=2)
     parser.add_argument("--decoder-reserve-home-ships", type=int, default=8)
+    # --- Movement 2 ---
+    parser.add_argument("--shaping-potential", choices=("producer", "none"), default="producer",
+                        help="Mov.2 de-anchor: 'none' drops the production/territory base shaping (= Producer objective)")
+    parser.add_argument("--kl-to-ref-coef", type=float, default=0.0,
+                        help="Mov.2 anti-drift: KL-to-reference penalty coefficient (0=off)")
+    parser.add_argument("--ref-checkpoint", default=None,
+                        help="Mov.2: reference policy for the KL anchor (default: --checkpoint-in)")
+    parser.add_argument("--eval-every-updates", type=int, default=0,
+                        help="Mov.2 eval-gating: in-loop margin eval every N updates (0=off)")
+    parser.add_argument("--eval-seeds", type=int, default=8)
+    parser.add_argument("--eval-opponent", default="producer")
+    parser.add_argument("--eval-max-steps", type=int, default=600)
+    parser.add_argument("--early-stop-patience", type=int, default=0,
+                        help="Mov.2 eval-gating: stop after N consecutive evals without improvement (0=off)")
     args = parser.parse_args()
 
     env: gym.Env = build_phase0_env(
@@ -1431,6 +1627,14 @@ def main():
         decoder_max_moves_per_turn=args.decoder_max_moves_per_turn,
         decoder_min_ships_to_launch=args.decoder_min_ships_to_launch,
         decoder_reserve_home_ships=args.decoder_reserve_home_ships,
+        shaping_potential=args.shaping_potential,
+        kl_to_ref_coef=args.kl_to_ref_coef,
+        ref_checkpoint=args.ref_checkpoint,
+        eval_every_updates=args.eval_every_updates,
+        eval_seeds=args.eval_seeds,
+        eval_opponent=args.eval_opponent,
+        eval_max_steps=args.eval_max_steps,
+        early_stop_patience=args.early_stop_patience,
     )
     summary = (
         train_phase5_4p(base_cfg)
