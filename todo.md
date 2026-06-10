@@ -15,6 +15,160 @@ Estado operacional curto:
 - **Histórico detalhado fechado vive em `EXPERIMENTS.md`**. Este arquivo deve ficar só com o que ainda vamos atacar.
 - **Decidir só com evidência pareada suficiente**: 16 seeds = triagem; 96 seeds decide. Score Kaggle precisa estabilizar antes de conclusão.
 
+## ⚡ PPO — DIAGNÓSTICO UNIFICADO + FIX (workflow `ppo-unified-fix`, 2026-06-09)
+Pergunta do usuário: "por que o treino não performa + corrija + use GPU". Diagnose (perf branch, medido):
+- **Throughput**: selector preso a ~20 steps/s porque a `candidate_factory` roda o **planner de busca OEP em Python
+  por step** (~72% do custo; `profile_selector_step.py`). **GPU NÃO acelera busca serial** — a rede e o sim Rust são
+  desprezíveis. Selector é excluído do path batched (`train_ppo.py:711`). Ver [[ppo_throughput_oep_bottleneck]].
+- **Cruzamento**: candidate-selector é DUPLAMENTE ruim — gargalo de throughput E teto de RL (contém Producer). A GPU
+  real só vem com arch BATCHABLE (entity/residual) que emite moves direto, sem experts/step.
+- **Medido**: `entity + relative_margin + 16 envs + cuda` → `rust_batch`, **166 steps/s (~8x)**, entropia 2.24 saudável.
+
+- [x] **Fix imediato LANÇADO na GPU (2026-06-09):** Entity + relative_margin + ladder `producer_h30/h50/h70/producer`
+  na GPU (`artifacts/ppo/entity_relmargin_gpu/`, run_campaign 10×100k=1M steps, eval 500 steps). ~8x mais rápido que
+  o selector. Entrega a aceleração de GPU pedida + testa o fix de recompensa numa arch batchable.
+  - [ ] verificar: ao fim, `mean_score_margin` vs Producer por chunk em `campaign_log.jsonl`; cruza a paridade?
+    Juízes do workflow alertam parity=2 (entity histórico -0.665) — pode chegar perto mas não passar.
+  - [ ] DECISÃO: se margem cruzar 0 → o fix recompensa+GPU+currículo basta. Se travar perto de 0 → falta REPRESENTAÇÃO → BReP abaixo.
+- [x] **BReP — IMPLEMENTADO + LANÇADO na GPU (2026-06-09).** Arch `ProducerResidualBranchActorCritic` (`policy.py`):
+  encoder do entity + `k_max=16` branches `Discrete(4)` {KEEP,CANCEL,REDUCE,BOOST} sobre o plano-base do Producer.
+  KEEP-init (edit.weight=0, bias KEEP=+5) → edição-zero = Producer EXATO. Collector batchável dedicado
+  `_collect_brep_rollout_segment` (1 call extra de Producer/env p/ o base-plan), roteado em `_collect_rollout_segment`;
+  branch de máscara em `_ppo_update`; decoder `_apply_residual_edits`; arch `producer_residual` no argparse.
+  - [x] **Invariante verificado**: KEEP-tudo reproduz o Producer EXATO (`test_brep_invariant.py`, ALL PASS).
+  - [x] **Piso de paridade verificado EM JOGO**: fresh KEEP-init greedy = `mean_score_margin 0.0` (seat0 +0.079 / seat1 -0.079, simétrico).
+  - [x] **BUG-raiz corrigido**: `get_isolated_opponents` cross-contaminava o Producer base+oponente (mesmas instâncias do pool) → usei `make_isolated_opponent` (frescas) no collector E no eval. Ver [[ppo_isolated_opponent_crosscontamination]].
+  - [x] Smoke GPU: `rust_batch`, **54 SPS** (~2.7x o selector), exit 0. 33/33 regressão PASS.
+  - [x] Eval sem exporter: `scripts/eval_brep_direct.py` (greedy, ambos assentos, 500 steps).
+  - [x] **RESULTADO (450k steps, 16 seeds/triagem): BReP QUEBROU A PARIDADE.** Trajetória: c0=0.000 (piso) → c1
+    -0.125 → c2 -0.063 → c3 **+0.059** → c4 **+0.181** → c5 **+0.131**. Padrão de livro: começa na paridade, mergulha
+    explorando, sobe e BATE o Producer em AMBOS assentos (c4: seat0 +0.129, seat1 +0.233). 1ª arch do projeto a
+    exceder a paridade (selector teto 0.0, entity -0.665). Entropia 0.091→0.14 sem colapsar.
+  - [x] **CONFIRMADO a 96 seeds (gate oficial): BReP BATE o Producer.** c05 = **+0.1008** (seat0 +0.088, seat1 +0.113);
+    c04 = +0.0935. AMBOS assentos positivos. 1ª arch do projeto a exceder a paridade no gate oficial. Melhor checkpoint:
+    `artifacts/ppo/brep_gpu/c05.pt`. Caveat: eval no nosso motor via `uv run` — margem RELATIVA (BReP vs Producer no
+    mesmo backend) é válida; fidelidade absoluta vs Kaggle precisa de re-medição com motor fresco ([[build_uv_reverts_fresh_so]]).
+  - [ ] **Registrar no DuckDB** — BLOQUEADO nesta branch: `experiments.duckdb` vive em `oep-search-and-submit-exploration`,
+    não em `frente-b-candidate-selector`. Registrar na branch certa: before=0.0 (paridade KEEP-init), after=+0.10 (c05, 96 seeds).
+  - [x] **Empacotador de submissão FEITO** (`scripts/package_brep_submission.py`): tarball = `main.py` (rede BReP pura
+    + pesos) + Producer real (`_producer_agent.py`+`_upstream.py`+`orbit_lite/`) → plano-base = idêntico ao treino.
+    `artifacts/submission_brep.tar.gz` (1.1MB). Achado: D11 proíbe só `orbit_wars_core/_py` (Rust), NÃO torch/orbit_lite.
+  - [x] **Paridade submission↔torch VERIFICADA EXATA** (`probe_brep_parity.py`): encoding maxdiff=0.0, base-plan idêntico,
+    edits idênticos. A submission É a política torch move-a-move. `fallbacks=0, illegal=0` em 4000 calls (`test_brep_submission.py`).
+  - [x] **SUBMETIDO e VALIDADO: ref `53513962` (v3) = COMPLETE, publicScore inicial 600.0.** v1/v2 deram ERROR.
+    - **Bug real** (puxado do log do episódio de validação via API de episódios): Kaggle escolhe o agente via
+      `get_last_callable` = ÚLTIMO callable do namespace; meu `main.py` = template (que já define `agent`) + runtime
+      que redefinia `agent` — reatribuir chave de dict existente MANTÉM posição cedo → o último callable virava
+      `_brep_apply` → `TypeError` → ERROR. Ver [[kaggle_get_last_callable_gotcha]].
+    - **Fix**: `del agent` + `def agent(obs, *_)` por último (re-insere no fim) + tolera chamada com 2 args.
+    - **Regressão**: `probe_brep_official.py` agora carrega via `get_last_callable` (lógica EXATA do Kaggle) →
+      resolve `agent`, sim oficial 2p/4p DONE, net ativo 0 fallbacks. (v1/v2 falharam porque eu testava `mod.agent`.)
+  - [ ] **Aguardar score estabilizar** (~1h+; 600 é o rating inicial de toda submissão nova, sobe jogando — [[project_kaggle_scoring]]; OEP=1196, Producer~1228).
+  - [ ] Cleanup diagnose Fase 6 FEITO: removidos os probes throwaway `[DEBUG-*]` (latency/kaggle_load/parity); mantido `probe_brep_official` (regressão real).
+  - [ ] Robustez: re-confirmar +0.10 num 2º seed-base com eval mais rápido (paralelizar Producer) — o batched sequencial trava em seed patológico.
+
+## 🔬 BReP — melhorias (LB >1200; experimentos 2026-06-09)
+Medido: BReP vs Producer +0.10 (96s); vs OEP **−0.033** (32s) com assimetria **seat0 +0.06 / seat1 −0.13** (a "perda" pro OEP é só o assento P1). Alavancas ranqueadas: (1) liga/self-play, (2) edit-set rico, (3) seat-balance.
+- [x] **Exp #3 (seat-balance) — NEGATIVO, REVERTIDO.** c03 vs Producer(96)=−0.015 (era +0.10!), vs OEP(32)=−0.034.
+  Aprendizados: (1) continuar treino de c05 com LR padrão DERIVA pra baixo (frágil/ótimo agudo); (2) seat-balance via
+  warm-start não ajuda; (3) o melhor chunk era c01 (+0.06 16s), não o último — meu launcher não eval-gateou direito.
+  Revertido `agent_player=0` no collector (parametrização mantida p/ re-uso). **c05 segue o campeão.**
+- [x] **MOTOR: estava STALE no treino, mas behaviorally EQUIVALENTE (verificado).** O `.so` era de 08:52, ANTES do
+  fix polar (commit `105af98` às 20:42) → tecnicamente sem o fix. MAS: c01 re-avaliado deu número BYTE-IDÊNTICO
+  (com-fix vs sem-fix) + state-hash idêntico nos 3 modos → o fix polar é caso-de-borda que NÃO muda esses jogos.
+  **Resultados anteriores VÁLIDOS.** Causa: `uv run` puro reverte o `.so` ([[build_uv_reverts_fresh_so]]); fix: `make build`
+  + todos os scripts agora `uv run --no-sync`. Motor atual: 15/15 paridade oficial. **Os experimentos negativos (seat,
+  richer no mergulho) são REAIS, não artefato de motor.**
+- [x] **Exp #2 (edit-set rico) — NEGATIVO no gate oficial (run concluído 2026-06-09 23:54).** `scripts/run_brep_v2.sh`,
+  `n_edit` 4→6, escalas finas {KEEP,CANCEL,×0.25,×0.5,×1.5,×2.0}, FRESCO, eval-gated, motor confirmado fresco.
+  Trajetória 16s: 0.000 → −0.067 → −0.118 → −0.029 → **+0.188 (c04)** → +0.070. MAS best c04 a 96 seeds =
+  **+0.031** (seat0 **−0.028**, seat1 +0.091); vs OEP(32) = −0.003. NÃO supera c05 (+0.10, ambos assentos>0).
+  Aprendizado: pico de triagem 16s (+0.188) não generalizou — gate de 96 seeds segue obrigatório ([[kaggle_500_step_eval_required]]).
+  Entropy final 0.127–0.149 (política quase determinística). **c05 (brep_gpu, n_edit=4) SEGUE o campeão.**
+  - [x] verificar: melhor chunk vs Producer(96) > +0.10 → **FALHOU** (+0.031 < +0.10); v2 NÃO é candidato a submissão.
+  - Contexto (memória do outro worktree): levers de RECOMPENSA deles (Mov.1/Mov.2) maxaram em −0.75 vs Producer; **BReP (+0.10) é a linha vencedora** → vale investir.
+- [x] **Exp #1 (liga self-play) — CONCLUÍDO (2026-06-10; DB ids 151 rejected / 152 done).** Primitivo oponente-checkpoint feito:
+  `python/train/brep_opponent.py` (`FrozenBRePV1Opponent`, nome `brep:<ckpt>` em `--opponents`; tabela v1 exata
+  recuperada da submission — REDUCE=`//2`, difere da v2). Pool de treino DIVERSA (lição do PGS no LB: overfit de
+  oponente, morto por rushers): producer + brep:c05 + rush + anti_meta + greedy + producer_h50. Gate por chunk =
+  **média de PAINEL de campo** (producer/rush/anti_meta/greedy, 12 seeds, 500 steps), não só vs Producer.
+  ent-coef 0.003 (0.01 derrubou o piso KEEP no v2). Launcher: `scripts/run_brep_league.sh`.
+  **CORREÇÃO DE CURSO 1 (2026-06-10):** ent 0.003 conservador demais — c00–c02 no piso exato; gap de logit KEEP
+  caiu só 4.58→4.09 (0% flip). Retomado do c02 com ent 0.01 (`run_brep_league2.sh`) → **c03 TAMBÉM no piso**, e
+  entropia CAIU (0.33→0.24): warm-start com valor ajustado ao piso (EV ~0.88) → advantages ~0 → sem gradiente.
+  **CORREÇÃO DE CURSO 2 — diagnóstico de POOL (config c05 vs c03, única diferença = oponentes):** a pool da liga
+  tinha 3/6 oponentes saturados (+1.0; rush/anti_meta/greedy) = metade do batch sem sinal; receita v1 vencedora =
+  família Producer quase-equilibrada (h30/h50/h70/producer/greedy). Princípio PFSP/AlphaStar: treinar vs win-rate
+  ~50%. **league3 LANÇADO (`scripts/run_brep_league3.sh`, FRESCO, 6 chunks)**: pool = producer_h30/h50/h70/
+  producer/**brep:c05** (greedy saturado→campeão congelado informativo); robustez fica no GATE (painel + sobrevivência).
+  - [x] verificar: chunk 1–2 sai do piso → **SIM, chunk 1 = +0.249 (12s), direto pra cima, sem mergulho** — diagnóstico de pool confirmado.
+  - [x] verificar: novo campeão? → **NÃO.** best=c01; a 96 seeds: **+0.0624** (seat0 +0.014 / seat1 +0.111, surv 63.5%)
+    < c05 (+0.1008 equilibrado). **3ª inflação de triagem consecutiva** (+0.249@12→+0.062@96, ~4×; v2: +0.188→+0.031).
+    Trajetória triagem: 0 → +0.249 → −0.001 → +0.082 → −0.001 → +0.040. **c05 SEGUE campeão.**
+  - [x] verificar: rush não-catastrófico → **+0.99996, sobrevivência 100%** (anti_meta/greedy +1.0; OEP −0.034 surv 48%
+    = perfil idêntico ao baseline Producer, com assimetria de assento espelhada: seat0 −0.130/seat1 +0.061).
+  - Saldo da linha: league3 = **2º melhor DRL** (único além do c05 positivo a 96s com ambos assentos >0 e H-P4 ok);
+    receita validada (pool informativa ~50% win-rate + robustez no gate); ckpt em `artifacts/ppo/brep_league3/c01.pt`.
+- [~] **Re-medição do c05 no motor FRESCO** (`scripts/eval_brep_v1.py`, shim v1 novo): Producer FEITO, OEP rodando.
+  - [x] verificar: margem 96s ≈ +0.10 reproduzida → **+0.10076 (seat0 +0.0882, seat1 +0.1133), idêntica à antiga.
+    c05 VALIDADO no motor fresco p/ submissão** (`remeasure_fresh_prod96.json`, 2026-06-10).
+  - [x] OEP(32): **−0.0327** (seat0 +0.061 / seat1 −0.126) — reproduz a medição antiga; fraqueza segue só no seat1.
+    NOVO (métrica H-P4): **aniquilado em 33/64 (sobrevivência 48%), 1ª morte step 102, média 162** — mesmo
+    regime de morte do PGS no LB. Interpretação pendente do baseline (abaixo).
+  - [x] rush(16): **+0.9999, sobrevivência 100%, zero aniquilações** → **critério H-P4 PASSOU** (PGS morria aqui).
+  - [x] baseline comparador: KEEP-floor (=Producer exato) vs OEP(32) = margem −0.003, **sobrevivência 50%**
+    (1ª morte step 94, média 157) — **estatisticamente igual ao c05 (48%, 102, 162). A aniquilação vs OEP é o
+    regime normal de jogo decisivo entre pares, NÃO fragilidade do c05.** Red flag H-P4 LIMPO.
+- [ ] **DECISÃO (usuário): submeter o c05 ao Kaggle?** Quadro completo pró: +0.1008 vs Producer (96s, motor
+  fresco, ambos assentos>0); peer-level vs OEP (igual ao Producer); esmaga rush com 100% sobrevivência (o
+  modo de falha do PGS não se aplica); risco limitado por construção (edits residuais sobre o plano Producer —
+  pior caso ≈ comportamento Producer). Contra: lição PGS = gate local nunca garante LB; tarball pronto
+  (`artifacts/submission_brep.tar.gz`, paridade verificada). Política do repo: submissão só com pedido explícito.
+  - [ ] verificar: se submetido, score LB estabilizado (~1h) > 1228 (Producer atual).
+- [~] **H-P4 trazido da principal (gate de robustez de campo, DB id=129).** Feito na B: métrica de
+  **tempo-até-aniquilação** nos evals (`eval_brep_direct.py` + `eval_brep_v1.py`: `annihilated`, `survival_rate`,
+  `first/mean_death_step` por assento — o LB matou o PGS por aniquilação steps 115–238, invisível à margem
+  500-step); check do c05 vs rush(16) ENFILEIRADO (roda após a re-medição). NÃO trazido (julgamento): oponente
+  `pgs` do registry da principal — estilo Producer-like provado fraco no LB, ~180ms/step, bots/pgs nem commitado lá.
+  - [ ] verificar: c05 sobrevive ≥500 steps vs rush nos 2 assentos, 16 seeds (`remeasure_fresh_rush16.json`, survival_rate=1.0).
+  - [ ] (a fazer, igual T0 da principal) avaliar 1–2 bots públicos do tópico 704095 como oponentes de régua na B.
+- [x] Experimentos BReP registrados no DuckDB (ids 130 v1-campeão/applied, 131 seat/rejected, 132 v2-rico/rejected).
+  - [ ] commitar `experiments.duckdb` no worktree principal (o tracker pediu versionamento).
+- [ ] Considerar +chunks/+seeds (c4 pico a 16 seeds mas c5 melhor a 96; ver se mais treino sobe ou faz drift).
+- [ ] **Cleanup diagnose (Fase 6):** `scripts/profile_selector_step.py` tem tags `[DEBUG-perf]` — manter como ferramenta
+  de profiling reusável OU remover. `scripts/run_ablation_relmargin.sh` ficou moot (ablação selector morta).
+
+## 🧪 PPO — plano derivado do workflow `ppo-explore` (2026-06-09)
+Diagnóstico verificado (refutação adversarial, 21 agentes): há DOIS tetos estruturais distintos —
+**(1) recompensa**: `Φ = 0.4·prod_share+0.3·ship_share+0.3·planet_share` (`gym_env.py:210`) é o próprio
+objetivo do Producer → bacia única "jogue como Producer" → paridade (FORTE; backed por rows 248-249,
+terminal_scale=15 ainda deu paridade + entropia→0.13). **(2) representação**: `candidate_factory.py:27`
+tem 6 candidatos INCLUINDO `producer` → "bater Producer" é irrepresentável (teto do conjunto). Raw-action
+flat -1.0 = action-space grande demais (causa #2), não bug. PBRS batched está OK (dúvida do `d24c358` refutada).
+
+- [x] **Passo 1 — IMPLEMENTADO + LANÇADO (2026-06-09).** `relative_margin` (`Φ=σ(4·(own−enemy)/(own+enemy))`,
+  win-prob shaped, não-saturante na paridade) adicionado em `python/orbit_wars_gym/gym_env.py` (`_relative_potential`
+  + dispatcher `_potential`) e propagado ao path batched + argparse de `train_ppo.py`/`run_campaign.py`. Decisão de
+  design: SÓ o potencial muda (sem anneal) p/ a ablação ser diagnóstica limpa. Smoke OK (entropia 0.129→0.224 em 2k
+  steps); 33/33 testes de regressão passam. Init = `b4_prodinit_60k.pt` (selector producer-biased, JÁ na paridade,
+  `last_entropy=0.129` = a assinatura do colapso). Run em background (`scripts/run_ablation_relmargin.sh`): treatment
+  `relative_margin` → control `dense_potential`, idênticos exceto o reward, 200k steps/braço, eval a 500 steps. ~5.5h
+  (single-env, ~20 steps/s — gargalo Rust CPU, GPU não acelera). Gate `/goal`: `scripts/verify_passo1_goal.py`.
+  - [ ] verificar (gate pronto): `margin > 0` vs Producer a 500 steps, 96 seeds, seat-avg E `last_entropy > 0.25`
+    (claramente acima do colapso 0.13). Rodar: `uv run --extra dev --extra train python -m scripts.verify_passo1_goal`.
+  - [ ] verificar: comparar com o control (shares-Φ, mesmo arch/init) — se margin-Φ>0 e shares-Φ≈0.0, causa #1 PROVADA.
+  - [ ] DECISÃO: se travar em ~0.0 com entropia saudável → teto é o CONJUNTO DE CANDIDATOS → pular pro Passo 3.
+- [ ] **Passo 2 (só se Passo 1 mover a agulha; med-GPU): liga PFSP self-play + Φ relative.** É o que passa ALÉM da
+  paridade (necessário p/ Top 5). Base FORTE (PSRO/Lanctot 2017, AlphaStar PFSP). Pré-req de infra: criar o
+  primitivo **oponente-checkpoint** (`registry.py` só resolve heurística por nome hoje) — `make_checkpoint_opponent(path)`.
+  - [ ] verificar: ≥2 co-campeões de estilos distintos na pool (Producer+OEP âncoras) + checkpoints próprios congelados.
+  - [ ] verificar: `margin > 0` vs Producer a 500 steps ambos assentos (NÃO win-rate-vs-pool, p/ evitar ciclo intransitivo).
+- [ ] **Passo 3 (só se Passo 1 der null = teto de candidatos; med-GPU): selector residual por-planeta.** Action-branching
+  (Tavakoli 2017, FORTE) sobre o plano do Producer, head Discrete(5) por planeta, init KEEP=+5. Torna "deviar do
+  Producer" representável com crescimento LINEAR (não os 20.480 do raw). Novo arch em `policy.py`, não tocar Flat/Entity.
+  - [ ] verificar: `margin > 0` a 500 steps ambos assentos; se ainda travar em 0.0, o teto é mais fundo (primitivas de edit).
+- [x] **NÃO fazer:** mais compute no raw-action do zero (causa #2 = caminho lento) e re-tunar pesos de heurística (teto provado).
+
 ## 📄 DOC — model cards de implementação (pedido 2026-06-07)
 Motivo: `EXPERIMENTS.md` é audit trail (hipótese→margem→decisão), **não** descreve COMO os
 modelos são construídos nem consolida "o que deu certo neles". A implementação mora no fonte

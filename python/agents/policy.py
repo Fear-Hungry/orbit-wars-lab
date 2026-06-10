@@ -219,6 +219,115 @@ class CandidateSelectorActorCritic(nn.Module):
         return a, dist.log_prob(a), dist.entropy(), out["value"]
 
 
+class ProducerResidualBranchActorCritic(nn.Module):
+    """BReP — batchable per-slot branching edits over a Producer base plan.
+
+    Workflow ppo-unified-fix (2026-06-09): the candidate_selector both ceilings at
+    parity (its action set CONTAINS Producer, so beating it is unrepresentable) and
+    is slow (it runs the OEP search per step). This arch fixes BOTH. It reuses the
+    entity encoder but replaces the move heads with ``k_max`` INDEPENDENT
+    ``Discrete(n_edit)`` branches (Tavakoli 2017 action-branching), one per Producer
+    base-move slot. Edit 0 = KEEP reproduces the Producer move EXACTLY, so a
+    KEEP-initialised policy == Producer == guaranteed parity FLOOR; PPO can only learn
+    BENEFICIAL deviations (cancel/reduce/boost). The action space grows LINEARLY
+    (k_max*n_edit) instead of the raw 20480 joint, and the net runs ZERO experts — the
+    Producer base plan is computed once per env in the batched rollout, on the GPU path.
+
+    State-dict keys (planet_mlp/fleet_mlp/trunk/edit/value) are its OWN — a new arch,
+    so it does not collide with EntityActorCritic's exporter keys.
+    """
+
+    # Per-slot edit codes over the Producer move. v2 (2026-06-09): finer commitment
+    # control than the original 4 — 0=KEEP, 1=CANCEL (drop), then ship-SCALE levels
+    # {2:x0.25, 3:x0.5, 4:x1.5, 5:x2.0} (down-scales always legal; up-scales capped
+    # at the source planet's ships). The decoder (_apply_residual_edits) owns the table.
+    N_EDIT = 6
+
+    def __init__(
+        self,
+        obs_dim: int,
+        k_max: int = 16,
+        n_edit: int = N_EDIT,
+        entity_hidden: int = 64,
+        hidden: int = 256,
+    ):
+        super().__init__()
+        expected = GLOBAL_F + PLANET_N * PLANET_F + FLEET_N * FLEET_F
+        if obs_dim != expected:
+            raise ValueError(f"ProducerResidualBranchActorCritic expects flat obs_dim {expected}, got {obs_dim}")
+        self.k_max = int(k_max)
+        self.n_edit = int(n_edit)
+        self.planet_mlp = nn.Sequential(
+            nn.Linear(PLANET_F, entity_hidden), nn.Tanh(),
+            nn.Linear(entity_hidden, entity_hidden), nn.Tanh(),
+        )
+        self.fleet_mlp = nn.Sequential(
+            nn.Linear(FLEET_F, entity_hidden), nn.Tanh(),
+            nn.Linear(entity_hidden, entity_hidden), nn.Tanh(),
+        )
+        self.trunk = nn.Sequential(
+            nn.Linear(GLOBAL_F + 2 * entity_hidden, hidden), nn.Tanh(),
+            nn.Linear(hidden, hidden), nn.Tanh(),
+        )
+        self.edit = nn.Linear(hidden, self.k_max * self.n_edit)
+        self.value = nn.Linear(hidden, 1)
+        # KEEP-init: zero the edit head so the untrained output is dominated by a
+        # high bias on KEEP (index 0) → every slot KEEPs → exact Producer = parity
+        # floor. PPO learns only beneficial deviations. Overwritten by warm-start.
+        with torch.no_grad():
+            self.edit.weight.zero_()
+            bias = self.edit.bias.view(self.k_max, self.n_edit)
+            bias.zero_()
+            bias[:, 0] = 5.0
+
+    @staticmethod
+    def _masked_mean(emb: torch.Tensor, present: torch.Tensor) -> torch.Tensor:
+        weight = present.unsqueeze(-1)
+        total = (emb * weight).sum(dim=1)
+        count = weight.sum(dim=1).clamp_min(1.0)
+        return total / count
+
+    def forward(self, obs: torch.Tensor) -> dict[str, torch.Tensor]:
+        b = obs.shape[0]
+        glob = obs[:, :GLOBAL_F]
+        p_end = GLOBAL_F + PLANET_N * PLANET_F
+        planets = obs[:, GLOBAL_F:p_end].reshape(b, PLANET_N, PLANET_F)
+        fleets = obs[:, p_end:].reshape(b, FLEET_N, FLEET_F)
+        planet_pool = self._masked_mean(self.planet_mlp(planets), planets[:, :, 0])
+        fleet_pool = self._masked_mean(self.fleet_mlp(fleets), fleets[:, :, 0])
+        h = self.trunk(torch.cat([glob, planet_pool, fleet_pool], dim=-1))
+        edit_logits = self.edit(h).reshape(b, self.k_max, self.n_edit)
+        return {"edit": edit_logits, "value": self.value(h).squeeze(-1)}
+
+    def get_action_and_value(
+        self,
+        obs: torch.Tensor,
+        action: torch.Tensor | None = None,
+        masks: dict[str, torch.Tensor] | None = None,
+    ):
+        """``k_max`` independent Discrete(n_edit) branches. ``masks['edit']`` is
+        ``(B, k_max)`` boolean marking ACTIVE slots (= real Producer moves); inactive
+        slots are forced to KEEP(0) and contribute 0 to log-prob/entropy. The SAME
+        mask must be passed at sampling and update so the PPO ratio stays correct.
+        Returns ``(action[B,k_max], logprob[B], entropy[B], value[B])``."""
+        out = self.forward(obs)
+        logits = out["edit"]
+        b, k, _ = logits.shape
+        if masks is not None and "edit" in masks:
+            active = masks["edit"].bool()
+        else:
+            active = torch.ones(b, k, dtype=torch.bool, device=logits.device)
+        dist = Categorical(logits=logits)  # batch_shape (B, k_max)
+        if action is None:
+            sampled = dist.sample()
+            action = torch.where(active, sampled, torch.zeros_like(sampled))
+        a = action.long()
+        active_f = active.to(out["value"].dtype)
+        logprob = (dist.log_prob(a) * active_f).sum(-1)
+        entropy = (dist.entropy() * active_f).sum(-1)
+        return a, logprob, entropy, out["value"]
+
+
 class EntityActorCritic(nn.Module):
     """Permutation-invariant entity encoder (todo T4).
 

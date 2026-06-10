@@ -128,7 +128,7 @@ def main() -> None:
     parser.add_argument("--rollout-steps", type=int, default=256)
     parser.add_argument("--rollout-num-envs", type=int, default=16)
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--reward-mode", choices=("legacy", "dense_potential"), default="legacy")
+    parser.add_argument("--reward-mode", choices=("legacy", "dense_potential", "relative_margin"), default="legacy")
     parser.add_argument("--ent-coef", type=float, default=0.005)
     parser.add_argument("--eval-seeds", type=int, default=16)
     parser.add_argument("--eval-episode-steps", type=int, default=256)

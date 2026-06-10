@@ -93,9 +93,18 @@ class OrbitWarsGymEnv(gym.Env):
         #   (Ng/Harada/Russell 1999: policy-INVARIANT, so it densifies the signal toward
         #   winning without distorting the optimum — the fix for the misaligned reward,
         #   EXPERIMENTS 2026-06-08). Φ is the contested prod/ship/planet share; collapse → 0.
+        # reward_mode == "relative_margin"-> SAME PBRS form, but Φ is an opponent-RELATIVE,
+        #   win-probability-shaped potential Φ=σ(k·margin), margin=(own−enemy)/(own+enemy).
+        #   The shares-Φ above is exactly the Producer's own objective, so its shaped landscape
+        #   has a single basin at "play like Producer" → every arch ceilings at parity (workflow
+        #   ppo-explore root cause #1, FORTE). margin-Φ is non-saturating through margin=0
+        #   (dΦ/dm>0 at parity), so a winning deviation still RAISES Φ — the parity fixed point
+        #   is removed. Still a valid potential, so Ng/Harada/Russell invariance holds.
         self.reward_mode = str(reward_mode)
-        if self.reward_mode not in ("legacy", "dense_potential"):
-            raise ValueError(f"unknown reward_mode {reward_mode!r} (expected 'legacy' or 'dense_potential')")
+        if self.reward_mode not in ("legacy", "dense_potential", "relative_margin"):
+            raise ValueError(
+                f"unknown reward_mode {reward_mode!r} (expected 'legacy', 'dense_potential' or 'relative_margin')"
+            )
         self.reward_gamma = float(reward_gamma)
         # B4-followup: weight on the terminal win/score reward. Raising it (e.g. 10-20)
         # makes WINNING dominate the return over the dense PBRS share signal, to push the
@@ -142,9 +151,9 @@ class OrbitWarsGymEnv(gym.Env):
             player=0,
         )
         dense_components: dict[str, float] | None = None
-        if self.reward_mode == "dense_potential":
-            phi_prev, _ = self._dense_potential(previous_state, player=0)
-            phi_next, dense_components = self._dense_potential(next_state, player=0)
+        if self.reward_mode in ("dense_potential", "relative_margin"):
+            phi_prev, _ = self._potential(previous_state, player=0)
+            phi_next, dense_components = self._potential(next_state, player=0)
             reward = self.reward_gamma * phi_next - phi_prev
         else:
             reward = (
@@ -214,6 +223,53 @@ class OrbitWarsGymEnv(gym.Env):
             "prod_share": prod_share,
             "ship_share": ship_share,
             "planet_share": planet_share,
+            "potential": phi,
+        }
+
+    def _potential(self, state: dict[str, Any], *, player: int) -> tuple[float, dict[str, float]]:
+        """Dispatch to the active potential function for potential-based shaping."""
+        if self.reward_mode == "relative_margin":
+            return self._relative_potential(state, player=player)
+        return self._dense_potential(state, player=player)
+
+    # Steepness of the win-probability logistic; k≈4 gives a near-linear gradient
+    # through margin=0 (dΦ/dm = k/4 at parity) so deviations that win still raise Φ.
+    RELATIVE_MARGIN_K = 4.0
+
+    def _relative_potential(self, state: dict[str, Any], *, player: int) -> tuple[float, dict[str, float]]:
+        """Opponent-relative, win-correlated potential Φ(s) = σ(k·margin) ∈ (0,1).
+
+        margin = (own_ships − enemy_ships) / (own_ships + enemy_ships) ∈ [−1,1], where
+        ships = planet ships + in-flight fleet ships — exactly the quantity the Rust
+        terminal +1/−1 is the argmax of. Unlike the shares-Φ (which is the Producer's
+        own objective and saturates at parity), this is strictly increasing through
+        margin=0, so beating the opponent raises Φ instead of pulling back to parity.
+        A wiped-out player (no planets) floors Φ to 0 (collapse), mirroring _dense_potential.
+        """
+        own_ships = enemy_ships = 0.0
+        own_planets = 0.0
+        for p in state.get("planets", []):
+            owner = planet_owner(p)
+            if owner == player:
+                own_ships += planet_ships(p)
+                own_planets += 1.0
+            elif owner >= 0:
+                enemy_ships += planet_ships(p)
+        for f in state.get("fleets", []):
+            fo = fleet_owner(f)
+            if fo == player:
+                own_ships += fleet_ships(f)
+            elif fo >= 0:
+                enemy_ships += fleet_ships(f)
+        total = own_ships + enemy_ships
+        margin = (own_ships - enemy_ships) / total if total > 0 else 0.0
+        phi = 1.0 / (1.0 + math.exp(-self.RELATIVE_MARGIN_K * margin))
+        if own_planets == 0.0:
+            phi = 0.0  # collapse: wiped out
+        return phi, {
+            "ship_margin": margin,
+            "own_ships": own_ships,
+            "enemy_ships": enemy_ships,
             "potential": phi,
         }
 
