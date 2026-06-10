@@ -32,13 +32,17 @@ def test_strong_opponents_are_registered() -> None:
     for name in ("producer", "oep", *_HANDICAPPED):
         assert name in policies, name
         assert name in HEURISTIC_NAMES, name
-    # pgs is registered as a policy/singleton but deliberately NOT in
-    # HEURISTIC_NAMES: that tuple seeds default league/curriculum lists and the
-    # PGS planner (~180ms/step) is too slow to be a default opponent.
-    assert "pgs" in policies
-    assert "pgs" not in HEURISTIC_NAMES
+    # pgs (and its training-pool variants) are registered as policies/singletons
+    # but deliberately NOT in HEURISTIC_NAMES: that tuple seeds default
+    # league/curriculum lists and the PGS planner (~180ms/step) is too slow to
+    # be a default opponent. Variant knobs mirror the main worktree's league
+    # factories (scripts/league_agents.py).
+    for name in ("pgs", "pgs_hold", "pgs_wave_s100"):
+        assert name in policies, name
+        assert name not in HEURISTIC_NAMES, name
     assert STATEFUL_SINGLETON_OPPONENTS == frozenset(
-        {"producer", "producer_h30", "producer_h50", "producer_h70", "oep", "pgs"}
+        {"producer", "producer_h30", "producer_h50", "producer_h70", "oep", "pgs",
+         "pgs_hold", "pgs_wave_s100"}
     )
 
 

@@ -348,6 +348,17 @@ Medido: BReP vs Producer +0.10 (96s); vs OEP **−0.033** (32s) com assimetria *
     = perfil idêntico ao baseline Producer, com assimetria de assento espelhada: seat0 −0.130/seat1 +0.061).
   - Saldo da linha: league3 = **2º melhor DRL** (único além do c05 positivo a 96s com ambos assentos >0 e H-P4 ok);
     receita validada (pool informativa ~50% win-rate + robustez no gate); ckpt em `artifacts/ppo/brep_league3/c01.pt`.
+- [~] **league4 — PGS na pool + seleção pela LIGA (2026-06-10, RODANDO ~6h).** Pós-merge:
+  (1) `pgs_hold`/`pgs_wave_s100` registrados (registry + PHASE0_OPPONENTS; knobs IDÊNTICOS às factories
+  `scripts/league_agents.py` da principal; medido ~23ms/call no nosso motor — barato p/ treino); introdução
+  GRADUAL (core h50/h70/producer/brep:c05 nos chunks 0–1; +pgs_hold no 2+; +pgs_wave_s100 no 4+) p/ não
+  derrubar o win-rate e travar no piso. (2) Campeão decidido pela liga BT da principal (lição id=129):
+  o launcher exporta o melhor-do-painel via `package_brep_submission.py` p/
+  `~/projects/Kaggle/orbit-wars-lab/artifacts/league/tarballs/brep_league4_<ckpt>.tar.gz` (auto-registro);
+  painel local só rastreia trajetória e barra floor-clone (vs producer ≤ 0.02 não exporta). (3) Divisão
+  limpa: nenhum artifact da liga copiado p/ B. Launcher: `scripts/run_brep_league4.sh`.
+  - [ ] verificar: chunk 2 (entrada do pgs_hold) não derruba o painel pro piso; margem vs pgs_hold melhora ao longo dos chunks.
+  - [ ] verificar: tarball auto-registra na liga da principal e é pontuado; promoção = P(≥ref) ≥ 0.6 E acima do brep_league3.
 - [~] **Re-medição do c05 no motor FRESCO** (`scripts/eval_brep_v1.py`, shim v1 novo): Producer FEITO, OEP rodando.
   - [x] verificar: margem 96s ≈ +0.10 reproduzida → **+0.10076 (seat0 +0.0882, seat1 +0.1133), idêntica à antiga.
     c05 VALIDADO no motor fresco p/ submissão** (`remeasure_fresh_prod96.json`, 2026-06-10).

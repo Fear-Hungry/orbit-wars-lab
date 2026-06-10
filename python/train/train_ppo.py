@@ -61,7 +61,8 @@ PHASE0_OPPONENTS = {
     name: _HEURISTIC_POLICIES[name]
     for name in (
         "producer", "producer_h30", "producer_h50", "producer_h70",
-        "oep", "greedy", "defensive", "rush", "anti_meta", "weak_random",
+        "oep", "pgs_hold", "pgs_wave_s100",
+        "greedy", "defensive", "rush", "anti_meta", "weak_random",
     )
 }
 

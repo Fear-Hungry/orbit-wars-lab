@@ -27,7 +27,8 @@ HEURISTIC_NAMES: tuple[str, ...] = (
 # one game's plan memory leak into the other. Callers that fan out across
 # concurrent games (e.g. batched rollout) must give each game its own runtime.
 STATEFUL_SINGLETON_OPPONENTS: frozenset[str] = frozenset(
-    {"producer", "producer_h30", "producer_h50", "producer_h70", "oep", "pgs"}
+    {"producer", "producer_h30", "producer_h50", "producer_h70", "oep", "pgs",
+     "pgs_hold", "pgs_wave_s100"}
 )
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -129,6 +130,36 @@ def pgs_agent(state: dict[str, Any], player: int) -> list[list[float]]:
     return list(moves) if isinstance(moves, list) else []
 
 
+# PGS variants for training pools — knobs IDENTICAL to the main worktree's league
+# factories (scripts/league_agents.py there), so a policy trained against them in
+# B faces the same opponents the cross-worktree league scores against. PGSRuntime
+# self-resets its only cross-game state (_wave_pending) at step 0, so instances
+# are safe to reuse across sequential games.
+_PGS_VARIANTS: dict[str, dict[str, Any]] = {
+    "pgs_hold": {"scripts": "hold"},
+    "pgs_wave_s100": {"scripts": "hold", "wave_min_ships": 60.0, "wave_start_step": 100},
+}
+
+
+def _make_pgs_variant_bot(name: str) -> Callable[[Any], Any]:
+    from bots.pgs.planner import PGSConfig, PGSRuntime
+
+    runtime = PGSRuntime(PGSConfig(**_PGS_VARIANTS[name]))
+    return lambda obs: runtime.act(obs)
+
+
+def _pgs_variant_agent(name: str) -> Policy:
+    from python.orbit_wars_gym.observation import to_official_observation
+
+    bot = _make_pgs_variant_bot(name)
+
+    def _policy(state: dict[str, Any], player: int) -> list[list[float]]:
+        moves = bot(to_official_observation(state, player=player))
+        return list(moves) if isinstance(moves, list) else []
+
+    return _policy
+
+
 def get_heuristic_policies() -> dict[str, Policy]:
     from .heuristics import (
         anti_meta_agent,
@@ -143,6 +174,7 @@ def get_heuristic_policies() -> dict[str, Policy]:
         **{name: _handicapped_producer(frac) for name, frac in _PRODUCER_HANDICAPS.items()},
         "oep": oep_agent,
         "pgs": pgs_agent,
+        **{name: _pgs_variant_agent(name) for name in _PGS_VARIANTS},
         "greedy": greedy_agent,
         "defensive": defensive_agent,
         "rush": rush_agent,
@@ -171,6 +203,8 @@ def _make_isolated_policy(name: str) -> Policy:
         from bots.pgs.agent import make_agent
 
         bot = make_agent()
+    elif name in _PGS_VARIANTS:
+        bot = _make_pgs_variant_bot(name)
     else:
         raise ValueError(f"{name!r} is stateless; use get_heuristic_policies()[name] directly")
 
