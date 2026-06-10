@@ -5,7 +5,131 @@
 
 ---
 
-# 🎯 FOCO ATUAL (2026-06-09) — desancorar a recompensa do Producer (Alavanca A)
+# 🎯 FOCO ATUAL (2026-06-09, tarde) — frente HEURÍSTICA nesta worktree; BReP/DRL fica na worktree B
+
+> Decisão do usuário: BReP roda em paralelo na **worktree B** (sem conflito com esta); esta worktree ataca
+> **heurística/metaheurística/hiperheurística**. Linhas MORTAS que NÃO voltam (DB 77–99 + memória): tuning de
+> pesos de eval (família H), knobs OEP, e qualquer SELEÇÃO sobre candidate-set que contém o Producer (teto de
+> paridade provado — workflow ppo-explore). Literatura: Burke et al. 2013 (Hyper-heuristics: a survey,
+> 10.1057/jors.2013.71 — distinção SELEÇÃO vs GERAÇÃO de heurísticas; nossa evidência mata seleção → ir de geração);
+> Churchill & Buro 2013 (Portfolio Greedy Search, 10.1109/cig.2013.6633643) e 2015 (Hierarchical Portfolio Search,
+> Prismata); Wang et al. 2016 (Portfolio Online Evolution, StarCraft); Gaina et al. 2022 (RHEA, 10.1109/TG.2021.3060282).
+> **Força da evidência: FORTE** para portfolio-search em jogos RTS-like multi-unidade; **PARCIAL** para Orbit Wars
+> especificamente (sem paper no domínio; o análogo comunitário é o planner timeline/sim-value do fórum ≈ T8).
+
+- [x] **H-P0. Medir o orçamento de simulação por turno** ✅ 2026-06-09 (`scripts/hp0_sim_budget.py` →
+  `artifacts/hp0_sim_budget.json`). Worst-case **517 avaliações/turno** a H=50 (setup ~6ms, candidato ~1.3ms,
+  single-thread); OEP inteiro usa só 20–35ms/turno. **GO com folga** (gate era ≥20).
+- [x] **H-P1. Portfolio de scripts de missão — IMPLEMENTADO** ✅ 2026-06-09 (`bots/pgs/planner.py`): portfolio
+  por planeta-fonte {PRODUCER, HOLD, SNIPE, CAPTURE(payback≤20t), REINFORCE(chega antes do flip), EVAC};
+  **piso = atribuição all-PRODUCER via o MESMO gerador (`ProducerLiteRuntime`)** — análogo heurístico do KEEP do
+  BReP. Scripts enxergam a projeção COM os lançamentos previstos do oponente (determinístico ⇒ plano do turno é
+  exatamente previsível — a brecha sound).
+  - [x] verificar: floor (max-deviations=0) vs Producer = **margem 0.0 EXATA** (gerador fiel; mapas simétricos)
+- [~] **H-P2. Busca PGS por turno — implementada; TUNING em curso** (greedy sob modelo estático + árbitro REATIVO
+  conservador, port do `_reactive_reply_entries` do OEP; margem mínima de aceitação `arbiter_margin=25`).
+  Aprendizados medidos (1 seed): valor território-dominante → −0.35@60 (overexpand); valor naves-dominante sem
+  consciência defensiva → −1.0@120 (passividade); **com consciência defensiva + árbitro: +0.64@120**, mas
+  **a 500 steps reverte (4 seeds: −0.5, win 0.25)** — ganha cedo, perde no longo (mesma armadilha do OEP em jogo
+  curto). p95 decision 106–160ms (ok < 700ms).
+  - [x] diagnóstico da reversão ✅: (a) floor ≈ Producer a menos de RUÍDO DE FLOAT (1ª divergência: ângulo na 6ª
+    casa, step 18; `scripts/check_pgs_floor_fidelity.py`) → jogos floor-vs-Producer a 500 steps são cara-ou-coroa
+    de aniquilação (caos), margem por seed = ±1; (b) com desvios, o resultado fica DETERMINADO pelo bot (mesmo
+    resultado nos 2 assentos): seed 1000 vira W-W (aniquila Producer no step ~200), 1001–1003 viram L-L. Saldo
+    4 seeds: −0.5. Gate de fase (≤150) NÃO muda. → desvios decidem jogos; precisa isolar QUAL script ajuda.
+  - [x] **ablação por família de script** ✅ (8 seeds × 500, `artifacts/pgs/abl_*.json`): **HOLD +0.375 (win 0.69,
+    seat0 7W/1L)**; EVAC 0.0; SNIPE −0.25; CAPTURE −0.5; REINFORCE −0.625; all+árbitro-80 −0.625. Conclusão:
+    o desvio que VENCE é **vetar lançamentos ruins do Producer** (sem risco de mira/compromisso); scripts que
+    ADICIONAM lançamentos não passam pelo avaliador 1-ply (modelo estático infla). H-P1 formalizado em
+    `tests/test_pgs_bot.py` (8 passed: legalidade 2p/4p + floor ≈ Producer). `pgs` registrado no registry
+    (isolável; STATEFUL_SINGLETON_OPPONENTS).
+  - [x] **triagem 16 seeds ✅ CRITÉRIO BATIDO** (`artifacts/pgs/t16_*.json`): **hold-only (árbitro 25):
+    mean +0.334, seat0 +0.554, seat1 +0.114, win 0.656** — ambos assentos > 0; hold-árbitro-10: +0.27 com
+    seat1 −0.01 (conservadorismo do árbitro paga); p95 ~106-160ms < 700ms; crash/invalid = 0.
+  - [x] **GATE DECISOR (H-P3) ✅ PASSOU** 2026-06-09 (id=122 no DB): 96 seeds FROZEN (9000–9095) vs Producer,
+    500 steps, 2 assentos: **mean +0.2181, seat0 +0.2488, seat1 +0.1874, 117W/73L/2T (win 0.609, p≈0.0007)**,
+    p95 83.7ms / max 249ms, crash/invalid 0. **PGS hold-only SUPERA o Producer** — primeira linha a quebrar a
+    paridade. Suíte completa 241 passed. `artifacts/pgs/gate96_9*.json`.
+    - [x] verificar: mean > 0 E seat0 > 0 E seat1 > 0, crash/invalid = 0, p95 < 700ms ✓ todos
+  - [x] cross-check vs OEP ✅ (32 seeds frozen, 500 steps): **+0.406** (seat0 +0.375 / seat1 +0.4375, win 0.703)
+    — PGS bate as DUAS réguas. `artifacts/pgs/gate_oep32.json`.
+  - [x] **empacotado e SUBMETIDO** ✅ 2026-06-09 (id=123 no DB; pedido explícito do usuário). Tarball
+    `artifacts/submission_pgs.tar.gz` (`scripts/package_pgs_submission.py`): main.py com budget 0.7s + fallback
+    Producer, `agent` último callable (gotcha get_last_callable), bots/pgs vendorizado (`_helpers.py`, sem
+    dependência do planner OEP). Validação oficial (`scripts/validate_pgs_tarball.py`): 500 steps DONE/DONE,
+    p95 182ms / max 355ms. **Submissão Kaggle ref=53519882 (PENDING)**.
+  - [x] **verificar score LB do ref=53519882** ✗ **REPROVADO 2026-06-10 (DB id=129): LB 1001.7 << 1228**.
+    Diagnóstico (/diagnose, replays + diff): **NÃO foi erro** (61 eps COMPLETE, 0 timeout/ERROR; diff replay:
+    111/114 ações do Kaggle = PGS local). Foi **falha de generalização**: (a) vetos HOLD validados SÓ vs
+    Producer (árbitro modela oponente como Producer-like) — em 2p, único regime com vetos, fez 13W/10L vs
+    bots ~1000 (esperado ~73% se nível Producer); 0W/11L vs >1100; (b) regime: TODAS as derrotas =
+    aniquilação steps 115–238 por rushers/expanders — o gate local mede margem a 500 steps vs Producer,
+    regime que não existe no LB. Em 4p (floor puro, sem vetos) 11W/5L vs ≤1050 ≈ esperado. Comparador:
+    Producer sub=53366194 segue estável a 1173 no MESMO campo (16W/21L vs opp~1168). Producer continua o default.
+- [ ] **H-P4 (NOVO, decorre do id=129): gate de ROBUSTEZ DE CAMPO antes de qualquer nova submissão.**
+  O gate "96 seeds vs Producer a 500 steps" provou-se NÃO-preditivo do LB (PGS: +0.218 local → 1001.7 LB).
+  Duas correções no protocolo, em ordem de custo:
+  - [~] **(a) adicionar oponentes de CAMPO reais à régua local** — EM CURSO 2026-06-10:
+    - [x] medido: rush/greedy/anti_meta do registry são FRACOS DEMAIS — floor E hold aniquilam 32/32
+      com margem +1.0 (`artifacts/pgs/field/*.json`) → registry não serve de régua de campo
+    - [x] **T0 pool baixada**: 4 agentes públicos usáveis (LB 1224/1110/1100/1050, 2 linhagens distintas,
+      stdlib-only) em `artifacts/opponents/top5_proxy/` (README com refs) + `scripts/eval_vs_external.py`
+      (isolamento por instância, mesmas métricas + annihilated_rate)
+    - [x] triagem lida (DB ids 136–137): **TODOS os 7 kernels públicos screenados são aniquilados pelo
+      Producer local** (leva 1: 12 matchups 16/16 margem +1.0; leva 2: hellburner/konbu17 8/8, orbitbotnext
+      quebrado na fonte). Harness local VALIDADO: interpretador oficial reproduz (Producer aniquila lb1224
+      4/4); lb1050 aniquila lb1224 8/8 (títulos de kernel ≠ código publicado)
+    - [x] verificar ✓: Producer/PGS >> toda a pool pública; **conclusão: o campo 1500+ é privado** —
+      top-5 hoje = ~1575+ (líder 1731); kernels públicos NÃO servem de régua de campo
+    - [x] **T1 replay-mining FEITO** (DB id=138): ladder-walk → sub 53402231 (~1710), 3 replays de
+      vitórias sobre 1580–1600 minerados + contraste com nossa derrota LB
+    - [x] verificar ✓ taxonomia (3 padrões): (1) **disciplina de onda** — elite lança ~0.4/step com
+      60–80% ≥50 navios; Producer/PGS = "spray" 1.4–1.6/step mediana 14, 5% ≥50 (perfil dos PERDEDORES
+      de elite); (2) **hoard** — 2–5× navios do oponente em t=100–350 mesmo com menos planetas (score =
+      MARGEM DE NAVIOS); (3) expansão rápida só até t=50, depois consolida
+- [x] **H-P5 v0 (disciplina WAVE incondicional) — REJEITADO** (DB id=139). Knobs `wave_min_ships`/
+  `wave_start_step` implementados no `PGSConfig` + métrica `launch_profile` no `eval_pgs_direct`
+  (ficam no código, default OFF). O perfil convergiu ao elite (%≥50: 25%→69%) mas a margem caiu
+  monotonicamente nas DUAS réguas: vs Producer +0.334→+0.158 (wave30)→+0.007 (wave50); vs OEP
+  −0.054→−0.154. Veto incondicional por tamanho perde tempo contra geradores que pegam neutros
+  primeiro. **Aprendizado colateral importante**: hold-only vs OEP = −0.054 nos seeds 1000–1015 mas
+  +0.406 nos frozen 9000+ — triagem 16s é MUITO ruidosa; decisão só a 96 seeds (regra reforçada).
+- [~] **H-P5 v1 (/goal ATIVO): fusão CONDICIONAL de ondas — IMPLEMENTADO, triagem rodando.**
+  `_wave_merge_filter` no planner: agrupa lançamentos do floor por ALVO; só grupos de ATAQUE
+  (alvo inimigo) abaixo de `wave_min_ships` são retidos, liberando quando o grupo cruza o limiar
+  OU envelhece `wave_max_delay` (8) turnos; expansão (neutros) e defesa (próprios) NUNCA filtradas
+  (lição do v0, id=139). Estado mínimo entre turnos: `_wave_pending {alvo: 1º step retido}`, reset
+  no step 0. Testes `test_pgs_bot.py` 3 passed (floor fidelity intacta — default off); trace
+  instrumentado: filtro cirúrgico (11 retenções/250 turnos).
+  - [x] triagem lida (DB id=140): w40 → Producer +0.262 / OEP −0.118; w60 → Producer +0.191 /
+    OEP −0.065. **Pareado por seed: nenhum sinal positivo** (Producer 7↑/8↓ e 6↑/8↓; OEP ruído;
+    16–26 seeds inalterados por par — só flips ±1 levemente negativos em 64 jogos pareados)
+  - [x] w40/w60 (start 50): REPROVADOS na triagem (id=140) — reter ataque na fase de EXPANSÃO
+    cede tempo; v0 incondicional idem (id=139)
+  - [x] **v1.1 PHASE-GATED (w60, start_step=150): PASSOU O GATE FROZEN** ✅ 2026-06-10 (DB id=141,
+    condição do /goal CUMPRIDA). Triagem: empate estatístico nas 2 réguas. Frozen pareado por seed:
+    vs Producer −0.0124 (9↑/9↓ equilibrados, 169/192 jogos idênticos; mean +0.206, ambos assentos >0);
+    vs OEP **+0.0000 (64/64 jogos idênticos**, mean +0.406). Mudança cirúrgica: disciplina de onda
+    elite no late game SEM regressão local. Config: `PGSConfig(scripts="hold", wave_min_ships=60,
+    wave_start_step=150)`.
+  - [x] **SUBMETIDO (autorizado pelo usuário)** ✅ 2026-06-10: **ref=53537753** (DB id=142),
+    validação oficial OK (p95 91ms). **ACHADO CRÍTICO no empacotamento** (id=142): a submissão
+    anterior (53519882, LB ~1022) rodou a config DEFAULT com os scripts ofensivos REJEITADOS
+    (main.py → agent() module-level → PGSConfig() cheio), NÃO o hold-only do gate — o hold-only
+    nunca tinha sido testado no campo. Fix permanente: `SUBMISSION_CONFIG` pinada em
+    `bots/pgs/agent.py` (hold + wave w60s150). Isso REVISA a leitura do id=129 (parte da
+    subperformance 2p pode ser dos scripts ofensivos).
+  - [ ] **ler score LB do ref=53537753 após ~1h15** (watcher local armado): comparar com 1022
+    (all-scripts) e 1228 (Producer); registrar no DB
+    - [ ] verificar: score estabilizado lido e registrado; se > 1228, discutir promoção a default
+- [ ] ~~submissão-experimento do wave30+hold (v0)~~ DESCARTADA (recomendação aceita: v0 reprovou
+  nas 2 réguas; slot guardado para candidato que passe os gates)
+  - [ ] **(b) decidir o destino da linha PGS**: vetos HOLD são neutros/negativos contra o campo — ou o árbitro
+    passa a exigir vantagem robusta contra MÚLTIPLOS modelos de oponente (não só Producer-like), ou a linha
+    congela e o esforço vai para T0/T8
+    - [ ] verificar: PGS revisado > floor vs régua com rusher (16 seeds triagem), antes de re-tocar o gate frozen
+
+# ✅ ENCERRADO (2026-06-09) — desancorar a recompensa do Producer (Alavanca A — REJEITADA, id=120)
 
 > Causa-raiz do teto vs Producer, com endereço no código. Embasamento: Ng/Harada/Russell 1999 (PBRS
 > invariância só na forma de diferença); Devlin & Kudenko 2012 (dynamic PBRS / Φ = valor do crítico);
@@ -31,9 +155,19 @@
   (force-copy de `target/release/liborbit_wars_rs.so` → venv); novo `make verify-binding`. Documentado em
   `docs/PARITY.md` "Frescor do binding". Detalhe: [[build_uv_reverts_fresh_so]]. Verificado: `make build` sincroniza,
   `uv run --no-sync` preserva (paridade passa). 
-  - [ ] **AÇÃO SUA:** seu eval em background (`scripts.eval_brep_direct` no `c00.pt`) foi iniciado com `uv run` puro →
-    está rodando no **motor STALE (pré-fix de paridade)**. Matar e relançar via `make`/`--no-sync` para usar o motor correto.
-  - [ ] opcional: `uv cache clean orbit-wars-lab` (remove o wheel stale; exige nenhum processo uv segurando o lock)
+  - [x] **Motor da worktree B consertado** ✅ 2026-06-09 (esta sessão): cherry-pick dos fixes de build (`3900024`)
+    e paridade polar (`105af98`) no branch `frente-b-candidate-selector` + `make build` (sync-binding) +
+    **22 testes de paridade/fidelidade PASS** com `.so` fresco. Todo resultado BReP anterior (brep_gpu +0.18,
+    brep_seat −0.0155@96) foi medido no motor PRÉ-fix — re-medir antes de confiar.
+  - [ ] **AÇÃO SUA (worktree B, antes do run paralelo):** os launchers `scripts/run_brep_*.sh` usam `uv run` PURO →
+    auto-sync reverte o `.so` fresco para o wheel stale. Trocar por `uv run --no-sync` nos scripts OU rodar
+    `uv cache clean orbit-wars-lab` na B (sem processo uv segurando o lock) antes de lançar.
+    - [ ] verificar: `make verify-binding` na B mostra o `.so` do build atual após um `uv run` qualquer
+  - [ ] **AVISO (worktree B): checkpoints v1 ≠ código v2.** O `policy.py` sujo da B mudou `N_EDIT` 4→6 e a SEMÂNTICA
+    dos códigos de edit; `eval_brep_direct` não carrega mais os ckpts v1 (`brep_gpu/*`, `brep_seat/*` — edit head 64
+    vs 96). Para re-medi-los: construir com `n_edit=4` + tabela v1 de scales; senão, medir só a linha v2 (fresh,
+    KEEP-init = piso de paridade no motor CORRETO). Sugestão p/ v2: `ent-coef ≤ 0.003` (0.01 com 6 códigos empurra
+    a política p/ longe do KEEP — provável causa da regressão 0→−0.12 da brep_v2).
 - [x] **Mov.2 — implementado** ✅ 2026-06-09 (`/goal`). A evidência do P3 (DB) reformulou: o gargalo é **drift de
   recompensa** (PPO melhora sobre BC e REGRIDE ao escalar), não representação. 3 knobs compostos em `train_ppo`:
   `--shaping-potential none` (de-anchor: dropa o shaping de produção); `--kl-to-ref-coef/--ref-checkpoint` (âncora KL
@@ -42,8 +176,9 @@
 - [x] **Campanha Mov.2 rodada e MEDIDA** ✅ 2026-06-09 (id=120 DB, **REJECTED**). 2M ts (de-anchor=none + KL + eval-gating)
   → margem 96s vs Producer = **−0.997 (PIOR que P3 −0.75)**. `--shaping-potential none` STARVA o sinal contra oponente
   forte (perde tudo → reward esparso −1 → gradiente ~0). Levers de recompensa NÃO quebram o teto do Producer.
-- [ ] **DECISÃO — próximo lever** (recomendação no chat): **(b) focar BReP residual** (parte de jogo forte; o usuário já roda)
-  é a aposta estruturalmente melhor; **(a)** opcional fechar: Mov.2 anti-drift COM shaping mantido (~0.05, NÃO 0) p/ isolar se KL+gating ajudam.
+- [x] **DECISÃO — próximo lever** ✅ 2026-06-09 (usuário): **frentes paralelas** — BReP/DRL na worktree B
+  (motor já consertado lá, ver acima); ESTA worktree vira frente heurística/metaheurística/hiperheurística
+  (FOCO ATUAL no topo). Mov.2-com-shaping-0.05 descartado (prior baixo, GPU vai pro BReP).
 - [ ] **Critério decisor (vira `/goal`):** a mesmo compute do baseline, **margem normalizada vs Producer a 96 seeds > 0**
   (`make oep-promotion-gate` / `scripts.benchmark_ppo_submission`); check barato: dist. de ações no início do treino
   deixa de colapsar na do Producer (diagnósticos de `test_map_bias_invariance`).
@@ -59,6 +194,55 @@
   triar à mão a partir do cache, sem novo fan-out de verificação.
 
 ---
+
+# 🏟️ LIGA LOCAL (decisão do usuário 2026-06-10: ela pontua e decide submissões)
+
+- [~] **Liga v1 implementada e RODANDO**: `scripts/league_agents.py` (pool de 8: producer, oep, brep
+  [tarball da worktree B], pgs_hold, pgs_holdwave, pgs_allscripts, ext_lb1050, ext_hellburner; instância
+  fresca por jogo), `league_match.py` (2p ambos assentos + 4p com rotação; vencedor = argmax navios;
+  registra aniquilação/step), `league_report.py` (matriz de payoff + rating Bradley-Terry + calibração).
+  40 matchups × 4 seeds (28 pares 2p + 12 composições 4p), paralelismo 6 (`artifacts/league/v1/`).
+- [x] **CALIBROU** ✅ (DB id=143): Spearman **+1.000** nas 4 âncoras (ordem idêntica ao LB:
+  oep > producer > brep >> allscripts) e gate duro PASS com folga (~250 pts de gap no allscripts —
+  a liga teria barrado a submissão do id=129 ANTES do slot). 272 jogos (224 2p + 48 4p).
+- [x] **LIGA ADOTADA COMO GATE DE SUBMISSÃO** (decisão do usuário): candidato precisa **BT ≥ producer**.
+  Leituras atuais: pgs_hold 1082 (≈ producer 1080, dentro do ruído — único candidato aprovável);
+  pgs_holdwave 1035 (REPROVARIA — sangra vs oep 4-12 nos seeds da liga). **Predição registrada antes
+  do score**: ref=53537753 (holdwave) fica abaixo do Producer no LB (~1050–1170), acima de 1022.
+  - [~] comparar predição com o score real do ref=53537753: **preliminar T+80min = 1264 > 1228**
+    (13W/7L, 4p 6W/5L, matchmaking 1100–1426) — a predição da liga (~1050–1170) está ERRANDO até
+    aqui; suspeita: 4p da liga com pool Producer-pesada não representa o 4p do campo (DB id=144).
+    Leitura de estabilização ~T+4h agendada (watcher).
+- [~] **LIGA CONTÍNUA RODANDO** (pedido do usuário): `scripts/league_run.py` — rodadas perpétuas,
+  seeds sempre novos (state.json), matchmaking 70% uniforme + 30% topo, mesas 4p com mistura de
+  estilos, standings por rodada em `artifacts/league/v1/standings.log`; report v2 com bootstrap
+  CI90, **P(bot ≥ producer)** (estatística do gate), LB_est e split 2p/4p. 60 rounds × 4 matchups
+  em background + adensamento de 12 seeds nos 15 matchups do topo (p2x_/p4x_).
+  - [x] verificado ✓ (DB id=146, 707 jogos): CI90 ~±30; **família hold separa do Producer**
+    (P≥prod: oep .96, pgs_hold .94, holdwave .73); Spearman +0.8 nas DUAS métricas (única inversão
+    producer×brep, gap real 20pts = empate); μ-kaggle implementado (id=145: regra real do Kaggle
+    por engenharia reversa de 429 updates — E logística D=500, K exponencial decrescente, 4p ~2.3×
+    menor) e μ-kaggle põe pgs_hold/holdwave no topo, consistente com LB ao vivo (1264 > 1228)
+  - [ ] fechar leitura de estabilização do ref=53537753 (watcher T+4h): se > 1228 estabilizado,
+    holdwave é a melhor submissão do time
+  - [x] **Rodada wave guiada pela liga (/goal) ✅ COM SINAL** (DB id=148): `pgs_wave_s100` (hold +
+  wave(60) desde step 100) = **1º GERAL da liga** — BT 1076, μ-kgl 839 (maior), P≥ref 0.97;
+  s50 morto definitivo (0.48); 4pfloor passa (0.80) mas não supera os holds. Gradiente coerente
+  s50 < s150 < s100 (ponto doce pós-expansão). Knob `floor_in_4p` adicionado ao planner.
+  `wave_s100` entrou na pool do campeonato contínuo para apertar o CI (88 jogos próprios).
+  - [x] **PAR FINAL SUBMETIDO** ✅ 2026-06-10 (DB id=150; regra do usuário: só as 2 últimas contam):
+    `wave_s100` ref=53542864 (campeão da liga) + RESUBMIT `w60s150` ref=53542884 (config do recorde
+    1244). Ambos validados; recomeçam de 600 e re-escalam. pgs_hold e holdwave originais viram inativos.
+  - [ ] ler scores estabilizados do par final (watcher T+2h13 armado); atualizar LB_ANCHORS;
+    flipar `GATE_REFERENCE` para o melhor PGS estabilizado
+    - [ ] verificar: se s100 estabilizar ≥ s150, a liga ganha o 2º acerto preditivo e vira decisora
+      plena de slots
+- [~] **pgs_hold PURO SUBMETIDO** ✅ 2026-06-10 (ref=53541125, DB id=147; autorizado pelo usuário
+    após confirmar que o "hold-only" de ontem rodou all-scripts). Empacotado com novo flag
+    `--pgs-config` (patcha SUBMISSION_CONFIG no tarball); validação oficial OK. Predição da liga
+    pré-registrada: acima do Producer (~1173), próximo do hold+wave (~1264).
+    - [ ] ler scores estabilizados dos DOIS PGS (watcher T+2h) e fechar a tríade de calibração
+      da família (allscripts 1022 / hold / hold+wave)
 
 # 🎯 ATACAR AGORA — objetivo top 5
 

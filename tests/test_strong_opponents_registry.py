@@ -24,7 +24,7 @@ def test_strong_opponents_are_registered() -> None:
     policies = get_heuristic_policies()
     assert "producer" in policies
     assert "oep" in policies
-    assert STATEFUL_SINGLETON_OPPONENTS == frozenset({"producer", "oep"})
+    assert STATEFUL_SINGLETON_OPPONENTS == frozenset({"producer", "oep", "pgs"})
 
 
 @pytest.mark.parametrize("name", ["producer", "oep"])

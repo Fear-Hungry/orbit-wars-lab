@@ -23,7 +23,7 @@ HEURISTIC_NAMES: tuple[str, ...] = (
 # starts), but interleaving two live games through the same callable would let
 # one game's plan memory leak into the other. Callers that fan out across
 # concurrent games (e.g. batched rollout) must give each game its own runtime.
-STATEFUL_SINGLETON_OPPONENTS: frozenset[str] = frozenset({"producer", "oep"})
+STATEFUL_SINGLETON_OPPONENTS: frozenset[str] = frozenset({"producer", "oep", "pgs"})
 
 _ROOT = Path(__file__).resolve().parents[2]
 PRODUCER_SETUP_COMMAND = "rtk .venv/bin/python -m scripts.prepare_producer_opponent"
@@ -84,6 +84,14 @@ def oep_agent(state: dict[str, Any], player: int) -> list[list[float]]:
     return list(moves) if isinstance(moves, list) else []
 
 
+def pgs_agent(state: dict[str, Any], player: int) -> list[list[float]]:
+    from bots.pgs.planner import agent as _pgs
+    from python.orbit_wars_gym.observation import to_official_observation
+
+    moves = _pgs(to_official_observation(state, player=player))
+    return list(moves) if isinstance(moves, list) else []
+
+
 def get_heuristic_policies() -> dict[str, Policy]:
     from .heuristics import (
         anti_meta_agent,
@@ -96,6 +104,7 @@ def get_heuristic_policies() -> dict[str, Policy]:
     return {
         "producer": producer_agent,
         "oep": oep_agent,
+        "pgs": pgs_agent,
         "greedy": greedy_agent,
         "defensive": defensive_agent,
         "rush": rush_agent,
@@ -118,6 +127,10 @@ def _make_isolated_policy(name: str) -> Policy:
         bot = _load_producer_module().make_agent()
     elif name == "oep":
         from bots.oep.agent import make_agent
+
+        bot = make_agent()
+    elif name == "pgs":
+        from bots.pgs.agent import make_agent
 
         bot = make_agent()
     else:
