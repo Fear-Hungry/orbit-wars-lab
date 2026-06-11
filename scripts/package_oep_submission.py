@@ -6,6 +6,14 @@ The tarball bundles the `bots` and `orbit_lite` packages so the package-style
 imports resolve when Kaggle puts the tarball dir on sys.path, and a thin
 `main.py` bakes the best selection threshold (OEP_MIN_ADVANTAGE) via env since
 Kaggle does not pass env vars.
+
+The robustness wrapper mirrors the PGS submission: OEP runs under a time budget
+on a worker thread; on overrun or exception the main thread returns the
+Producer plan — always a valid, on-time move. Every fallback is INSTRUMENTED in
+``SUBMISSION_STATS`` (calls/fallbacks/timeouts/fallback_errors) so the local
+gate fails loud instead of degrading silently (docs/SUBMISSION.md). NOTE:
+``agent`` is defined LAST in main.py (Kaggle picks the last callable in the
+namespace).
 """
 from __future__ import annotations
 
@@ -20,29 +28,54 @@ import threading
 from bots.oep.agent import agent as _oep
 from bots.producer.agent import agent as _producer
 
-# Robustness wrapper for the SUBMISSION (not the runtime — keeps the repo's
-# no-silent-fallback invariant intact). The OEP lookahead (~370ms locally) can
-# spike past actTimeout on slower Kaggle hardware, which ERRORs the whole
-# episode. Run it under a time budget on a worker thread; if it overruns or
-# raises, the main thread returns the Producer plan — always a valid, on-time
-# move — so the agent never times out / crashes the validation episode.
+# OEP time budget before falling back to the Producer plan (~370ms locally;
+# generous slack for slower Kaggle CPUs while staying inside actTimeout=1s).
 _BUDGET_S = {budget_s}
+# After this many consecutive overruns, stop launching OEP: each timed-out
+# daemon thread keeps running and competes for CPU on later steps.
+_MAX_CONSEC_TIMEOUTS = 3
+
+SUBMISSION_STATS = {{
+    "calls": 0,
+    "fallbacks": 0,
+    "timeouts": 0,
+    "fallback_errors": 0,
+}}
+
+_consec_timeouts = [0]
+
+
+def _submission_stats_increment(name, amount=1):
+    SUBMISSION_STATS[name] = int(SUBMISSION_STATS.get(name, 0)) + int(amount)
 
 
 def agent(obs):
+    _submission_stats_increment("calls")
+    if _consec_timeouts[0] >= _MAX_CONSEC_TIMEOUTS:
+        _submission_stats_increment("fallbacks")
+        _submission_stats_increment("timeouts")
+        return _producer(obs)
     box = {{}}
 
     def _run():
         try:
             box["r"] = _oep(obs)
         except Exception:
-            pass
+            box["err"] = True
 
     th = threading.Thread(target=_run, daemon=True)
     th.start()
     th.join(_BUDGET_S)
     if box.get("r") is not None:
+        _consec_timeouts[0] = 0
         return box["r"]
+    _submission_stats_increment("fallbacks")
+    if th.is_alive():
+        _consec_timeouts[0] += 1
+        _submission_stats_increment("timeouts")
+    else:
+        _consec_timeouts[0] = 0
+        _submission_stats_increment("fallback_errors")
     return _producer(obs)
 '''
 

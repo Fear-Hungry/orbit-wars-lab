@@ -1118,6 +1118,10 @@ def test_no_native_imports_in_submission_artifacts_and_producer_tarball(tmp_path
     with tarfile.open(tarball, "r:gz") as tar:
         names = {member.name for member in tar.getmembers()}
         assert "_upstream.py" in names
+        main_file = tar.extractfile("main.py")
+        assert main_file is not None
+        main_source = main_file.read().decode("utf-8")
+        assert "del make_agent" in main_source
         upstream = tar.extractfile("_upstream.py")
         assert upstream is not None
         upstream_source = upstream.read().decode("utf-8")

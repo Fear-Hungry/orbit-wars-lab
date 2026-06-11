@@ -6,8 +6,11 @@ tarball bundles the ``bots`` and ``orbit_lite`` packages and a thin ``main.py``.
 
 The robustness wrapper mirrors the OEP submission: PGS runs under a time budget
 on a worker thread; on overrun or exception the main thread returns the
-Producer plan — always a valid, on-time move. NOTE: ``agent`` is defined LAST
-in main.py (Kaggle picks the last callable in the namespace).
+Producer plan — always a valid, on-time move. Every fallback is INSTRUMENTED in
+``SUBMISSION_STATS`` (calls/fallbacks/timeouts/fallback_errors), mirroring the
+BReP template, so the local gate fails loud instead of degrading silently
+(docs/SUBMISSION.md). NOTE: ``agent`` is defined LAST in main.py (Kaggle picks
+the last callable in the namespace).
 """
 from __future__ import annotations
 
@@ -23,22 +26,51 @@ from bots.producer.agent import agent as _producer
 # PGS time budget before falling back to the Producer plan (p95 ~84ms local;
 # generous slack for slower Kaggle CPUs while staying inside actTimeout=1s).
 _BUDGET_S = {budget_s}
+# After this many consecutive overruns, stop launching PGS: each timed-out
+# daemon thread keeps running and competes for CPU on later steps.
+_MAX_CONSEC_TIMEOUTS = 3
+
+SUBMISSION_STATS = {{
+    "calls": 0,
+    "fallbacks": 0,
+    "timeouts": 0,
+    "fallback_errors": 0,
+}}
+
+_consec_timeouts = [0]
+
+
+def _submission_stats_increment(name, amount=1):
+    SUBMISSION_STATS[name] = int(SUBMISSION_STATS.get(name, 0)) + int(amount)
 
 
 def agent(obs):
+    _submission_stats_increment("calls")
+    if _consec_timeouts[0] >= _MAX_CONSEC_TIMEOUTS:
+        _submission_stats_increment("fallbacks")
+        _submission_stats_increment("timeouts")
+        return _producer(obs)
     box = {{}}
 
     def _run():
         try:
             box["r"] = _pgs(obs)
         except Exception:
-            pass
+            box["err"] = True
 
     th = threading.Thread(target=_run, daemon=True)
     th.start()
     th.join(_BUDGET_S)
     if box.get("r") is not None:
+        _consec_timeouts[0] = 0
         return box["r"]
+    _submission_stats_increment("fallbacks")
+    if th.is_alive():
+        _consec_timeouts[0] += 1
+        _submission_stats_increment("timeouts")
+    else:
+        _consec_timeouts[0] = 0
+        _submission_stats_increment("fallback_errors")
     return _producer(obs)
 '''
 
@@ -85,6 +117,12 @@ def main() -> None:
     missing = [f for f in BOT_FILES if not Path(f).exists()]
     if missing or not args.orbit_lite_dir.is_dir():
         raise FileNotFoundError(f"missing PGS packaging inputs: {missing} / {args.orbit_lite_dir}")
+    if args.pgs_config and "value_net_path" in args.pgs_config:
+        raise SystemExit(
+            "--pgs-config value_net_path is not submission-safe yet: the tarball "
+            "does not bundle python.agents.value_net or the checkpoint. Package "
+            "that path explicitly before enabling it."
+        )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with tarfile.open(args.out, "w:gz") as tar:
