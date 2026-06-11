@@ -11,7 +11,9 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import signal
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -60,6 +62,40 @@ def _bump_fault(game_faults, name, key):
 # overrides its reward to None (it cannot win, regardless of final ships).
 ACT_TIMEOUT_S = 1.0
 OVERAGE_BANK_S = 12.0
+_MIN_DEADLINE_S = 1e-6
+
+
+class _ActDeadlineExceeded(BaseException):
+    pass
+
+
+def _raise_act_deadline(_signum, _frame):
+    raise _ActDeadlineExceeded("agent call exceeded Kaggle act timeout + overage bank")
+
+
+def _call_agent_with_deadline(agent, obs, deadline_s: float):
+    """Run one agent act with a hard wall-clock deadline.
+
+    league_match is a Unix CLI process. Failing loudly outside the main thread is
+    intentional: without SIGALRM we cannot prove a hung agent call becomes a
+    Kaggle-like TIMEOUT instead of wedging the whole local ruler.
+    """
+    if not hasattr(signal, "setitimer"):
+        raise RuntimeError("league_match hard act timeout requires signal.setitimer")
+    if threading.current_thread() is not threading.main_thread():
+        raise RuntimeError("league_match hard act timeout requires the main thread")
+
+    old_handler = signal.getsignal(signal.SIGALRM)
+    old_timer = signal.setitimer(signal.ITIMER_REAL, 0.0)
+    signal.signal(signal.SIGALRM, _raise_act_deadline)
+    try:
+        signal.setitimer(signal.ITIMER_REAL, max(_MIN_DEADLINE_S, float(deadline_s)))
+        return agent(obs)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0.0)
+        signal.signal(signal.SIGALRM, old_handler)
+        if old_timer[0] > 0.0 or old_timer[1] > 0.0:
+            signal.setitimer(signal.ITIMER_REAL, old_timer[0], old_timer[1])
 
 
 def play_batch(names_by_seat, seeds, steps, decision_ms, crashes):
@@ -86,8 +122,19 @@ def play_batch(names_by_seat, seeds, steps, decision_ms, crashes):
                     continue
                 obs = to_official_observation(states[i], seat)
                 t0 = time.perf_counter()
+                hard_timeout = False
                 try:
-                    raw_moves = agents[i][seat](obs)
+                    deadline_s = ACT_TIMEOUT_S + max(0.0, overage[i][seat])
+                    raw_moves = _call_agent_with_deadline(agents[i][seat], obs, deadline_s)
+                except _ActDeadlineExceeded:
+                    # Enforce Kaggle's DeadlineExceeded path. The previous
+                    # post-hoc timing code could only mark slow calls that
+                    # eventually returned; a wedged/very expensive call stalled
+                    # the whole ruler and looked like "still running".
+                    hard_timeout = True
+                    _bump_fault(faults[i], name, "timeouts")
+                    errored[i][seat] = "TIMEOUT"
+                    raw_moves = []
                 except Exception as e:
                     # Kaggle: any raise -> status ERROR, agent dead for the rest
                     # of the episode (never silently: corrupts H2H/BT otherwise)
@@ -100,7 +147,9 @@ def play_batch(names_by_seat, seeds, steps, decision_ms, crashes):
                     raw_moves = []
                 dt_ms = (time.perf_counter() - t0) * 1000.0
                 decision_ms.setdefault(name, []).append(dt_ms)
-                if dt_ms > ACT_TIMEOUT_S * 1000.0:
+                if hard_timeout:
+                    pass
+                elif dt_ms > ACT_TIMEOUT_S * 1000.0:
                     _bump_fault(faults[i], name, "timeouts")
                     over_s = dt_ms / 1000.0 - ACT_TIMEOUT_S
                     # Kaggle agent.py checks the overrun against the bank BEFORE

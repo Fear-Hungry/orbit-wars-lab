@@ -20,6 +20,10 @@ Locked-down bugs (2026-06-10):
   winner argmax; per-seat "agent_status" is recorded. Invalid move entries
   stay penalty-free (official process_moves skips them) but match the exact
   len == 3 rule.
+- BUG E (2026-06-11): the timeout path was still post-hoc only: a very slow or
+  wedged act call could stall the local ruler forever instead of becoming a
+  TIMEOUT. league_match now enforces a hard wall-clock deadline around the act
+  call itself.
 - BUG B: ``winner = argmax(tot)`` turned a tied final total into a fake seat-0
   win (26 inconsistencies in old artifacts). Now a shared maximum is recorded
   as winner_seat=-1, winner=None, tie=true.
@@ -66,6 +70,11 @@ def _fake_make(name):
             time.sleep(1.05)  # just over Kaggle actTimeout=1s
             return []
         return sleeper
+    if name == "hangs":
+        def hangs(obs):
+            time.sleep(5.0)
+            return []
+        return hangs
 
     def passer(obs):
         return []
@@ -150,6 +159,24 @@ def test_overage_exhaustion_kills_with_timeout_status(monkeypatch):
     assert g["faults"]["sleeper"]["timeouts"] == 1
     assert g["agent_status"] == ["TIMEOUT", "DONE"]
     assert g["winner"] == "passer", "errored seat cannot win"
+
+
+def test_hard_deadline_interrupts_act_call_instead_of_waiting_for_return(monkeypatch):
+    import scripts.league_match as lm
+
+    monkeypatch.setattr(lm, "make", _fake_make)
+    monkeypatch.setattr(lm, "ACT_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(lm, "OVERAGE_BANK_S", 0.01)
+
+    t0 = time.perf_counter()
+    games = lm.play_batch(["hangs", "passer"], [123], 3, {}, {})
+    elapsed = time.perf_counter() - t0
+
+    g = games[0]
+    assert elapsed < 1.0, "hard timeout must interrupt the act call, not wait for sleep(5)"
+    assert g["faults"]["hangs"]["timeouts"] == 1
+    assert g["agent_status"] == ["TIMEOUT", "DONE"]
+    assert g["winner"] == "passer"
 
 
 def test_tied_totals_recorded_as_tie_not_seat0_win(monkeypatch):
