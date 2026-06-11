@@ -51,6 +51,9 @@ PROFILE_DEFAULTS = {
     "strong": {"seeds": 24, "steps": 500, "min_decisive_2p": 40},
 }
 
+FIELD_2P_WEIGHT = 0.46  # DB id=168: Kaggle env sample was 46% 2p / 54% 4p.
+_VERDICT_PRIORITY = {"PASS_LOCAL": 2, "INCONCLUSIVE": 1, "REJECT_LOCAL": 0}
+
 
 @dataclass(frozen=True)
 class MatchTask:
@@ -106,7 +109,7 @@ def build_tasks(
         if candidate not in FACTORIES:
             raise ValueError(f"unknown candidate: {candidate}")
         ref_order = []
-        for name in [incumbent, *references]:
+        for name in [incumbent, *candidates, *references]:
             if name != candidate and name in FACTORIES and name not in ref_order:
                 ref_order.append(name)
         for ref_idx, ref in enumerate(ref_order):
@@ -345,11 +348,8 @@ def summarize_candidate(
 
     overall = _score_games(all_games, candidate)
     four_player = _score_games(four_player_games, candidate) if four_player_games else _empty_pair_summary()
-    decisive_rates = [
-        s["decisive_win_rate"] for s in pairwise.values()
-        if s["decisive_win_rate"] is not None
-    ]
-    score_2p = _mean(decisive_rates)
+    pair_scores = [s["win_rate"] for s in pairwise.values()]
+    score_2p = _mean(pair_scores)
     score_4p = four_player["win_rate"]
     overall_score = weight_2p * score_2p + (1.0 - weight_2p) * score_4p
 
@@ -467,7 +467,16 @@ def build_report(
         )
         for candidate in candidates
     ]
-    ranking = sorted(summaries, key=lambda s: (s["verdict"] == "PASS_LOCAL", s["overall_score"]), reverse=True)
+    ranking = sorted(
+        summaries,
+        key=lambda s: (
+            _VERDICT_PRIORITY.get(str(s["verdict"]), -1),
+            s["overall_score"],
+            s["score_4p"],
+            s["score_2p"],
+        ),
+        reverse=True,
+    )
     recommended = next((s["candidate"] for s in ranking if s["verdict"] == "PASS_LOCAL"), None)
     return {
         "recommended_candidate": recommended,
@@ -524,7 +533,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--min-incumbent-winrate", type=float, default=0.50)
     parser.add_argument("--min-floor-winrate", type=float, default=0.60)
     parser.add_argument("--max-annihilation-rate-4p", type=float, default=0.35)
-    parser.add_argument("--weight-2p", type=float, default=0.50)
+    parser.add_argument("--weight-2p", type=float, default=FIELD_2P_WEIGHT)
     args = parser.parse_args(argv)
     profile = PROFILE_DEFAULTS[args.profile]
     if args.seeds is None:

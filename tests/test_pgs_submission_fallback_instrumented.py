@@ -6,14 +6,13 @@ SUBMISSION_STATS in main.py's namespace. benchmark_submission detects fallbacks
 ONLY via ``agent.__globals__["SUBMISSION_STATS"]``, so a tarball whose PGS died
 on every step still benchmarked as "0 fallbacks" — exactly the silent
 degradation docs/SUBMISSION.md forbids. The template now mirrors the BReP
-instrumentation (calls/fallbacks/timeouts/fallback_errors) and stops launching
-PGS after an overrun (timed-out daemon threads keep running and can mutate
-runtime state).
+instrumentation (calls/fallbacks/timeouts/fallback_errors) and pauses PGS while
+a timed-out daemon thread is still alive, then resumes once it finishes.
 """
 from __future__ import annotations
 
 import sys
-import time
+import threading
 import types
 
 import pytest
@@ -61,7 +60,8 @@ def test_healthy_pgs_records_zero_fallbacks(monkeypatch):
     for _ in range(5):
         assert agent({"player": 0}) is pgs_moves
     assert ns["SUBMISSION_STATS"] == {
-        "calls": 5, "fallbacks": 0, "timeouts": 0, "fallback_errors": 0,
+        "calls": 5, "fallbacks": 0, "timeouts": 0,
+        "timeout_thread_blocks": 0, "fallback_errors": 0,
     }
 
 
@@ -73,7 +73,8 @@ def test_dead_pgs_counts_every_fallback(monkeypatch):
     for _ in range(10):
         assert agent({"player": 0}) is PRODUCER_SENTINEL
     assert ns["SUBMISSION_STATS"] == {
-        "calls": 10, "fallbacks": 10, "timeouts": 0, "fallback_errors": 10,
+        "calls": 10, "fallbacks": 10, "timeouts": 0,
+        "timeout_thread_blocks": 0, "fallback_errors": 10,
     }
 
 
@@ -90,21 +91,31 @@ def test_benchmark_delta_logic_sees_the_fallback(monkeypatch):
     assert delta["fallback_errors"] == 1.0
 
 
-def test_timeout_counts_and_killswitch_stops_launching_pgs(monkeypatch):
+def test_timeout_blocks_until_thread_finishes_then_resumes_pgs(monkeypatch):
     launches = []
+    release = threading.Event()
 
     def slow(obs):
         launches.append(1)
-        time.sleep(0.5)
+        release.wait(timeout=1.0)
         return [[1, 0.0, 2]]
 
     agent, ns = _render_agent(monkeypatch, slow, budget_s=0.01)
     for _ in range(5):
         assert agent({"player": 0}) is PRODUCER_SENTINEL
-    max_consec = ns["_MAX_CONSEC_TIMEOUTS"]
-    assert len(launches) == max_consec, "kill-switch must stop launching PGS"
+    assert len(launches) == 1, "wrapper must not overlap timed-out PGS threads"
     assert ns["SUBMISSION_STATS"] == {
-        "calls": 5, "fallbacks": 5, "timeouts": 1, "fallback_errors": 0,
+        "calls": 5, "fallbacks": 5, "timeouts": 1,
+        "timeout_thread_blocks": 4, "fallback_errors": 0,
+    }
+
+    release.set()
+    ns["_active_timeout_thread"][0].join(timeout=1.0)
+    assert agent({"player": 0}) == [[1, 0.0, 2]]
+    assert len(launches) == 2, "wrapper should resume PGS after the overrun finishes"
+    assert ns["SUBMISSION_STATS"] == {
+        "calls": 6, "fallbacks": 5, "timeouts": 1,
+        "timeout_thread_blocks": 4, "fallback_errors": 0,
     }
 
 

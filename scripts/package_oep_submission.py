@@ -32,23 +32,32 @@ from bots.producer.agent import agent as _producer
 # Total OEP wrapper budget. A dedicated Producer shadow is called every turn
 # first, so fallback is stateful/warm instead of a cold mid-game Producer plan.
 _BUDGET_S = {budget_s}
-# Stop launching OEP after the first overrun. Timed-out daemon threads cannot
-# be killed and may keep mutating the module runtime, so overlapping attempts
-# are worse than a visible Producer fallback.
-_MAX_CONSEC_TIMEOUTS = 1
+# Timed-out daemon threads cannot be killed and may keep mutating the module
+# runtime. Do not launch another OEP while the old overrun is alive, but resume
+# OEP after it finishes instead of degrading the rest of the game to Producer.
+_active_timeout_thread = [None]
 
 SUBMISSION_STATS = {{
     "calls": 0,
     "fallbacks": 0,
     "timeouts": 0,
+    "timeout_thread_blocks": 0,
     "fallback_errors": 0,
 }}
-
-_consec_timeouts = [0]
 
 
 def _submission_stats_increment(name, amount=1):
     SUBMISSION_STATS[name] = int(SUBMISSION_STATS.get(name, 0)) + int(amount)
+
+
+def _timeout_thread_still_alive():
+    th = _active_timeout_thread[0]
+    if th is None:
+        return False
+    if th.is_alive():
+        return True
+    _active_timeout_thread[0] = None
+    return False
 
 
 def agent(obs):
@@ -60,8 +69,9 @@ def agent(obs):
     except Exception:
         fallback = []
         fallback_error = True
-    if _consec_timeouts[0] >= _MAX_CONSEC_TIMEOUTS:
+    if _timeout_thread_still_alive():
         _submission_stats_increment("fallbacks")
+        _submission_stats_increment("timeout_thread_blocks")
         if fallback_error:
             _submission_stats_increment("fallback_errors")
         return fallback
@@ -77,14 +87,12 @@ def agent(obs):
     th.start()
     th.join(max(0.0, _BUDGET_S - (time.perf_counter() - t0)))
     if box.get("r") is not None:
-        _consec_timeouts[0] = 0
         return box["r"]
     _submission_stats_increment("fallbacks")
     if th.is_alive():
-        _consec_timeouts[0] += 1
+        _active_timeout_thread[0] = th
         _submission_stats_increment("timeouts")
     else:
-        _consec_timeouts[0] = 0
         _submission_stats_increment("fallback_errors")
     if fallback_error:
         _submission_stats_increment("fallback_errors")
