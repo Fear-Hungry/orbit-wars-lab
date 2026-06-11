@@ -80,6 +80,31 @@ def test_planner_exposes_no_default_entrypoint() -> None:
         "entrypoint duplicado reintroduzido no planner — use bots.pgs.agent")
 
 
+def test_pgs_tiny_deadline_returns_legal_producer_floor() -> None:
+    from bots.pgs.planner import PGSConfig, make_runtime
+
+    backend = RustBatchBackend(
+        num_envs=1, num_players=2, seed=11, config=RustConfig(enable_comets=True)
+    )
+    state = backend.reset(11)[0]
+    obs = to_official_observation(state, 0)
+    producer = get_isolated_opponents("producer", 1)[0]
+    runtime = make_runtime(PGSConfig(
+        scripts="hold",
+        wave_min_ships=60.0,
+        wave_start_step=0,
+        deadline_ms=0.001,
+        deadline_guard_ms=0.0,
+    ))
+
+    moves = runtime.act(obs)
+
+    assert moves_are_legal(state, 0, moves)
+    assert sorted((round(m[0]), round(m[2])) for m in moves) == sorted(
+        (round(m[0]), round(m[2])) for m in producer(state, 0)
+    )
+
+
 def test_registry_pgs_routes_to_operational_entrypoint(monkeypatch) -> None:
     """O 'pgs' das heurísticas do registry deve rotear pro entrypoint
     operacional (SUBMISSION_CONFIG), o mesmo bot dos isolados."""

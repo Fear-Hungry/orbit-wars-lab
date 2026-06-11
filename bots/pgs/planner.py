@@ -85,6 +85,10 @@ class PGSConfig:
     min_ships_to_act: float = 5.0
     evac_window: int = 10
     deadline_ms: float = 600.0
+    # Safety guard inside the planner. The Kaggle wrapper has its own 0.9s
+    # budget, but thread fallback is a last-resort degradation. PGS should stop
+    # expensive search/arbiter work before that and return the Producer floor.
+    deadline_guard_ms: float = 50.0
     # deviations allowed only while step <= this (0 = no limit). Phase-gated
     # regime: search where it measurably helps, pure Producer elsewhere.
     deviation_max_step: int = 0
@@ -529,6 +533,12 @@ class PGSRuntime:
     def tensor_action(self, obs_tensors: dict) -> dict[str, Tensor]:
         t_start = time.perf_counter()
         cfg = self.config
+        deadline = t_start + float(cfg.deadline_ms) / 1000.0
+        guard_s = max(0.0, float(cfg.deadline_guard_ms)) / 1000.0
+
+        def budget_low() -> bool:
+            return time.perf_counter() >= deadline - guard_s
+
         if bool((obs_tensors["step"] == 0).all()):
             self._player_count = None
             self._floor_runtimes = {}
@@ -552,24 +562,34 @@ class PGSRuntime:
         planet_ids = obs_tensors["planets"][..., 0].long()
 
         my_base = self._producer_entries(me, obs_tensors, movement)
+
+        def producer_floor_payload() -> dict[str, Tensor]:
+            return entries_to_sparse_payload(my_base, planet_ids=planet_ids)
+
         step_now = int(obs_tensors["step"].item())
         if step_now == 0:
             self._wave_pending = {}
         if player_count != 2 and bool(cfg.floor_in_4p):
-            return entries_to_sparse_payload(my_base, planet_ids=planet_ids)
+            return producer_floor_payload()
         if int(cfg.deviation_max_step) > 0 and step_now > int(cfg.deviation_max_step):
             # out-of-regime steps fall back to the exact Producer plan
-            return entries_to_sparse_payload(my_base, planet_ids=planet_ids)
+            return producer_floor_payload()
+        if budget_low():
+            return producer_floor_payload()
 
         status = movement.garrison_status(max_horizon=H)
         alive = obs.alive
         owner0 = status.owner[:, 0]
         if float(cfg.wave_min_ships) > 0 and step_now >= int(cfg.wave_start_step):
             my_base = self._wave_merge_filter(my_base, owner0, me, step_now)
+            if budget_low():
+                return producer_floor_payload()
         opp_ids = sorted({int(o.item()) for o in owner0[(owner0 >= 0) & (owner0 != me)]})
-        opp_entries_by_owner = [
-            (oid, self._producer_entries(oid, obs_tensors, movement)) for oid in opp_ids
-        ]
+        opp_entries_by_owner = []
+        for oid in opp_ids:
+            if budget_low():
+                return producer_floor_payload()
+            opp_entries_by_owner.append((oid, self._producer_entries(oid, obs_tensors, movement)))
 
         # scripts read the projection WITH the opponent's predicted launches applied
         # (their plan this turn is exactly predictable): flips include the incoming
@@ -578,6 +598,8 @@ class PGSRuntime:
         if any(bool(e.valid.any()) for _, e in opp_entries_by_owner):
             opp_clone = _clone_movement(movement)
             for oid, entries in opp_entries_by_owner:
+                if budget_low():
+                    return producer_floor_payload()
                 if not bool(entries.valid.any()):
                     continue
                 launches = infer_planned_launches_from_entries(
@@ -620,6 +642,8 @@ class PGSRuntime:
             enabled |= {"reinforce", "evac"}  # mode-gated 4p survival defense (H-118)
         portfolio: dict[int, list[tuple[str, LaunchEntries]]] = {}
         for s in sources:
+            if budget_low():
+                return producer_floor_payload()
             a = float(avail[s].item())
             options: list[tuple[str, LaunchEntries]] = [("PROD", base_by_source[s])]
             if "hold" in enabled:
@@ -646,19 +670,20 @@ class PGSRuntime:
             parts = [fixed_base] + [portfolio[s][assign_now[s]][1] for s in sources]
             return concat_launch_entries(parts)
 
+        if budget_low():
+            return producer_floor_payload()
         cur_value = value(assembled(assign))
         deviations = 0
-        deadline = t_start + float(cfg.deadline_ms) / 1000.0
         for _ in range(int(cfg.max_passes)):
             improved = False
             for s in sources:
-                if time.perf_counter() > deadline or deviations >= int(cfg.max_deviations):
+                if budget_low() or deviations >= int(cfg.max_deviations):
                     break
                 best_idx, best_val = assign[s], cur_value
                 for idx in range(len(portfolio[s])):
                     if idx == assign[s]:
                         continue
-                    if time.perf_counter() > deadline:
+                    if budget_low():
                         break
                     trial = dict(assign)
                     trial[s] = idx
@@ -671,7 +696,7 @@ class PGSRuntime:
                     assign[s] = best_idx
                     cur_value = best_val
                     improved = True
-            if not improved or time.perf_counter() > deadline:
+            if not improved or budget_low():
                 break
 
         deviated = any(assign[s] != 0 for s in sources)
@@ -680,22 +705,37 @@ class PGSRuntime:
             # which is known to inflate deviations. Re-score the deviated plan and
             # the all-PRODUCER floor against EVERY opponent's reply to each plan,
             # and only keep the deviation if it still wins. Preserves the floor.
+            if budget_low():
+                assign = {s: 0 for s in sources}
+                deviated = False
+        if deviated and opp_ids:
             cache = build_distance_cache(movement, max_k=int(_producer_config_for(player_count).horizon))
+            if budget_low():
+                assign = {s: 0 for s in sources}
+                deviated = False
+        if deviated and opp_ids:
             plan_dev = assembled(assign)
             plan_prod = concat_launch_entries(
                 [fixed_base] + [portfolio[s][0][1] for s in sources]
             )
 
-            def reactive_value(plan: LaunchEntries) -> float:
-                replies = [
-                    (oid, self._reactive_reply(plan, oid, obs_tensors, movement, cache, player_count, me))
-                    for oid in opp_ids
-                ]
+            def reactive_value(plan: LaunchEntries) -> float | None:
+                replies = []
+                for oid in opp_ids:
+                    if budget_low():
+                        return None
+                    replies.append(
+                        (oid, self._reactive_reply(plan, oid, obs_tensors, movement, cache, player_count, me))
+                    )
+                if budget_low():
+                    return None
                 return self._plan_value(movement, obs_tensors, plan, replies, me)
 
             _arb = (float(cfg.value_net_arbiter_margin) if self._value_net is not None
                     else float(cfg.arbiter_margin))
-            if reactive_value(plan_dev) <= reactive_value(plan_prod) + _arb:
+            dev_value = reactive_value(plan_dev)
+            prod_value = reactive_value(plan_prod) if dev_value is not None else None
+            if dev_value is None or prod_value is None or dev_value <= prod_value + _arb:
                 assign = {s: 0 for s in sources}
 
         if _DEBUG and any(assign[s] != 0 for s in sources):

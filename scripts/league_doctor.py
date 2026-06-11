@@ -174,13 +174,11 @@ def _make_tarball(root: Path, name: str, sentinel: str) -> Path:
 
 def _tarball_canaries() -> list[dict[str, Any]]:
     old_root = league_agents.ROOT
-    old_iso = league_agents._TARBALL_ISO
     checks: list[dict[str, Any]] = []
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         try:
             league_agents.ROOT = root
-            league_agents._TARBALL_ISO = {}
             tar_a = _make_tarball(root, "a", "A")
             tar_b = _make_tarball(root, "b", "B")
             a = league_agents._tarball_agent(tar_a, "a")
@@ -190,6 +188,28 @@ def _tarball_canaries() -> list[dict[str, Any]]:
                 "tarball_modules_are_isolated",
                 isolated == ["A", "B", "A", "B"],
                 {"observed": isolated},
+            ))
+
+            state_src = root / "src_stateful"
+            state_src.mkdir()
+            (state_src / "_state.py").write_text("COUNTER = 0\n")
+            (state_src / "main.py").write_text(
+                "def agent(obs):\n"
+                "    import _state\n"
+                "    _state.COUNTER += 1\n"
+                "    return _state.COUNTER\n"
+            )
+            state_tar = root / "stateful.tar.gz"
+            with tarfile.open(state_tar, "w:gz") as tar:
+                for path in sorted(state_src.iterdir()):
+                    tar.add(path, arcname=path.name)
+            state_a = league_agents._tarball_agent(state_tar, "stateful")
+            state_b = league_agents._tarball_agent(state_tar, "stateful")
+            state_observed = [state_a({}), state_b({}), state_a({}), state_b({})]
+            checks.append(_check(
+                "tarball_instances_have_isolated_runtime_state",
+                state_observed == [1, 1, 2, 2],
+                {"observed": state_observed},
             ))
 
             tar_c = _make_tarball(root, "champ", "V1")
@@ -203,7 +223,6 @@ def _tarball_canaries() -> list[dict[str, Any]]:
             ))
         finally:
             league_agents.ROOT = old_root
-            league_agents._TARBALL_ISO = old_iso
     return checks
 
 

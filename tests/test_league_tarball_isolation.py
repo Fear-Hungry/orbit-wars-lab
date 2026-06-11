@@ -34,7 +34,6 @@ def _make_tarball(tmp_path, name, sentinel):
 @pytest.fixture()
 def fake_root(tmp_path, monkeypatch):
     monkeypatch.setattr(league_agents, "ROOT", tmp_path)
-    monkeypatch.setattr(league_agents, "_TARBALL_ISO", {})
     return tmp_path
 
 
@@ -66,6 +65,30 @@ def test_tarball_modules_do_not_leak_or_shadow_globals(fake_root, tmp_path):
         assert cache.exists() and str(cache) not in sys.path
     finally:
         del sys.modules["_brep_weights"]
+
+
+def test_same_tarball_instances_do_not_share_module_runtime(fake_root, tmp_path):
+    src = tmp_path / "src_stateful"
+    src.mkdir()
+    (src / "_state.py").write_text("COUNTER = 0\n")
+    (src / "main.py").write_text(
+        "def agent(obs):\n"
+        "    import _state\n"
+        "    _state.COUNTER += 1\n"
+        "    return _state.COUNTER\n"
+    )
+    tar = tmp_path / "stateful.tar.gz"
+    with tarfile.open(tar, "w:gz") as tf:
+        for f in sorted(src.iterdir()):
+            tf.add(f, arcname=f.name)
+
+    agent_a = league_agents._tarball_agent(tar, "stateful")
+    agent_b = league_agents._tarball_agent(tar, "stateful")
+
+    assert agent_a({}) == 1
+    assert agent_b({}) == 1
+    assert agent_a({}) == 2
+    assert agent_b({}) == 2
 
 
 def test_reexported_tarball_invalidates_cache(fake_root, tmp_path):

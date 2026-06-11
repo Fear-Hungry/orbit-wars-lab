@@ -134,6 +134,14 @@ artificial, o mesmo tarball foi reprovado por `fallbacks=6`, `timeouts=4`,
 `timeout_thread_blocks=2`; portanto a validacao final pre-submissao deve ser
 serial, mas runs sob carga continuam uteis para revelar sensibilidade de budget.
 
+Correcao subsequente: PGS agora checa budget antes de fases caras e devolve o
+piso Producer internamente quando nao ha tempo para busca/arbiter. Os tarballs
+PGS foram reempacotados. `submission_pgs.tar.gz` passou validacao 2p/4p all
+seats com `fallbacks=0`, `timeouts=0`, `timeout_thread_blocks=0`,
+`fallback_errors=0`, p95 91ms e max 215ms. A liga tambem passou a isolar
+modulos de tarball por instancia, evitando runtime global compartilhado entre
+dois jogos do mesmo artefato.
+
 ## Decisao Atual
 
 Nao ha uma nova variante comprovadamente melhor que o recorde `pgs_holdwave`

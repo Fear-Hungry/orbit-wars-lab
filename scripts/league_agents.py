@@ -131,21 +131,19 @@ class _TarballIsolation:
             sys.modules.update(saved)
 
 
-_TARBALL_ISO: dict[str, _TarballIsolation] = {}
-
-
 def _tarball_agent(tar_path: Path, cache_name: str):
     """Load a self-contained submission tarball as a league agent (fresh main
-    module per instance; bundled bare-named deps stay in the tarball's private
-    import overlay — see _TarballIsolation — so multiple tarballs never share
-    weights/models through sys.modules or sys.path ordering).
+    module and fresh bundled-module overlay per instance; bare-named deps stay
+    private — see _TarballIsolation — so multiple tarballs never share
+    weights/models/runtime state through sys.modules or sys.path ordering).
 
     The cache dir is keyed by the tarball's CONTENT hash: re-exporting a
     tarball under the same name gets a fresh extraction AND a fresh import
-    overlay, instead of silently running the previously cached version
-    (2026-06-11: the old exists-check skipped extraction forever). Old hash
-    dirs become orphans — never reused, safe to leave. A missing tarball now
-    fails LOUD even when a stale cache exists (no-silent-fallback rule)."""
+    overlay. The overlay is intentionally PER INSTANCE, not per tarball hash:
+    PGS/OEP submissions have module-global runtimes inside bundled packages, so
+    two games using the same tarball still need isolated package state. Old hash
+    dirs become orphans — never reused, safe to leave. A missing tarball fails
+    LOUD even when a stale cache exists (no-silent-fallback rule)."""
     digest = hashlib.sha1(tar_path.read_bytes()).hexdigest()[:12]
     key = f"{cache_name}-{digest}"
     cache = ROOT / "artifacts" / "league" / "cache" / key
@@ -155,7 +153,7 @@ def _tarball_agent(tar_path: Path, cache_name: str):
             # filter="data" blocks path traversal / symlink escapes from a
             # hostile tarball (and is the post-3.14 mandatory default anyway)
             tf.extractall(cache, filter="data")
-    iso = _TARBALL_ISO.setdefault(key, _TarballIsolation(cache))
+    iso = _TarballIsolation(cache)
     with iso.active():
         mod = _fresh_module(cache / "main.py", cache_name)
     inner = mod.agent
