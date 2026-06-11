@@ -23,6 +23,10 @@ Estado atual:
 
 - PGS/OEP atuais: validados com `fallbacks=0`, `timeouts=0`,
   `timeout_thread_blocks=0`, `fallback_errors=0`.
+- O validador de tarball agora reprova qualquer counter tecnico proibido em
+  `SUBMISSION_STATS`: `fallbacks`, `timeouts`, `timeout_thread_blocks`,
+  `fallback_errors`, `illegal_moves`, `policy_illegal_moves`,
+  `invalid_actions` e `*_fallbacks` como `net_fallbacks`.
 - Producer atual: valida `DONE` em 2p/4p; sem `SUBMISSION_STATS` por ser
   baseline puro, aceito apenas com flag explicita.
 - BReP 1156 atual: valida `DONE` em 2p/4p, `fallbacks=0`,
@@ -122,6 +126,13 @@ Para PPO, benchmark/selecao agora tratam crash, timeout, invalid, fallback,
 policy-illegal, fallback-error e instrumentacao ausente como falhas tecnicas
 zero-tolerancia. Um checkpoint com score alto mas fallback/timeout nao pode ser
 selecionado como melhor submissao.
+
+Revalidacao apos endurecer o gate de tarball: PGS holdwave passou serialmente
+em 2p seat 0 com `fallbacks=0`, `timeouts=0`, `timeout_thread_blocks=0`,
+`fallback_errors=0` (p95 41.7ms, max 67.5ms). Em validacao paralela sob carga
+artificial, o mesmo tarball foi reprovado por `fallbacks=6`, `timeouts=4`,
+`timeout_thread_blocks=2`; portanto a validacao final pre-submissao deve ser
+serial, mas runs sob carga continuam uteis para revelar sensibilidade de budget.
 
 ## Decisao Atual
 

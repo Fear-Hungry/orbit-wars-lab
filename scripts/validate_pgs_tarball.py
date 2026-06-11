@@ -4,9 +4,9 @@ Extracts the tar.gz to a temp dir and, in a SUBPROCESS rooted there (so imports
 resolve from the tarball, not the repo), loads main.py exactly like Kaggle
 (exec + LAST callable in the namespace) and runs official episodes vs the
 bundled Producer. Fails loud on agent ERROR/TIMEOUT/INVALID and on any
-instrumented fallback (SUBMISSION_STATS.fallbacks > 0 — docs/SUBMISSION.md
-forbids silent degradation to the Producer); reports decision-time stats and
-the final rewards.
+instrumented degradation counter (fallbacks, timeouts, fallback_errors,
+illegal_moves, net_fallbacks, etc. — docs/SUBMISSION.md forbids silent
+degradation to the Producer); reports decision-time stats and the final rewards.
 """
 from __future__ import annotations
 
@@ -161,6 +161,34 @@ out = {
 print(json.dumps(out))
 '''
 
+FORBIDDEN_EXACT_STATS = {
+    "fallbacks",
+    "timeouts",
+    "timeout_thread_blocks",
+    "fallback_errors",
+    "illegal_moves",
+    "policy_illegal_moves",
+    "invalid_actions",
+}
+
+
+def _is_forbidden_stat_key(key: str) -> bool:
+    return key in FORBIDDEN_EXACT_STATS or key.endswith("_fallbacks")
+
+
+def _nonzero_forbidden_stats(stats: dict) -> dict[str, float]:
+    bad = {}
+    for key, value in stats.items():
+        if not _is_forbidden_stat_key(str(key)):
+            continue
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            continue
+        if numeric > 0.0:
+            bad[str(key)] = numeric
+    return bad
+
 
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -217,11 +245,11 @@ def main() -> None:
         ]
         if bad:
             raise SystemExit(f"{args.label} failed official episode(s): {bad!r}")
-        fallbacks = int(result["submission_stats"].get("fallbacks", 0))
-        if fallbacks > 0:
+        forbidden_stats = _nonzero_forbidden_stats(result["submission_stats"])
+        if forbidden_stats:
             raise SystemExit(
-                f"{args.label} fell back to the Producer on {fallbacks} step(s) "
-                f"({result['submission_stats']!r}) — silent degradation is forbidden "
+                f"{args.label} reported forbidden SUBMISSION_STATS counters "
+                f"{forbidden_stats!r} ({result['submission_stats']!r}) — silent degradation is forbidden "
                 f"(docs/SUBMISSION.md)"
             )
         print("VALIDATION OK")
