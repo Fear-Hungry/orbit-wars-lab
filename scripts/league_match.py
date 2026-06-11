@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import sys
 import time
 from pathlib import Path
 
 import numpy as np
 import torch
-
 from python.orbit_wars_gym.backend import RustBatchBackend, RustConfig
 from python.orbit_wars_gym.entities import (
     fleet_owner,
@@ -24,6 +25,7 @@ from python.orbit_wars_gym.entities import (
     planet_ships,
 )
 from python.orbit_wars_gym.observation import to_official_observation
+from python.orbit_wars_gym.rules import moves_are_legal
 from scripts.league_agents import make
 
 
@@ -40,7 +42,22 @@ def _totals(state, num_players):
     return tot
 
 
-def play_batch(names_by_seat, seeds, steps, decision_ms):
+def _bump_fault(game_faults, name, key):
+    f = game_faults.setdefault(name, {"crashes": 0, "timeouts": 0, "invalid_moves": 0})
+    f[key] += 1
+
+
+# Kaggle act semantics (kaggle_environments agent.py/core.py/schemas.json):
+# each act may exceed actTimeout=1s by drawing on a banked overage budget
+# (observation.remainingOverageTime, default 12s); the act whose overrun
+# EXCEEDS the remaining bank becomes DeadlineExceeded -> status TIMEOUT. Any
+# exception -> status ERROR. Either way the agent never acts again and core
+# overrides its reward to None (it cannot win, regardless of final ships).
+ACT_TIMEOUT_S = 1.0
+OVERAGE_BANK_S = 12.0
+
+
+def play_batch(names_by_seat, seeds, steps, decision_ms, crashes):
     """names_by_seat: list of agent names, one per seat. Returns per-seed games."""
     n, np_ = len(seeds), len(names_by_seat)
     backend = RustBatchBackend(num_envs=n, num_players=np_, seed=int(seeds[0]),
@@ -49,22 +66,74 @@ def play_batch(names_by_seat, seeds, steps, decision_ms):
     states = backend.states()
     agents = [[make(name) for name in names_by_seat] for _ in range(n)]
     died_at = [[None] * np_ for _ in range(n)]
+    # per-game fault counters {agent_name: {crashes, timeouts, invalid_moves}}
+    faults = [{} for _ in range(n)]
+    # Kaggle semantics state: remaining overage bank + terminal error status
+    # ("ERROR"/"TIMEOUT") per seat — an errored seat stops acting for the rest
+    # of the game (its planets keep producing, fleets in flight continue)
+    overage = [[OVERAGE_BANK_S] * np_ for _ in range(n)]
+    errored = [[None] * np_ for _ in range(n)]
     for t in range(steps):
         rows = []
         for i in range(n):
             for seat, name in enumerate(names_by_seat):
-                if died_at[i][seat] is not None:
+                if died_at[i][seat] is not None or errored[i][seat] is not None:
                     continue
                 obs = to_official_observation(states[i], seat)
                 t0 = time.perf_counter()
                 try:
-                    moves = agents[i][seat](obs) or []
-                except Exception:
-                    moves = []  # a crashing agent just passes (recorded via weakness)
-                decision_ms.setdefault(name, []).append((time.perf_counter() - t0) * 1000.0)
+                    raw_moves = agents[i][seat](obs)
+                except Exception as e:
+                    # Kaggle: any raise -> status ERROR, agent dead for the rest
+                    # of the episode (never silently: corrupts H2H/BT otherwise)
+                    if crashes.get(name, 0) == 0:
+                        print(f"[crash] {name} seat={seat} seed={seeds[i]} step={t}: {e!r}",
+                              file=sys.stderr, flush=True)
+                    crashes[name] = crashes.get(name, 0) + 1
+                    _bump_fault(faults[i], name, "crashes")
+                    errored[i][seat] = "ERROR"
+                    raw_moves = []
+                dt_ms = (time.perf_counter() - t0) * 1000.0
+                decision_ms.setdefault(name, []).append(dt_ms)
+                if dt_ms > ACT_TIMEOUT_S * 1000.0:
+                    _bump_fault(faults[i], name, "timeouts")
+                    over_s = dt_ms / 1000.0 - ACT_TIMEOUT_S
+                    # Kaggle agent.py checks the overrun against the bank BEFORE
+                    # decrementing it; the killing act is replaced by
+                    # DeadlineExceeded (this turn's moves are lost)
+                    if over_s > overage[i][seat]:
+                        errored[i][seat] = errored[i][seat] or "TIMEOUT"
+                        raw_moves = []
+                    else:
+                        overage[i][seat] -= over_s
+                if raw_moves is None:
+                    moves = []
+                elif isinstance(raw_moves, list):
+                    moves = raw_moves
+                else:
+                    _bump_fault(faults[i], name, "invalid_moves")
+                    moves = []
+                valid_moves = []
                 for m in moves:
-                    if len(m) >= 3:
-                        rows.append([float(i), float(seat), float(m[0]), float(m[1]), float(m[2])])
+                    try:
+                        # official process_moves drops len != 3 entries exactly
+                        ok = len(m) == 3 and all(math.isfinite(float(m[k])) for k in range(3))
+                    except (TypeError, ValueError):
+                        ok = False
+                    if not ok:
+                        # invalid entry was previously dropped UNCOUNTED — count it
+                        _bump_fault(faults[i], name, "invalid_moves")
+                        continue
+                    mv = [float(m[0]), float(m[1]), float(m[2])]
+                    valid_moves.append(mv)
+                if valid_moves and not moves_are_legal(states[i], seat, valid_moves):
+                    # Well-formed but semantically illegal as a TURN: wrong owner,
+                    # non-positive ships, or aggregate overbudget from one source.
+                    # The engine may ignore only the impossible launches, so keep
+                    # forwarding to mirror dynamics, but never let the game look clean.
+                    _bump_fault(faults[i], name, "invalid_moves")
+                for mv in valid_moves:
+                    rows.append([float(i), float(seat), mv[0], mv[1], mv[2]])
         flat = np.asarray(rows, dtype=np.float64) if rows else np.zeros((0, 5), dtype=np.float64)
         backend.step_flat_with_encoded_states(flat, 0)
         states = backend.states()
@@ -76,15 +145,38 @@ def play_batch(names_by_seat, seeds, steps, decision_ms):
     games = []
     for i in range(n):
         tot = _totals(states[i], np_)
-        winner = int(np.argmax(tot)) if max(tot) > 0 else -1
-        games.append({
+        # Tie detection on the ROUNDED totals we emit as final_ships: keeps the
+        # JSON self-consistent (a consumer recomputing the winner from
+        # final_ships agrees) and avoids invisible 1e-12 float gaps deciding a
+        # "winner" the record itself can't distinguish.
+        final = [round(x, 1) for x in tot]
+        # Kaggle core overrides reward to None for ERROR/TIMEOUT agents — an
+        # errored seat cannot win even holding the max ships; winner is the
+        # unique argmax among NON-errored seats only.
+        eligible = [s for s in range(np_) if errored[i][s] is None]
+        mx = max((final[s] for s in eligible), default=0.0)
+        top = [s for s in eligible if final[s] == mx]
+        tie = len(top) > 1
+        winner = top[0] if (not tie and top and mx > 0) else -1
+        game = {
             "seed": int(seeds[i]),
             "seats": list(names_by_seat),
-            "final_ships": [round(x, 1) for x in tot],
+            "final_ships": final,
             "winner_seat": winner,
             "winner": names_by_seat[winner] if winner >= 0 else None,
+            "tie": tie,
             "died_at": died_at[i],
-        })
+            # per-seat terminal status, Kaggle vocabulary; always present —
+            # a missing key marks pre-instrumentation games (audit rule)
+            "agent_status": [errored[i][s] or "DONE" for s in range(np_)],
+        }
+        # always present, even when clean ({}): a MISSING "faults" key means the
+        # game predates the fault instrumentation (UNAUDITED — crash/timeout/
+        # invalid invisible), while present-but-empty means audited clean. The
+        # old omit-when-clean contract made the two cases indistinguishable
+        # (2026-06-11: all 5k pre-fix games read as "clean" in the report).
+        game["faults"] = faults[i]
+        games.append(game)
     return games
 
 
@@ -101,16 +193,17 @@ def main():
     names = [s.strip() for s in args.agents.split(",")]
     seeds = list(range(args.seed_base, args.seed_base + args.seeds))
     decision_ms: dict[str, list[float]] = {}
+    crashes: dict[str, int] = {}
     games = []
     if len(names) == 2:
-        games += play_batch(names, seeds, args.steps, decision_ms)
-        games += play_batch(names[::-1], seeds, args.steps, decision_ms)
+        games += play_batch(names, seeds, args.steps, decision_ms, crashes)
+        games += play_batch(names[::-1], seeds, args.steps, decision_ms, crashes)
     elif len(names) == 4:
         for r in range(4):
             rot = names[r:] + names[:r]
             batch = [s for j, s in enumerate(seeds) if j % 4 == r]
             if batch:
-                games += play_batch(rot, batch, args.steps, decision_ms)
+                games += play_batch(rot, batch, args.steps, decision_ms, crashes)
     else:
         raise SystemExit("need 2 or 4 agents")
     out = {
@@ -118,10 +211,11 @@ def main():
         "mode": f"{len(names)}p",
         "games": games,
         "decision_ms_p95": {k: float(np.percentile(v, 95)) for k, v in decision_ms.items()},
+        "crashes": crashes,
     }
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(out, indent=1))
-    print(json.dumps({"out": args.out, "games": len(games)}))
+    print(json.dumps({"out": args.out, "games": len(games), "crashes": crashes}))
 
 
 if __name__ == "__main__":

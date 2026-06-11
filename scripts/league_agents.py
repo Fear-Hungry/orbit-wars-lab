@@ -9,6 +9,8 @@ the hard requirement that pgs_allscripts lands clearly below producer/oep/brep).
 """
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import importlib.util
 import sys
 import tarfile
@@ -16,19 +18,31 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# Submission-gate reference: candidates must reach P(cand >= GATE_REFERENCE).
-# Flip to the new champion only AFTER its LB score stabilizes (project rule);
-# producer stays an LB_ANCHOR regardless (longest stable rating we own).
-GATE_REFERENCE = "producer"  # TODO flip to pgs_holdwave/pgs_hold when LB stabilizes
+# LEAGUE = VETO ONLY (rule since the 2026-06-10 falsification). The league
+# discards obvious floors (allscripts-class) but must NOT promote between close
+# configs: pgs_hold and pgs_wave_s100 both passed P(>=producer)=1.00 and landed
+# 115-135 LB points BELOW producer (1057.6 / ~1036-1109). BT rank is relative
+# to THIS pool (8/10 producer-lineage; ext bots too weak to discriminate the
+# top — Balduzzi 2018 arXiv:1806.02643). Promotion between close configs needs
+# an LB probe or a pool with style exploiters (rusher / pgs_bigwave below).
+# GATE_REFERENCE is the veto floor; INCUMBENT is the live LB champion the
+# report prints head-to-head against (promotion sanity, never sufficient).
+GATE_REFERENCE = "producer"
+INCUMBENT = "pgs_holdwave"  # LB record 1228.8 (ref=53537753)
 
-# real Kaggle ratings of our submitted configs (refreshed 2026-06-10 ~17:20)
+# real Kaggle ratings of our submitted configs (refreshed 2026-06-10 ~23:50 via
+# Kaggle CLI). NEVER trust these without a refresh: s100 moved 1036->1109->1138
+# across reads the same day.
 LB_ANCHORS = {
     "producer": 1173.1,       # ref=53366194
     "oep": 1182.7,            # ref=53433131
     "brep": 1156.1,           # ref=53513962
     "pgs_allscripts": 1021.5, # ref=53519882 (accidental all-scripts default)
-    "pgs_holdwave": 1243.8,   # ref=53537753 (T+3.3h, ~30 eps — semi-stable, refresh later)
-    # pgs_hold (ref=53541125): 951 @ T+1h15 — still in placement, NOT anchored yet
+    "pgs_holdwave": 1228.8,   # ref=53537753 (T+7h, ESTABILIZADO — nível do recorde)
+    "pgs_hold": 1057.6,       # ref=53541125 (stable across refreshes T+2h..T+5h)
+    "pgs_wave_s100": 1138.6,  # ref=53542864 (CLI 2026-06-10 ~23:50; was still climbing 1036->1109->1138)
+    # ref=53542884 (holdwave RESUBMIT, identical config to 53537753): 1169.9->1189.9->1157.7
+    # while converging — treat as a Kaggle NOISE measurement (~±60), not a new anchor.
 }
 
 _EXT_N = [0]
@@ -65,19 +79,92 @@ def _pgs(**cfg):
     return PGSRuntime(PGSConfig(**cfg)).act
 
 
+def _rusher(**kw):
+    from bots.exploiters.rusher import make_agent
+
+    return make_agent(**kw)
+
+
+class _TarballIsolation:
+    """Per-tarball import context. Tarballs bundle bare-named modules
+    (_brep_weights, _producer_agent, _upstream, orbit_lite, ...); with the
+    cache dir permanently on sys.path those names hit the GLOBAL sys.modules
+    cache, so two tarballs share whichever copy imported first — including
+    LAZY imports during act() (the real main.py imports _brep_weights on first
+    use). Each tarball therefore keeps its bundled modules in a private
+    overlay, swapped into sys.modules only while its code runs. Safe because
+    league_match calls agents sequentially in one thread."""
+
+    def __init__(self, cache: Path):
+        self._cache = str(cache)
+        self._owned = set()
+        for entry in cache.iterdir():
+            if entry.name == "main.py":
+                continue
+            if entry.suffix == ".py":
+                self._owned.add(entry.stem)
+            elif (entry / "__init__.py").exists():
+                self._owned.add(entry.name)
+        self._overlay: dict[str, object] = {}
+
+    def _owns(self, key: str) -> bool:
+        return key.split(".", 1)[0] in self._owned
+
+    @contextlib.contextmanager
+    def active(self):
+        saved = {}
+        for key in [k for k in sys.modules if self._owns(k)]:
+            saved[key] = sys.modules.pop(key)
+        sys.modules.update(self._overlay)
+        inserted = self._cache not in sys.path
+        if inserted:
+            sys.path.insert(0, self._cache)
+        try:
+            yield
+        finally:
+            if inserted:
+                sys.path.remove(self._cache)
+            for key, mod in list(sys.modules.items()):
+                mod_file = getattr(mod, "__file__", None) or ""
+                if self._owns(key) or mod_file.startswith(self._cache + "/"):
+                    self._overlay[key] = sys.modules.pop(key)
+            sys.modules.update(saved)
+
+
+_TARBALL_ISO: dict[str, _TarballIsolation] = {}
+
+
 def _tarball_agent(tar_path: Path, cache_name: str):
-    """Load a self-contained submission tarball as a league agent (fresh module
-    per instance; the extracted dir goes on sys.path so its bundled packages
-    shadow nothing — each tarball gets its own cache dir)."""
-    cache = ROOT / "artifacts" / "league" / "cache" / cache_name
+    """Load a self-contained submission tarball as a league agent (fresh main
+    module per instance; bundled bare-named deps stay in the tarball's private
+    import overlay — see _TarballIsolation — so multiple tarballs never share
+    weights/models through sys.modules or sys.path ordering).
+
+    The cache dir is keyed by the tarball's CONTENT hash: re-exporting a
+    tarball under the same name gets a fresh extraction AND a fresh import
+    overlay, instead of silently running the previously cached version
+    (2026-06-11: the old exists-check skipped extraction forever). Old hash
+    dirs become orphans — never reused, safe to leave. A missing tarball now
+    fails LOUD even when a stale cache exists (no-silent-fallback rule)."""
+    digest = hashlib.sha1(tar_path.read_bytes()).hexdigest()[:12]
+    key = f"{cache_name}-{digest}"
+    cache = ROOT / "artifacts" / "league" / "cache" / key
     if not (cache / "main.py").exists():
         cache.mkdir(parents=True, exist_ok=True)
         with tarfile.open(tar_path) as tf:
-            tf.extractall(cache)
-    if str(cache) not in sys.path:
-        sys.path.insert(0, str(cache))
-    mod = _fresh_module(cache / "main.py", cache_name)
-    return mod.agent
+            # filter="data" blocks path traversal / symlink escapes from a
+            # hostile tarball (and is the post-3.14 mandatory default anyway)
+            tf.extractall(cache, filter="data")
+    iso = _TARBALL_ISO.setdefault(key, _TarballIsolation(cache))
+    with iso.active():
+        mod = _fresh_module(cache / "main.py", cache_name)
+    inner = mod.agent
+
+    def act(obs):
+        with iso.active():
+            return inner(obs)
+
+    return act
 
 
 _BREP_TAR = Path.home() / "projects/Kaggle/orbit-wars-lab-B/artifacts/submission_brep.tar.gz"
@@ -101,6 +188,17 @@ FACTORIES = {
     "pgs_wave_s50": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=50),
     "pgs_wave_4pfloor": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
                                      floor_in_4p=True),
+    # H7 E4: holdwave base + learned value net plugged into the search (scores the
+    # post-launch board instead of margin-at-H). Tests if the learned value unblocks
+    # 4p deviation + improves survival. defend_in_4p on so reinforce/evac are candidates.
+    "pgs_valuenet": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                 defend_in_4p=True,
+                                 value_net_path=str(ROOT / "artifacts/h7/value_net.pt")),
+    # style exploiters (league-only, NEVER submit): cover the field's loss axes
+    # absent from the producer-lineage pool (2026-06-10 falsification).
+    "rusher": lambda: _rusher(attack_from=50, cadence=4),       # early all-in (annihilates hold-family regime)
+    "pgs_bigwave": lambda: _pgs(scripts="hold", wave_min_ships=100.0, wave_start_step=50,
+                                wave_max_delay=25),             # elite proxy: hoard + few BIG waves (lb taxonomy)
 }
 
 # Any tarball dropped in artifacts/league/tarballs/<name>.tar.gz auto-registers

@@ -11,21 +11,29 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 
 import numpy as np
 import torch
 
-from python.agents.registry import get_isolated_opponents
-from python.orbit_wars_gym.backend import RustBatchBackend, RustConfig
-from python.orbit_wars_gym.entities import (
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from python.agents.registry import get_isolated_opponents  # noqa: E402
+from python.orbit_wars_gym.backend import RustBatchBackend, RustConfig  # noqa: E402
+from python.orbit_wars_gym.entities import (  # noqa: E402
     fleet_owner,
     fleet_ships,
     planet_owner,
     planet_ships,
 )
-from python.orbit_wars_gym.observation import to_official_observation
+from python.orbit_wars_gym.observation import to_official_observation  # noqa: E402
+from python.orbit_wars_gym.rules import moves_are_legal  # noqa: E402
+
+ACT_TIMEOUT_SECONDS = 1.0
 
 
 def _ships(state, player):
@@ -45,14 +53,28 @@ def _ships(state, player):
     return own, enemy
 
 
+def _sanitize_moves(state, player, moves, runtime_faults):
+    if not isinstance(moves, list):
+        runtime_faults["invalid_actions"] += 1
+        return []
+    if not moves_are_legal(state, player, moves):
+        runtime_faults["invalid_actions"] += 1
+        return []
+    return moves
+
+
 def _play_seat(agent_seat, seeds, episode_steps, enable_comets, opponent, pgs_config, decision_ms,
-               num_players=2, launch_sizes=None):
+               runtime_faults, num_players=2, launch_sizes=None):
     from bots.pgs.planner import PGSConfig, make_runtime
 
     n = len(seeds)
     backend = RustBatchBackend(
         num_envs=n, num_players=num_players, seed=int(seeds[0]),
-        config=RustConfig(enable_comets=enable_comets),
+        config=RustConfig(
+            enable_comets=enable_comets,
+            episode_steps=episode_steps,
+            act_timeout=ACT_TIMEOUT_SECONDS,
+        ),
     )
     backend.reset(int(seeds[0]))
     states = backend.states()
@@ -66,7 +88,13 @@ def _play_seat(agent_seat, seeds, episode_steps, enable_comets, opponent, pgs_co
             obs = to_official_observation(states[i], agent_seat)
             t0 = time.perf_counter()
             moves = agents[i].act(obs)
-            decision_ms.append((time.perf_counter() - t0) * 1000.0)
+            elapsed = time.perf_counter() - t0
+            decision_ms.append(elapsed * 1000.0)
+            if elapsed > ACT_TIMEOUT_SECONDS:
+                runtime_faults["timeouts"] += 1
+                moves = []
+            else:
+                moves = _sanitize_moves(states[i], agent_seat, moves, runtime_faults)
             for m in moves:
                 if len(m) >= 3:
                     rows.append([float(i), float(agent_seat), float(m[0]), float(m[1]), float(m[2])])
@@ -123,10 +151,11 @@ def main() -> None:
     else:
         agent_seats = [0, 1] if args.num_players == 2 else [0, 2]
     decision_ms: list[float] = []
+    runtime_faults = {"timeouts": 0, "invalid_actions": 0}
     launch_sizes: list[float] = []
     by_seat = {
         seat: _play_seat(seat, seeds, args.episode_steps, enable_comets, args.opponent,
-                         pgs_config, decision_ms, num_players=args.num_players,
+                         pgs_config, decision_ms, runtime_faults, num_players=args.num_players,
                          launch_sizes=launch_sizes)
         for seat in agent_seats
     }
@@ -142,13 +171,14 @@ def main() -> None:
         "win_rate": float(np.mean([m > 0 for m in all_margins])),
         "seeds": args.seeds,
         "episode_steps": args.episode_steps,
-        **{f"per_seed_seat{seat}": {str(s): round(m, 4) for s, m in zip(seeds, ms)}
+        **{f"per_seed_seat{seat}": {str(s): round(m, 4) for s, m in zip(seeds, ms, strict=False)}
            for seat, ms in by_seat.items()},
         "decision_ms": {
             "mean": float(arr.mean()),
             "p95": float(np.percentile(arr, 95)),
             "max": float(arr.max()),
         },
+        "runtime_faults": runtime_faults,
         # wave-discipline profile (H-P5 intermediate metric): elite ~0.4-0.5
         # launches/step with 60-80% >=50 ships; our spray baseline ~1.5 / 5%.
         "launch_profile": {

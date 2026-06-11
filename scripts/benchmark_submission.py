@@ -67,7 +67,7 @@ def _submission_runtime(agent: Callable[[dict[str, Any]], list[list[float]]]) ->
                 name: max(0.0, float(after.get(name, 0.0)) - float(before.get(name, 0.0)))
                 for name in ("fallbacks", "illegal_moves", "fallback_errors")
             }
-        return list(moves) if isinstance(moves, list) else []
+        return moves
 
     return act
 
