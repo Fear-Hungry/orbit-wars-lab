@@ -47,7 +47,7 @@ PRODUCER_LINEAGE = {"producer", "oep", "brep", "pgs_hold", "pgs_holdwave", "pgs_
 def load_state():
     if STATE.exists():
         return json.loads(STATE.read_text())
-    return {"next_seed": 1016, "round": 0}
+    return {"next_seed": 0, "round": 0}
 
 
 def top5():
@@ -99,9 +99,10 @@ def main():
     ap.add_argument("--matchups-per-round", type=int, default=4)
     ap.add_argument("--seeds-per-matchup", type=int, default=4)
     ap.add_argument("--workers", type=int, default=2)
+    ap.add_argument("--rng-seed", type=int, default=None)
     args = ap.parse_args()
 
-    rng = random.Random()
+    rng = random.Random(args.rng_seed)
     state = load_state()
     log = open(DIR / "standings.log", "a")
     for _ in range(args.rounds):
@@ -116,9 +117,15 @@ def main():
             results = [j.result() for j in jobs]
         STATE.write_text(json.dumps(state))
         fails = [n for n, rc in results if rc != 0]
+        if fails:
+            raise SystemExit(f"league_match subprocess failed for: {fails}")
         rep = subprocess.run(
             [sys.executable, "scripts/league_report.py", DEFAULT_GLOBS, "50"],
             cwd=ROOT, capture_output=True, text=True, env={**os.environ, "PYTHONPATH": "."})
+        if rep.returncode != 0:
+            print(rep.stdout, file=sys.stderr)
+            print(rep.stderr, file=sys.stderr)
+            raise SystemExit(f"league_report failed with rc={rep.returncode}")
         standings = next((ln for ln in rep.stdout.splitlines() if ln.startswith("calibration")), "")
         top_lines = "\n".join(rep.stdout.splitlines()[2:11])
         line = (f"=== round {state['round']:4d} | new={len(picks)} fails={len(fails)} "

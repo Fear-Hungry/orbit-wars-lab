@@ -17,16 +17,21 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from python.orbit_wars_gym.backend import RustBatchBackend, RustConfig
-from python.orbit_wars_gym.entities import (
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from python.orbit_wars_gym.backend import RustBatchBackend, RustConfig  # noqa: E402
+from python.orbit_wars_gym.entities import (  # noqa: E402
     fleet_owner,
     fleet_ships,
     planet_owner,
     planet_ships,
 )
-from python.orbit_wars_gym.observation import to_official_observation
-from python.orbit_wars_gym.rules import moves_are_legal
-from scripts.league_agents import make
+from python.orbit_wars_gym.observation import to_official_observation  # noqa: E402
+from python.orbit_wars_gym.rules import moves_are_legal  # noqa: E402
+from scripts.league_agents import make  # noqa: E402
 
 
 def _totals(state, num_players):

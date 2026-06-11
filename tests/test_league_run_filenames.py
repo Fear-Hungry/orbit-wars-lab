@@ -7,7 +7,9 @@ match this way). match_filename now appends a hash of the FULL names tuple.
 """
 from __future__ import annotations
 
-from scripts.league_run import match_filename
+from scripts import league_run
+
+match_filename = league_run.match_filename
 
 
 def test_truncation_collision_resolved() -> None:
@@ -34,3 +36,8 @@ def test_deterministic_and_readable() -> None:
     assert a.startswith("r0092_4p_pgs_ho_brep_ext_lb_produc_")  # prefix kept
     assert a.endswith(".json")
     assert a != match_filename(93, names)  # round still disambiguates
+
+
+def test_fresh_league_state_starts_from_zero(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(league_run, "STATE", tmp_path / "state.json")
+    assert league_run.load_state() == {"next_seed": 0, "round": 0}

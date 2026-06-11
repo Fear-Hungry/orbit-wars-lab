@@ -24,6 +24,11 @@ import json
 import sys
 from collections import defaultdict
 from itertools import combinations
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 DEFAULT_GLOBS = ("artifacts/league/v1/p*.json,artifacts/league/v1/cont/*.json,"
                  "artifacts/league/v1/waveround/*.json,artifacts/league/v1/bl3round/*.json")

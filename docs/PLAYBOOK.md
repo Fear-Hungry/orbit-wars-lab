@@ -146,6 +146,56 @@ Estados persistidos:
 - `artifacts/hall_of_fame.json`;
 - `artifacts/map_elites.json`.
 
+## Validar pela liga local
+
+Antes de usar a liga para julgar um bot novo, rode o diagnóstico executável:
+
+```bash
+rtk .venv/bin/python scripts/league_doctor.py
+```
+
+Ele valida os invariantes que tornam a liga comparável ao ambiente de competição:
+
+- `actTimeout=1s` com banco de overage `12s`;
+- crash vira `ERROR`, timeout terminal vira `TIMEOUT`, e esses assentos não podem vencer;
+- movimentos malformados ou overbudget são contabilizados em `faults`;
+- jogos limpos ainda gravam `faults: {}` para separar jogo auditado de JSON antigo;
+- empates não viram vitória falsa do assento 0;
+- tarballs são isolados por conteúdo e reexportar o mesmo nome invalida cache velho;
+- smoke real 2p/4p roda bots internos com status `DONE` e zero faults.
+
+Se o diagnóstico avisar `existing_artifacts_are_fully_audited`, isso significa que o
+corpus antigo em `artifacts/league/v1` contém jogos pré-instrumentação. Use esse
+corpus como histórico anotado, não como prova limpa para promover bot. Para exigir
+corpus 100% auditado em CI, rode:
+
+```bash
+rtk .venv/bin/python scripts/league_doctor.py --strict-existing
+```
+
+Para uma sonda isolada, sem escrever no corpus permanente:
+
+```bash
+rtk .venv/bin/python scripts/league_match.py \
+  --agents candidate,producer \
+  --seeds 16 --seed-base 50000 --steps 500 \
+  --out /tmp/candidate_vs_producer_league.json
+
+rtk .venv/bin/python scripts/league_report.py '/tmp/candidate_vs_producer_league.json' 100
+```
+
+Para validação competitiva de um candidato registrado em `scripts/league_agents.py`
+ou em `artifacts/league/tarballs/<nome>.tar.gz`, use H2H contra o pool:
+
+```bash
+rtk .venv/bin/python scripts/league_challenger.py --candidate candidate --seeds 20 --workers 4
+```
+
+Regra operacional: a liga é **veto-only**. Ela é boa para detectar crash, timeout,
+ação inválida, perda H2H clara, fragilidade 4p e estilos exploradores. Ela não
+promove sozinha entre configs próximas; promoção final exige score Kaggle/LB
+estabilizado e interpretação das âncoras atuais.
+
 ## Validação
 
 ```bash

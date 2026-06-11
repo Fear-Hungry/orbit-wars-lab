@@ -207,3 +207,26 @@ def test_main_prints_veto_header_and_crash_flag(tmp_path, monkeypatch, capsys):
     assert rep["fault_audit"] == {"audited": 1, "unaudited": 6}
     assert rep["bt_predictive"] is False
     assert isinstance(rep["lb_inversions"], list)
+
+
+def test_main_tolerates_missing_gate_reference_in_fresh_corpus(tmp_path, monkeypatch, capsys):
+    """Round inicial pode ainda não ter o Producer; report não deve quebrar."""
+    games = [
+        _g(["a", "b"], [3, 1]),
+        _g(["b", "a"], [2, 0]),
+    ]
+    for g in games:
+        g.pop("mode", None)
+    path = tmp_path / "fresh.json"
+    path.write_text(json.dumps({"mode": "2p", "games": games}))
+    (tmp_path / "artifacts/league/v1").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["league_report.py", str(path), "5"])
+
+    main()
+
+    out = capsys.readouterr().out
+    assert "referência de veto ausente" in out
+    rep = json.loads((tmp_path / "artifacts/league/v1/report.json").read_text())
+    assert set(rep["p_ge_producer"]) == {"a", "b"}
+    assert all(value is None for value in rep["p_ge_producer"].values())

@@ -34,8 +34,13 @@ import math
 import random
 import sys
 from collections import defaultdict
+from pathlib import Path
 
-from scripts.league_agents import GATE_REFERENCE, INCUMBENT, LB_ANCHORS
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.league_agents import GATE_REFERENCE, INCUMBENT, LB_ANCHORS  # noqa: E402
 
 DEFAULT_GLOBS = ("artifacts/league/v1/p*.json,artifacts/league/v1/cont/*.json,"
                  "artifacts/league/v1/waveround/*.json,artifacts/league/v1/bl3round/*.json")
@@ -224,10 +229,14 @@ def main():
         boots.append(b)
     ci = {}
     p_ge_prod = {}
+    gate_ref_available = GATE_REFERENCE in bt
     for n in names:
         vals = sorted(b[n] for b in boots)
         ci[n] = (vals[int(0.05 * n_boot)], vals[int(0.95 * n_boot)])
-        p_ge_prod[n] = sum(1 for b in boots if b[n] >= b[GATE_REFERENCE]) / n_boot
+        if gate_ref_available:
+            p_ge_prod[n] = sum(1 for b in boots if b[n] >= b[GATE_REFERENCE]) / n_boot
+        else:
+            p_ge_prod[n] = None
 
     # per-mode breakdown
     stats = {n: {"2p": [0, 0], "4p": [0, 0], "annih": [0, 0]} for n in names}
@@ -280,8 +289,9 @@ def main():
             hh = f"{w:3.0f}-{loss:3.0f}".rjust(9)
         else:
             hh = "        -"
+        p_ref = f"{p_ge_prod[n]:7.2f}" if p_ge_prod[n] is not None else "    n/a"
         print(f"{n:16s} {bt[n]:5.0f} [{lo:4.0f},{hi:4.0f}] {lb} "
-              f"{p_ge_prod[n]:7.2f} {hh} {w2:>6s} {w4:>6s} {an:>6s}")
+              f"{p_ref} {hh} {w2:>6s} {w4:>6s} {an:>6s}")
     if faults:
         print("\nFAULTS (somados nos jogos AUDITADOS):")
         for n in sorted(faults):
@@ -302,6 +312,9 @@ def main():
         for a, b, dbt, dlb in inversions:
             print(f"  inversão vs LB: BT põe {a} +{dbt:.0f} acima de {b}, mas no campo "
                   f"{b} está +{dlb:.0f} acima (> ruído ±{LB_NOISE:.0f})")
+    if not gate_ref_available:
+        print(f"⚠ referência de veto ausente no corpus atual: {GATE_REFERENCE!r}. "
+              "P>=ref fica NaN até essa âncora entrar nos jogos.")
     print(f"VETO floor (ref={GATE_REFERENCE}): reprovado se P(bot >= ref) < 0.6")
     print(f"PROMOÇÃO (regra 2026-06-10, liga NÃO promove sozinha): probe de LB só se "
           f"CI90 não sobrepõe o incumbente ({INCUMBENT}) por baixo E H2H PURO 2p "
@@ -328,7 +341,9 @@ def main():
         "per_mode": stats,
         "wins": {r: dict(wins[r]) for r in names},
     }
-    open("artifacts/league/v1/report.json", "w").write(json.dumps(out, indent=1))
+    out_path = Path("artifacts/league/v1/report.json")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(out, indent=1))
 
 
 if __name__ == "__main__":

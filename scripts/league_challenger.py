@@ -26,6 +26,8 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 TMP = ROOT / "artifacts/league/challenger"
 
 # the "previous bots" the candidate must beat (the all-vs-all pool minus junk).
