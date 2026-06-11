@@ -93,18 +93,20 @@ Testes e commits relevantes:
 ## Liga Local
 
 A regua forte foi corrigida e reiniciada do zero em
-`artifacts/league/submit_ruler/background_strict_v3`:
+`artifacts/league/submit_ruler/background_strict_v4`:
 
 - candidatos agora enfrentam tambem os outros candidatos do mesmo comando;
+- mapas 2p sao estaveis por adversario, independentemente do painel de
+  candidatos;
 - `overall_score` usa o split de campo medido: 46% 2p / 54% 4p;
 - empates 2p contam como nao-vitoria no score bruto;
 - ranking prioriza `PASS_LOCAL` > `INCONCLUSIVE` > `REJECT_LOCAL`;
 - progresso incremental fica em `task_results.json`.
 
 O smoke de 36 tarefas com `seeds=4`, `steps=20` fechou e provou que o report
-final e gerado, mas e curto demais para decisao competitiva. A regua v3 longa
+final e gerado, mas e curto demais para decisao competitiva. A regua v4 longa
 ficou em background no PID registrado em
-`artifacts/league/submit_ruler/background_strict_v3.pid`.
+`artifacts/league/submit_ruler/background_strict_v4.pid`.
 
 ## Decisao Atual
 

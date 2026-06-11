@@ -9,6 +9,7 @@ score.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -79,6 +80,11 @@ def _safe_label(parts: Iterable[str]) -> str:
     return "__".join(part.replace("/", "_") for part in parts)
 
 
+def _seed_slice_base(seed_base: int, mode: str, label: str) -> int:
+    digest = hashlib.sha1(f"{mode}:{label}".encode()).hexdigest()
+    return seed_base + 100 * (int(digest[:8], 16) % 100_000)
+
+
 def _complete_4p_lineup(candidate: str, template: tuple[str, ...], references: list[str]) -> tuple[str, ...] | None:
     names = [candidate]
     for name in template:
@@ -112,16 +118,17 @@ def build_tasks(
         for name in [incumbent, *candidates, *references]:
             if name != candidate and name in FACTORIES and name not in ref_order:
                 ref_order.append(name)
-        for ref_idx, ref in enumerate(ref_order):
+        for ref in ref_order:
             names = (candidate, ref)
             key = ("2p", names)
             if key in seen:
                 continue
             seen.add(key)
-            # Shared seeds per reference across candidates: candidate A vs
-            # producer and candidate B vs producer must see the same map slice,
-            # otherwise the ruler reintroduces scheduler luck into selection.
-            base = seed_base + 100 * ref_idx
+            # Shared, stable seeds per reference across candidates and across
+            # panel compositions: candidate A vs producer and candidate B vs
+            # producer must see the same map slice even if a later run adds a
+            # new peer candidate to the command.
+            base = _seed_slice_base(seed_base, "2p", ref)
             label = _safe_label([candidate, "2p", ref])
             tasks.append(MatchTask(
                 label=label,

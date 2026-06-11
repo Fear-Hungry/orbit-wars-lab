@@ -197,7 +197,9 @@ BT/ranking aleatório: roda cada candidato contra as mesmas âncoras 2p, lineups
 comando, e só recomenda `PASS_LOCAL` se todos os gates técnicos e competitivos
 passarem. O `overall_score` usa o split de campo medido (46% 2p / 54% 4p), conta
 empates 2p como não-vitórias no score bruto, e o ranking é ordenado primeiro por
-veredito: `PASS_LOCAL` > `INCONCLUSIVE` > `REJECT_LOCAL`.
+veredito: `PASS_LOCAL` > `INCONCLUSIVE` > `REJECT_LOCAL`. Os mapas 2p sao
+derivados do nome do adversario, entao `vs producer` usa o mesmo slice mesmo que
+voce rode um candidato sozinho ou dentro de um painel maior.
 
 ```bash
 rtk .venv/bin/python scripts/league_submit_ruler.py \

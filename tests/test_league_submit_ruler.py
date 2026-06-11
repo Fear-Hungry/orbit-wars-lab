@@ -277,7 +277,7 @@ def test_build_tasks_uses_shared_seed_slices_across_candidates(tmp_path):
 
     producer_tasks = [task for task in tasks if task.mode == "2p" and task.names[1] == "producer"]
     assert {task.candidate for task in producer_tasks} == {"pgs_hold", "pgs_wave_s100"}
-    assert {task.seed_base for task in producer_tasks} == {1234 + 200}
+    assert len({task.seed_base for task in producer_tasks}) == 1
 
     four_player_tasks = [task for task in tasks if task.mode == "4p"]
     assert {task.candidate for task in four_player_tasks} == {"pgs_hold", "pgs_wave_s100"}
@@ -308,6 +308,33 @@ def test_build_tasks_adds_peer_candidates_to_reference_panel(tmp_path):
     assert opponents_by_candidate["pgs_hold"] == {"pgs_holdwave", "pgs_wave_s100", "producer"}
     assert opponents_by_candidate["pgs_holdwave"] == {"pgs_hold", "pgs_wave_s100", "producer"}
     assert opponents_by_candidate["pgs_wave_s100"] == {"pgs_hold", "pgs_holdwave", "producer"}
+
+
+def test_build_tasks_keeps_reference_seed_slice_stable_across_candidate_panels(tmp_path):
+    solo = build_tasks(
+        ["pgs_hold"],
+        incumbent="pgs_holdwave",
+        references=["producer", "pgs_allscripts"],
+        four_player_templates=[],
+        seeds=4,
+        seed_base=1234,
+        steps=500,
+        out_dir=tmp_path / "solo",
+    )
+    panel = build_tasks(
+        ["pgs_hold", "pgs_wave_s100"],
+        incumbent="pgs_holdwave",
+        references=["producer", "pgs_allscripts"],
+        four_player_templates=[],
+        seeds=4,
+        seed_base=1234,
+        steps=500,
+        out_dir=tmp_path / "panel",
+    )
+
+    solo_producer = next(task for task in solo if task.mode == "2p" and task.names == ("pgs_hold", "producer"))
+    panel_producer = next(task for task in panel if task.mode == "2p" and task.names == ("pgs_hold", "producer"))
+    assert solo_producer.seed_base == panel_producer.seed_base
 
 
 def test_cli_requires_seed_multiple_of_four_for_balanced_4p_seats(tmp_path):
