@@ -41,7 +41,7 @@ LB_ANCHORS = {
     "pgs_holdwave": 1228.8,   # ref=53537753 (T+7h, ESTABILIZADO — nível do recorde)
     "pgs_hold": 1057.6,       # ref=53541125 (stable across refreshes T+2h..T+5h)
     "pgs_wave_s100": 1146.1,  # ref=53542864 (CLI 2026-06-11; climbed 1036->1109->1138->1146)
-    # ref=53542884 (holdwave RESUBMIT, identical config to 53537753): current 1152.1
+    # ref=53542884 (holdwave RESUBMIT, identical config to 53537753): current 1156.7
     # while converging — treat as a Kaggle NOISE measurement (~±60), not a new anchor.
 }
 
