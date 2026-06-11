@@ -66,6 +66,7 @@ class MatchTask:
     seed_base: int
     steps: int
     out: Path
+    chunk_size: int = 0
 
 
 def _split_csv(value: str) -> list[str]:
@@ -108,6 +109,7 @@ def build_tasks(
     seed_base: int,
     steps: int,
     out_dir: Path,
+    match_chunk_size: int = 0,
 ) -> list[MatchTask]:
     tasks: list[MatchTask] = []
     seen: set[tuple[str, tuple[str, ...]]] = set()
@@ -139,6 +141,7 @@ def build_tasks(
                 seed_base=base,
                 steps=steps,
                 out=out_dir / f"{label}.json",
+                chunk_size=max(0, int(match_chunk_size)),
             ))
         for tpl_idx, template in enumerate(four_player_templates):
             names = _complete_4p_lineup(candidate, template, ref_order)
@@ -162,6 +165,7 @@ def build_tasks(
                 seed_base=base,
                 steps=steps,
                 out=out_dir / f"{label}.json",
+                chunk_size=max(0, int(match_chunk_size)),
             ))
     return tasks
 
@@ -182,6 +186,8 @@ def _run_task(task: MatchTask) -> dict[str, Any]:
         "--out",
         str(task.out),
     ]
+    if task.chunk_size > 0:
+        cmd += ["--chunk-size", str(task.chunk_size)]
     start = time.perf_counter()
     proc = subprocess.run(
         cmd,
@@ -525,6 +531,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed-base", type=int, default=70_000)
     parser.add_argument("--steps", type=int, default=None)
     parser.add_argument("--jobs", type=int, default=2)
+    parser.add_argument(
+        "--match-chunk-size",
+        type=int,
+        default=0,
+        help="pass --chunk-size to league_match so long H2H tasks write partial JSONs",
+    )
     parser.add_argument("--out-dir", type=Path, default=Path("artifacts/league/submit_ruler"))
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument(
@@ -569,6 +581,7 @@ def main(argv: list[str] | None = None) -> int:
         seed_base=args.seed_base,
         steps=args.steps,
         out_dir=out_dir,
+        match_chunk_size=max(0, int(args.match_chunk_size)),
     )
     if not tasks:
         raise SystemExit("no runnable tasks")

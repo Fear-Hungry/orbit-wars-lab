@@ -310,6 +310,23 @@ def test_build_tasks_adds_peer_candidates_to_reference_panel(tmp_path):
     assert opponents_by_candidate["pgs_wave_s100"] == {"pgs_hold", "pgs_holdwave", "producer"}
 
 
+def test_build_tasks_propagates_match_chunk_size(tmp_path):
+    tasks = build_tasks(
+        ["pgs_hold"],
+        incumbent="pgs_holdwave",
+        references=["producer"],
+        four_player_templates=[("producer", "pgs_holdwave", "pgs_allscripts")],
+        seeds=8,
+        seed_base=1234,
+        steps=500,
+        out_dir=tmp_path,
+        match_chunk_size=4,
+    )
+
+    assert tasks
+    assert {task.chunk_size for task in tasks} == {4}
+
+
 def test_build_tasks_keeps_reference_seed_slice_stable_across_candidate_panels(tmp_path):
     solo = build_tasks(
         ["pgs_hold"],

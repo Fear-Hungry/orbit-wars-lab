@@ -185,41 +185,61 @@ def play_batch(names_by_seat, seeds, steps, decision_ms, crashes):
     return games
 
 
+def _seed_chunks(seeds: list[int], chunk_size: int) -> list[list[int]]:
+    size = max(1, int(chunk_size))
+    return [seeds[i: i + size] for i in range(0, len(seeds), size)]
+
+
+def _write_report(out_path: str, names: list[str], games: list[dict], decision_ms: dict[str, list[float]],
+                  crashes: dict[str, int]) -> None:
+    out = {
+        "agents": names,
+        "mode": f"{len(names)}p",
+        "games": games,
+        "decision_ms_p95": {k: float(np.percentile(v, 95)) for k, v in decision_ms.items() if v},
+        "crashes": crashes,
+    }
+    path = Path(out_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(out, indent=1))
+    tmp.replace(path)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--agents", required=True, help="comma list: 2 names (pair) or 4 (composition)")
     ap.add_argument("--seeds", type=int, default=4)
     ap.add_argument("--seed-base", type=int, default=1000)
     ap.add_argument("--steps", type=int, default=500)
+    ap.add_argument("--chunk-size", type=int, default=0,
+                    help="write partial output after this many seeds per seat-order batch (0 = all seeds)")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
     torch.set_num_threads(1)
     names = [s.strip() for s in args.agents.split(",")]
     seeds = list(range(args.seed_base, args.seed_base + args.seeds))
+    chunk_size = int(args.chunk_size) if int(args.chunk_size) > 0 else len(seeds)
     decision_ms: dict[str, list[float]] = {}
     crashes: dict[str, int] = {}
     games = []
     if len(names) == 2:
-        games += play_batch(names, seeds, args.steps, decision_ms, crashes)
-        games += play_batch(names[::-1], seeds, args.steps, decision_ms, crashes)
+        for seat_names in (names, names[::-1]):
+            for batch in _seed_chunks(seeds, chunk_size):
+                games += play_batch(seat_names, batch, args.steps, decision_ms, crashes)
+                _write_report(args.out, names, games, decision_ms, crashes)
     elif len(names) == 4:
         for r in range(4):
             rot = names[r:] + names[:r]
             batch = [s for j, s in enumerate(seeds) if j % 4 == r]
-            if batch:
-                games += play_batch(rot, batch, args.steps, decision_ms, crashes)
+            for chunk in _seed_chunks(batch, chunk_size):
+                if chunk:
+                    games += play_batch(rot, chunk, args.steps, decision_ms, crashes)
+                    _write_report(args.out, names, games, decision_ms, crashes)
     else:
         raise SystemExit("need 2 or 4 agents")
-    out = {
-        "agents": names,
-        "mode": f"{len(names)}p",
-        "games": games,
-        "decision_ms_p95": {k: float(np.percentile(v, 95)) for k, v in decision_ms.items()},
-        "crashes": crashes,
-    }
-    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.out).write_text(json.dumps(out, indent=1))
+    _write_report(args.out, names, games, decision_ms, crashes)
     print(json.dumps({"out": args.out, "games": len(games), "crashes": crashes}))
 
 
