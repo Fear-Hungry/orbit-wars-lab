@@ -213,7 +213,10 @@ rtk .venv/bin/python scripts/league_submit_ruler.py \
 Em runs longos, mantenha `--match-chunk-size` ligado. Os JSONs parciais sao
 gravados por chunk e, nos runs iniciados apos o commit `ac6ad0c`, os chunks sao
 intercalados por seat order/rotacao para que o progresso parcial ja seja
-monitoravel sem esperar o match inteiro.
+monitoravel sem esperar o match inteiro. Nos runs apos o commit de checkpoint
+balanceado, o arquivo parcial so e escrito depois de completar o par de seat
+orders 2p ou o bloco de rotacoes 4p disponivel, evitando leitura enviesada no
+meio do chunk.
 O `--skip-run` e estrito: ele so aceita JSONs que batem exatamente com a tarefa
 esperada (modo, agentes, seed slice, numero de jogos, seat orders/rotacoes,
 `faults` e `agent_status`). JSON antigo, parcial ou de outro comando deve falhar.

@@ -221,7 +221,7 @@ def test_chunked_2p_main_interleaves_seat_orders_for_honest_checkpoints(monkeypa
         (("left", "right"), (102, 103)),
         (("right", "left"), (102, 103)),
     ]
-    assert writes[1] == [("left", "right"), ("right", "left")]
+    assert writes[0] == [("left", "right"), ("right", "left")]
     assert metadata[0] == {"seed_base": 100, "seed_count": 4, "steps": 1, "chunk_size": 2}
 
 
@@ -234,8 +234,13 @@ def test_chunked_4p_main_interleaves_rotations_for_honest_checkpoints(monkeypatc
         calls.append((tuple(names_by_seat), tuple(seeds)))
         return [{"seats": list(names_by_seat), "seed": int(seeds[0])}]
 
+    writes = []
+
+    def fake_write_report(out_path, names, games, decision_ms, crashes, **kwargs):
+        writes.append([tuple(g["seats"]) for g in games])
+
     monkeypatch.setattr(lm, "play_batch", fake_play_batch)
-    monkeypatch.setattr(lm, "_write_report", lambda *args, **kwargs: None)
+    monkeypatch.setattr(lm, "_write_report", fake_write_report)
     monkeypatch.setattr(sys, "argv", [
         "league_match.py",
         "--agents",
@@ -259,4 +264,10 @@ def test_chunked_4p_main_interleaves_rotations_for_honest_checkpoints(monkeypatc
         (("b", "c", "d", "a"), (201,)),
         (("c", "d", "a", "b"), (202,)),
         (("d", "a", "b", "c"), (203,)),
+    ]
+    assert writes[0] == [
+        ("a", "b", "c", "d"),
+        ("b", "c", "d", "a"),
+        ("c", "d", "a", "b"),
+        ("d", "a", "b", "c"),
     ]

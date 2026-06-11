@@ -240,13 +240,12 @@ def main():
     crashes: dict[str, int] = {}
     games = []
     if len(names) == 2:
-        # Interleave seat orders per seed chunk so partial checkpoint JSONs are
-        # already seat-balanced enough for monitoring. The final report was
-        # balanced before this; the fix is for honest long-run progress reads.
+        # Interleave seat orders per seed chunk and write only after both orders
+        # are present, so every visible partial checkpoint is seat-balanced.
         for batch in _seed_chunks(seeds, chunk_size):
             for seat_names in (names, names[::-1]):
                 games += play_batch(seat_names, batch, args.steps, decision_ms, crashes)
-                _write_report(args.out, names, games, decision_ms, crashes, metadata=metadata)
+            _write_report(args.out, names, games, decision_ms, crashes, metadata=metadata)
     elif len(names) == 4:
         rotation_chunks: list[tuple[list[str], list[list[int]]]] = []
         for r in range(4):
@@ -261,7 +260,7 @@ def main():
                 chunk = chunks[idx]
                 if chunk:
                     games += play_batch(rot, chunk, args.steps, decision_ms, crashes)
-                    _write_report(args.out, names, games, decision_ms, crashes, metadata=metadata)
+            _write_report(args.out, names, games, decision_ms, crashes, metadata=metadata)
     else:
         raise SystemExit("need 2 or 4 agents")
     _write_report(args.out, names, games, decision_ms, crashes, metadata=metadata)
