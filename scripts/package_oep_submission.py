@@ -25,15 +25,17 @@ from pathlib import Path
 MAIN_TEMPLATE = '''import os
 os.environ.setdefault("OEP_MIN_ADVANTAGE", "{min_advantage}")
 import threading
+import time
 from bots.oep.agent import agent as _oep
 from bots.producer.agent import agent as _producer
 
-# OEP time budget before falling back to the Producer plan (~370ms locally;
-# generous slack for slower Kaggle CPUs while staying inside actTimeout=1s).
+# Total OEP wrapper budget. A dedicated Producer shadow is called every turn
+# first, so fallback is stateful/warm instead of a cold mid-game Producer plan.
 _BUDGET_S = {budget_s}
-# After this many consecutive overruns, stop launching OEP: each timed-out
-# daemon thread keeps running and competes for CPU on later steps.
-_MAX_CONSEC_TIMEOUTS = 3
+# Stop launching OEP after the first overrun. Timed-out daemon threads cannot
+# be killed and may keep mutating the module runtime, so overlapping attempts
+# are worse than a visible Producer fallback.
+_MAX_CONSEC_TIMEOUTS = 1
 
 SUBMISSION_STATS = {{
     "calls": 0,
@@ -51,10 +53,18 @@ def _submission_stats_increment(name, amount=1):
 
 def agent(obs):
     _submission_stats_increment("calls")
+    fallback_error = False
+    t0 = time.perf_counter()
+    try:
+        fallback = _producer(obs)
+    except Exception:
+        fallback = []
+        fallback_error = True
     if _consec_timeouts[0] >= _MAX_CONSEC_TIMEOUTS:
         _submission_stats_increment("fallbacks")
-        _submission_stats_increment("timeouts")
-        return _producer(obs)
+        if fallback_error:
+            _submission_stats_increment("fallback_errors")
+        return fallback
     box = {{}}
 
     def _run():
@@ -65,7 +75,7 @@ def agent(obs):
 
     th = threading.Thread(target=_run, daemon=True)
     th.start()
-    th.join(_BUDGET_S)
+    th.join(max(0.0, _BUDGET_S - (time.perf_counter() - t0)))
     if box.get("r") is not None:
         _consec_timeouts[0] = 0
         return box["r"]
@@ -76,7 +86,9 @@ def agent(obs):
     else:
         _consec_timeouts[0] = 0
         _submission_stats_increment("fallback_errors")
-    return _producer(obs)
+    if fallback_error:
+        _submission_stats_increment("fallback_errors")
+    return fallback
 '''
 
 BOT_FILES = [
@@ -110,7 +122,7 @@ def _add_tree(tar: tarfile.TarFile, source: Path, prefix: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Package the OEP agent for Kaggle.")
     parser.add_argument("--min-advantage", type=float, default=15.0)
-    parser.add_argument("--budget-s", type=float, default=0.6, help="OEP time budget before Producer fallback")
+    parser.add_argument("--budget-s", type=float, default=0.9, help="OEP total wrapper budget before Producer fallback")
     parser.add_argument("--orbit-lite-dir", type=Path, default=Path("orbit_lite"))
     parser.add_argument("--out", type=Path, default=Path("artifacts/submission_oep.tar.gz"))
     args = parser.parse_args()

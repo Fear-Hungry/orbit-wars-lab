@@ -17,6 +17,10 @@ def score_exported_submission(summary: dict[str, Any]) -> float:
         - 2.0 * float(summary.get("crash_rate", 0.0))
         - 2.0 * float(summary.get("timeout_rate", 0.0))
         - 1.0 * float(summary.get("invalid_action_rate", 0.0))
+        - 2.0 * float(summary.get("fallback_rate", 0.0))
+        - 1.0 * float(summary.get("policy_illegal_move_rate", 0.0))
+        - 2.0 * float(summary.get("fallback_error_rate", 0.0))
+        - 2.0 * float(summary.get("instrumentation_missing_rate", 0.0))
     )
 
 

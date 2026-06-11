@@ -43,6 +43,10 @@ def _summary(report: dict[str, Any]) -> dict[str, float]:
             "crash_rate": 0.0,
             "timeout_rate": 0.0,
             "invalid_action_rate": 0.0,
+            "fallback_rate": 0.0,
+            "policy_illegal_move_rate": 0.0,
+            "fallback_error_rate": 0.0,
+            "instrumentation_missing_rate": 0.0,
             "mean_decision_ms": 0.0,
         }
     decisions = sum(float(record["decision_turns"]) for record in records)
@@ -54,6 +58,19 @@ def _summary(report: dict[str, Any]) -> dict[str, float]:
         "crash_rate": float(sum(float(record["crashes"]) for record in records) / max(decisions, 1.0)),
         "timeout_rate": float(sum(float(record["timeouts"]) for record in records) / max(decisions, 1.0)),
         "invalid_action_rate": float(sum(float(record["invalid_actions"]) for record in records) / max(decisions, 1.0)),
+        "fallback_rate": float(sum(float(record.get("fallbacks", 0.0)) for record in records) / max(decisions, 1.0)),
+        "policy_illegal_move_rate": float(
+            sum(float(record.get("policy_illegal_moves", 0.0)) for record in records)
+            / max(decisions, 1.0)
+        ),
+        "fallback_error_rate": float(
+            sum(float(record.get("fallback_errors", 0.0)) for record in records)
+            / max(decisions, 1.0)
+        ),
+        "instrumentation_missing_rate": float(
+            sum(float(record.get("instrumentation_missing", 0.0)) for record in records)
+            / max(decisions, 1.0)
+        ),
         "mean_decision_ms": float(1000.0 * elapsed / max(decisions, 1.0)),
     }
 

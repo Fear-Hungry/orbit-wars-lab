@@ -34,6 +34,14 @@ agent_name, agent = last_callable
 assert agent_name == "agent", f"LAST callable is {agent_name!r}, not agent (Kaggle picks the last!)"
 
 from bots.producer.agent import make_agent as make_producer
+if cfg.get("check_pgs_planner", True):
+    import bots.pgs.planner as pgs_planner
+    assert not hasattr(
+        pgs_planner, "agent"
+    ), "bundled bots/pgs/planner.py exposes rejected all-scripts agent(); regenerate the tarball"
+    assert not hasattr(
+        pgs_planner, "_RUNTIME"
+    ), "bundled bots/pgs/planner.py exposes module runtime; regenerate the tarball"
 
 from kaggle_environments import make
 stats = ns.get("SUBMISSION_STATS")
@@ -90,13 +98,22 @@ def main() -> None:
         help='seat list such as "0,1", or "all" for every seat in every player count',
     )
     ap.add_argument("--label", default="PGS")
+    ap.add_argument(
+        "--skip-pgs-planner-check",
+        action="store_true",
+        help="validate a non-PGS tarball with the same official runner",
+    )
     args = ap.parse_args()
     seat_cfg: str | list[int]
     if args.seats.strip().lower() == "all":
         seat_cfg = "all"
     else:
         seat_cfg = [int(part.strip()) for part in args.seats.split(",") if part.strip()]
-    runner_cfg = {"players": [int(p) for p in args.players], "seats": seat_cfg}
+    runner_cfg = {
+        "players": [int(p) for p in args.players],
+        "seats": seat_cfg,
+        "check_pgs_planner": not args.skip_pgs_planner_check,
+    }
 
     with tempfile.TemporaryDirectory() as tmp:
         with tarfile.open(args.tarball) as tar:

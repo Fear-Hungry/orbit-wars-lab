@@ -8,8 +8,8 @@ ONLY via ``agent.__globals__["SUBMISSION_STATS"]``, so a tarball whose OEP died
 on every step still benchmarked as "0 fallbacks" — the episode COMPLETEs on
 Kaggle while secretly running the Producer. The template now mirrors the PGS
 instrumentation (calls/fallbacks/timeouts/fallback_errors) and stops launching
-OEP after _MAX_CONSEC_TIMEOUTS consecutive overruns (timed-out daemon threads
-keep running and steal CPU from later steps).
+OEP after an overrun (timed-out daemon threads keep running and can mutate
+runtime state).
 """
 from __future__ import annotations
 
@@ -114,5 +114,5 @@ def test_timeout_counts_and_killswitch_stops_launching_oep(monkeypatch):
     max_consec = ns["_MAX_CONSEC_TIMEOUTS"]
     assert len(launches) == max_consec, "kill-switch must stop launching OEP"
     assert ns["SUBMISSION_STATS"] == {
-        "calls": 5, "fallbacks": 5, "timeouts": 5, "fallback_errors": 0,
+        "calls": 5, "fallbacks": 5, "timeouts": 1, "fallback_errors": 0,
     }

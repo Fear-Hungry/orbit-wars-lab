@@ -10,6 +10,10 @@ def test_score_exported_submission_penalizes_runtime_failures():
         "crash_rate": 0.0,
         "timeout_rate": 0.0,
         "invalid_action_rate": 0.0,
+        "fallback_rate": 0.0,
+        "policy_illegal_move_rate": 0.0,
+        "fallback_error_rate": 0.0,
+        "instrumentation_missing_rate": 0.0,
     }
     broken = {
         **clean,
@@ -17,6 +21,10 @@ def test_score_exported_submission_penalizes_runtime_failures():
         "crash_rate": 0.25,
         "timeout_rate": 0.25,
         "invalid_action_rate": 0.25,
+        "fallback_rate": 0.25,
+        "policy_illegal_move_rate": 0.25,
+        "fallback_error_rate": 0.25,
+        "instrumentation_missing_rate": 0.25,
     }
 
     assert score_exported_submission(clean) > score_exported_submission(broken)

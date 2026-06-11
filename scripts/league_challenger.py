@@ -100,6 +100,7 @@ def main():
         while queue and len(running) < args.workers:
             opp = queue.pop(0)
             out = TMP / f"{cand}__{opp}.json"
+            out.unlink(missing_ok=True)
             p = _spawn(cand, opp, out, args.seeds, sb)
             sb += args.seeds
             running[p] = (opp, out)
@@ -109,6 +110,14 @@ def main():
             continue
         for p in done:
             opp, out = running.pop(p)
+            if p.returncode != 0:
+                print(f"  {opp:16s} FALHOU (league_match rc={p.returncode})", flush=True)
+                results[opp] = None
+                continue
+            if not out.exists():
+                print(f"  {opp:16s} FALHOU (sem JSON de saída)", flush=True)
+                results[opp] = None
+                continue
             try:
                 w, dec = h2h_from_file(out, cand)
             except Exception as e:

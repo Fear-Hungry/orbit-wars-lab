@@ -65,7 +65,7 @@ rtk .venv/bin/python -m scripts.oep_promotion_gate \
 ```
 
 Interprete `underpowered` como "amostra insuficiente", não como regressão real. Só promova uma mudança quando a margem normalizada média contra o Producer for `>= 0.0` e nenhum veredito marcar regressão significativa. `margin_significant_improvement`, `paired_significant_improvement` ou `significant_improvement` são bônus; `inconclusive` com margem negativa é descarte, não commit.
-Para o OEP, `scripts.oep_promotion_gate` torna essa regra executável: exige `192` jogos (`96` seeds × `2` lados), margem média `>= 0.0` contra Producer, crash/timeout/invalid `0.0`, e delta pareado de margem não-negativo contra o baseline G2.
+Para o OEP, `scripts.oep_promotion_gate` torna essa regra executável: exige `192` jogos (`96` seeds × `2` lados), margem média `>= 0.0` contra Producer, crash/timeout/invalid/fallback/policy-illegal/fallback-error/instrumentation-missing `0.0`, e delta pareado de margem não-negativo contra o baseline G2.
 
 Rode `submission_v_old.py`, `greedy`, `rush` e `4p` em baixa amostra como sanity técnico, não como decisor de melhoria 2p:
 

@@ -238,6 +238,7 @@ def _gate_no_silent_fallbacks(report: dict[str, Any]) -> dict[str, Any]:
                     "fallback_rate",
                     "policy_illegal_move_rate",
                     "fallback_error_rate",
+                    "instrumentation_missing_rate",
                 ):
                     value = float(summary.get(metric, 0.0))
                     checks.append(
@@ -255,6 +256,7 @@ def _gate_no_silent_fallbacks(report: dict[str, Any]) -> dict[str, Any]:
                 "fallback_rate",
                 "policy_illegal_move_rate",
                 "fallback_error_rate",
+                "instrumentation_missing_rate",
             ):
                 value = float(summary.get(metric, 0.0))
                 checks.append(

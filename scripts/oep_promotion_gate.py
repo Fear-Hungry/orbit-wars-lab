@@ -74,6 +74,10 @@ def evaluate_promotion(
     crash_rate = float(summary.get("crash_rate", 0.0))
     timeout_rate = float(summary.get("timeout_rate", 0.0))
     invalid_action_rate = float(summary.get("invalid_action_rate", 0.0))
+    fallback_rate = float(summary.get("fallback_rate", 0.0))
+    policy_illegal_move_rate = float(summary.get("policy_illegal_move_rate", 0.0))
+    fallback_error_rate = float(summary.get("fallback_error_rate", 0.0))
+    instrumentation_missing_rate = float(summary.get("instrumentation_missing_rate", 0.0))
 
     checks.extend(
         [
@@ -90,6 +94,22 @@ def evaluate_promotion(
                 "candidate_invalid_action_rate",
                 invalid_action_rate == 0.0,
                 invalid_action_rate=invalid_action_rate,
+            ),
+            _check("candidate_fallback_rate", fallback_rate == 0.0, fallback_rate=fallback_rate),
+            _check(
+                "candidate_policy_illegal_move_rate",
+                policy_illegal_move_rate == 0.0,
+                policy_illegal_move_rate=policy_illegal_move_rate,
+            ),
+            _check(
+                "candidate_fallback_error_rate",
+                fallback_error_rate == 0.0,
+                fallback_error_rate=fallback_error_rate,
+            ),
+            _check(
+                "candidate_instrumentation_missing_rate",
+                instrumentation_missing_rate == 0.0,
+                instrumentation_missing_rate=instrumentation_missing_rate,
             ),
         ]
     )

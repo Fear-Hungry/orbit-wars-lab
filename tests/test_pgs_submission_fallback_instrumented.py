@@ -7,8 +7,8 @@ ONLY via ``agent.__globals__["SUBMISSION_STATS"]``, so a tarball whose PGS died
 on every step still benchmarked as "0 fallbacks" — exactly the silent
 degradation docs/SUBMISSION.md forbids. The template now mirrors the BReP
 instrumentation (calls/fallbacks/timeouts/fallback_errors) and stops launching
-PGS after _MAX_CONSEC_TIMEOUTS consecutive overruns (timed-out daemon threads
-keep running and steal CPU from later steps).
+PGS after an overrun (timed-out daemon threads keep running and can mutate
+runtime state).
 """
 from __future__ import annotations
 
@@ -104,7 +104,7 @@ def test_timeout_counts_and_killswitch_stops_launching_pgs(monkeypatch):
     max_consec = ns["_MAX_CONSEC_TIMEOUTS"]
     assert len(launches) == max_consec, "kill-switch must stop launching PGS"
     assert ns["SUBMISSION_STATS"] == {
-        "calls": 5, "fallbacks": 5, "timeouts": 5, "fallback_errors": 0,
+        "calls": 5, "fallbacks": 5, "timeouts": 1, "fallback_errors": 0,
     }
 
 
