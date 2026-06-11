@@ -17,6 +17,8 @@ Para entender o projeto do zero (ex.: leitor de portfólio):
 7. [`TRAINING.md`](TRAINING.md) — plano de treino por fases e a decisão atual sobre PPO.
 8. [`SUBMISSION.md`](SUBMISSION.md) — regra e checklist do agente que vai para o Kaggle.
 9. [`PLAYBOOK.md`](PLAYBOOK.md) — comandos operacionais para reproduzir tudo.
+10. [`SUBMISSION_AUDIT_2026-06-11.md`](SUBMISSION_AUDIT_2026-06-11.md) —
+    auditoria dos bugs silenciosos e pacotes top-score antes de nova submissão.
 
 ## Quem é dono de quê (uma fonte de verdade por tópico)
 
@@ -28,6 +30,7 @@ Para entender o projeto do zero (ex.: leitor de portfólio):
 | Estado atual do PPO (deferido) | `TRAINING.md` | `DECISIONS.md` (D4) |
 | "Producer é piso, não teto" | `COMPETITIVE_INTEL.md` | `BLUEPRINT.md`, `PLAYBOOK.md` |
 | Comandos de benchmark e gates | `PLAYBOOK.md` | `../README.md` |
+| Auditoria de submissoes top-score | `SUBMISSION_AUDIT_2026-06-11.md` | `SUBMISSION.md`, `PLAYBOOK.md` |
 
 ## Logs (não são fonte de verdade curada)
 
