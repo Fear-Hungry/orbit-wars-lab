@@ -206,8 +206,14 @@ rtk .venv/bin/python scripts/league_submit_ruler.py \
   --candidates pgs_hold pgs_holdwave pgs_wave_s100 \
   --incumbent pgs_holdwave \
   --seeds 24 --steps 500 --jobs 2 \
+  --match-chunk-size 8 \
   --out artifacts/league/submit_ruler/report.json
 ```
+
+Em runs longos, mantenha `--match-chunk-size` ligado. Os JSONs parciais sao
+gravados por chunk e, nos runs iniciados apos o commit `ac6ad0c`, os chunks sao
+intercalados por seat order/rotacao para que o progresso parcial ja seja
+monitoravel sem esperar o match inteiro.
 
 Interpretação:
 

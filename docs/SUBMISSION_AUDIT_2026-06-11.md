@@ -35,7 +35,7 @@ Estado atual:
 | --- | ---: | --- | --- |
 | `53537753` PGS hold+wave w60s150 | 1228.8 | Melhor recorde. Config operacional correto: `scripts="hold", wave_min_ships=60, wave_start_step=150`. | Pacote atual `artifacts/submission_pgs.tar.gz` validado em 2p/4p all seats: `DONE`, `fallbacks=0`, `timeouts=0`, `timeout_thread_blocks=0`, `fallback_errors=0`. |
 | `53542884` PGS hold+wave resubmit | 1152.1 | Mesmo config declarado do recorde, score bem menor. Evidencia insuficiente para atribuir apenas a bug; ha ruido/variancia de LB e wrappers antigos podiam cair para Producer pelo resto do jogo apos um timeout. | Wrapper atual usa Producer shadow warm, budget 0.9 e bloqueia apenas enquanto o thread atrasado ainda esta vivo; depois retoma PGS. Re-submissao so deve ser interpretada apos estabilizacao do LB. |
-| `53542864` PGS wave_s100 | 1144.3 | Local antigo inflou a variante; liga/validacao anteriores tinham riscos de cache/fault/status, fallback invisivel e painel assimetrico. | Tarball atual validado sem fallback/timeout. Regua forte v3 reiniciada com painel simetrico. |
+| `53542864` PGS wave_s100 | 1146.1 | Local antigo inflou a variante; liga/validacao anteriores tinham riscos de cache/fault/status, fallback invisivel e painel assimetrico. | Tarball atual validado sem fallback/timeout. Ainda abaixo de Producer/OEP e do recorde `pgs_holdwave`; nao promover sem regua longa final. |
 | `53541125` PGS hold | 1057.6 | Localmente forte contra varias referencias, mas LB baixo. Pode refletir gap campo-local; wrappers antigos tambem eram menos auditaveis. | Tarball hold atual validado sem fallback/timeout. Ainda nao ha prova de que re-submeter superaria `pgs_holdwave`. |
 | `53519882` PGS antigo | 1021.5 | Incidente confirmado: submissao "hold-only" acabou rodando defaults all-scripts por entrypoint/config errado. | `bots/pgs/planner.py` nao expoe mais `agent`/`_RUNTIME`; entrypoint operacional unico fica em `bots/pgs/agent.py`. |
 | `53433131` OEP robust wrapper | 1182.7 | Wrapper robusto evitou ERROR anterior, mas template OEP ainda podia ocultar fallback antes do hardening e tambem podia cair para Producer pelo resto do jogo apos timeout unico sob carga. | `artifacts/submission_oep.tar.gz` atual validado: `DONE`, `fallbacks=0`, `timeouts=0`, `timeout_thread_blocks=0`, `fallback_errors=0`. |
@@ -92,8 +92,8 @@ Testes e commits relevantes:
 
 ## Liga Local
 
-A regua forte foi corrigida e reiniciada do zero em
-`artifacts/league/submit_ruler/background_strict_v4`:
+A regua forte foi corrigida e esta rodando em
+`artifacts/league/submit_ruler/background_strict_v5`:
 
 - candidatos agora enfrentam tambem os outros candidatos do mesmo comando;
 - mapas 2p sao estaveis por adversario, independentemente do painel de
@@ -101,12 +101,19 @@ A regua forte foi corrigida e reiniciada do zero em
 - `overall_score` usa o split de campo medido: 46% 2p / 54% 4p;
 - empates 2p contam como nao-vitoria no score bruto;
 - ranking prioriza `PASS_LOCAL` > `INCONCLUSIVE` > `REJECT_LOCAL`;
-- progresso incremental fica em `task_results.json`.
+- progresso incremental fica em `task_results.json` e os matches longos gravam
+  JSON parcial por `--match-chunk-size`;
+- a partir do commit `ac6ad0c`, os checkpoints de novos runs intercalam seat
+  orders/rotacoes, entao o parcial fica monitoravel mais cedo.
 
 O smoke de 36 tarefas com `seeds=4`, `steps=20` fechou e provou que o report
-final e gerado, mas e curto demais para decisao competitiva. A regua v4 longa
-ficou em background no PID registrado em
-`artifacts/league/submit_ruler/background_strict_v4.pid`.
+final e gerado, mas e curto demais para decisao competitiva. A regua v5 longa
+esta em background no PID registrado em
+`artifacts/league/submit_ruler/background_strict_v5.pid`.
+
+Observacao: a v5 foi iniciada antes do commit `ac6ad0c`, entao seus parciais
+2p so ficam honestamente comparaveis depois que a ordem reversa de assentos for
+gravada. O resultado final continua balanceado.
 
 ## Decisao Atual
 

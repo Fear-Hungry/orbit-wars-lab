@@ -30,7 +30,7 @@ ROOT = Path(__file__).resolve().parent.parent
 GATE_REFERENCE = "producer"
 INCUMBENT = "pgs_holdwave"  # LB record 1228.8 (ref=53537753)
 
-# real Kaggle ratings of our submitted configs (refreshed 2026-06-10 ~23:50 via
+# real Kaggle ratings of our submitted configs (refreshed 2026-06-11 via
 # Kaggle CLI). NEVER trust these without a refresh: s100 moved 1036->1109->1138
 # across reads the same day.
 LB_ANCHORS = {
@@ -40,8 +40,8 @@ LB_ANCHORS = {
     "pgs_allscripts": 1021.5, # ref=53519882 (accidental all-scripts default)
     "pgs_holdwave": 1228.8,   # ref=53537753 (T+7h, ESTABILIZADO — nível do recorde)
     "pgs_hold": 1057.6,       # ref=53541125 (stable across refreshes T+2h..T+5h)
-    "pgs_wave_s100": 1138.6,  # ref=53542864 (CLI 2026-06-10 ~23:50; was still climbing 1036->1109->1138)
-    # ref=53542884 (holdwave RESUBMIT, identical config to 53537753): 1169.9->1189.9->1157.7
+    "pgs_wave_s100": 1146.1,  # ref=53542864 (CLI 2026-06-11; climbed 1036->1109->1138->1146)
+    # ref=53542884 (holdwave RESUBMIT, identical config to 53537753): current 1152.1
     # while converging — treat as a Kaggle NOISE measurement (~±60), not a new anchor.
 }
 
