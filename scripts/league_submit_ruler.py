@@ -193,7 +193,20 @@ def _run_task(task: MatchTask) -> dict[str, Any]:
     }
 
 
-def run_tasks(tasks: list[MatchTask], jobs: int, *, progress: bool = False) -> list[dict[str, Any]]:
+def _write_task_results(path: Path, results: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(results, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
+
+
+def run_tasks(
+    tasks: list[MatchTask],
+    jobs: int,
+    *,
+    progress: bool = False,
+    task_results_out: Path | None = None,
+) -> list[dict[str, Any]]:
     def _note(done: int, total: int, result: dict[str, Any]) -> None:
         if progress:
             print(
@@ -210,6 +223,8 @@ def run_tasks(tasks: list[MatchTask], jobs: int, *, progress: bool = False) -> l
             result = _run_task(task)
             out.append(result)
             _note(len(out), total, result)
+            if task_results_out is not None:
+                _write_task_results(task_results_out, out)
         return out
     out = []
     total = len(tasks)
@@ -219,6 +234,8 @@ def run_tasks(tasks: list[MatchTask], jobs: int, *, progress: bool = False) -> l
             result = future.result()
             out.append(result)
             _note(len(out), total, result)
+            if task_results_out is not None:
+                _write_task_results(task_results_out, out)
     return out
 
 
@@ -494,6 +511,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--jobs", type=int, default=2)
     parser.add_argument("--out-dir", type=Path, default=Path("artifacts/league/submit_ruler"))
     parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument(
+        "--task-results-out",
+        type=Path,
+        default=None,
+        help="write completed match metadata incrementally while the ruler is still running",
+    )
     parser.add_argument("--skip-run", action="store_true")
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--min-decisive-2p", type=int, default=None)
@@ -549,7 +572,15 @@ def main(argv: list[str] | None = None) -> int:
             for task in tasks
         ]
     else:
-        task_results = run_tasks(tasks, args.jobs, progress=not args.quiet)
+        task_results_out = args.task_results_out
+        if task_results_out is None:
+            task_results_out = out_dir / "task_results.json"
+        task_results = run_tasks(
+            tasks,
+            args.jobs,
+            progress=not args.quiet,
+            task_results_out=task_results_out,
+        )
     report = build_report(
         candidates,
         task_results,

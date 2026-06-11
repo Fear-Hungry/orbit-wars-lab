@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import pytest
+import scripts.league_submit_ruler as ruler
 from scripts.league_submit_ruler import build_report, build_tasks, main, summarize_candidate
 
 
@@ -218,3 +219,49 @@ def test_cli_requires_seed_multiple_of_four_for_balanced_4p_seats(tmp_path):
             "--out-dir",
             str(tmp_path),
         ])
+
+
+def test_run_tasks_writes_incremental_results(monkeypatch, tmp_path):
+    tasks = [
+        ruler.MatchTask(
+            label="a",
+            mode="2p",
+            candidate="cand",
+            names=("cand", "producer"),
+            seeds=4,
+            seed_base=1,
+            steps=10,
+            out=tmp_path / "a.json",
+        ),
+        ruler.MatchTask(
+            label="b",
+            mode="2p",
+            candidate="cand",
+            names=("cand", "oep"),
+            seeds=4,
+            seed_base=2,
+            steps=10,
+            out=tmp_path / "b.json",
+        ),
+    ]
+
+    def fake_run_task(task):
+        return {
+            "label": task.label,
+            "mode": task.mode,
+            "candidate": task.candidate,
+            "names": list(task.names),
+            "out": str(task.out),
+            "returncode": 0,
+            "seconds": 1.0,
+            "stdout": "",
+            "stderr": "",
+        }
+
+    monkeypatch.setattr(ruler, "_run_task", fake_run_task)
+    progress_path = tmp_path / "task_results.json"
+
+    results = ruler.run_tasks(tasks, jobs=1, task_results_out=progress_path)
+
+    assert progress_path.exists()
+    assert json.loads(progress_path.read_text()) == results
