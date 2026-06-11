@@ -167,6 +167,22 @@ com `fallbacks=0`, `timeouts=0`, `timeout_thread_blocks=0`,
 seats; `submission_producer_refactor_smoke.tar.gz` e artefato antigo de smoke e
 nao deve ser submetido.
 
+Auditoria posterior dos demais anchors de maior score:
+
+- `submission_oep.tar.gz` foi reempacotado com pinning de threads OMP/MKL/Torch
+  antes de importar o agente; sha256
+  `38bcf175bbf4d604154e9dc3e61f2b1fb7961ccb9a352dd8c52587d886c6c861`.
+  Passou validacao 2p/4p all seats com `fallbacks=0`, `timeouts=0`,
+  `timeout_thread_blocks=0`, `fallback_errors=0`.
+- `/home/marcux777/projects/Kaggle/orbit-wars-lab-B/artifacts/submission_brep.tar.gz`
+  sha256 `ea04edf5a114f13ea0cca8dd1b28d613db6a64b1b094e3d171e3f3b7b4178de4`
+  passou validacao 2p/4p all seats com `fallbacks=0`, `illegal_moves=0`,
+  `fallback_errors=0`.
+
+O validador `scripts/validate_pgs_tarball.py` agora imprime `tarball_sha256` e
+`tarball_size` no JSON de saida; evidencias futuras devem citar esses campos,
+nao apenas o caminho mutavel do arquivo.
+
 ## Decisao Atual
 
 Nao ha uma nova variante comprovadamente melhor que o recorde `pgs_holdwave`

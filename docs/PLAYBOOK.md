@@ -226,6 +226,9 @@ esperada (modo, agentes, seed slice, numero de jogos, seat orders/rotacoes,
 Fallback/timeout interno reportado por `SUBMISSION_STATS` de tarball tambem e
 falha audivel na liga; nao use ranking local que esteja medindo o Producer
 fallback como se fosse o bot.
+O gate de tarball imprime `tarball_sha256` e `tarball_size`; cite esses campos
+em registros de experimento/submissao para nao misturar validacao antiga com um
+arquivo reempacotado no mesmo caminho.
 
 Interpretação:
 
