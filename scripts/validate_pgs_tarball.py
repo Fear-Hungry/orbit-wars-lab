@@ -11,6 +11,7 @@ degradation to the Producer); reports decision-time stats and the final rewards.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -222,6 +223,8 @@ def main() -> None:
         "check_pgs_planner": not args.skip_pgs_planner_check,
         "require_submission_stats": not args.allow_missing_submission_stats,
     }
+    tarball_bytes = args.tarball.read_bytes()
+    tarball_sha256 = hashlib.sha256(tarball_bytes).hexdigest()
 
     with tempfile.TemporaryDirectory() as tmp:
         with tarfile.open(args.tarball) as tar:
@@ -238,6 +241,9 @@ def main() -> None:
             print(proc.stderr[-4000:])
             raise SystemExit(f"validation subprocess failed (rc={proc.returncode})")
         result = json.loads(proc.stdout.strip().splitlines()[-1])
+        result["tarball"] = str(args.tarball)
+        result["tarball_sha256"] = tarball_sha256
+        result["tarball_size"] = len(tarball_bytes)
         print(json.dumps(result, indent=2))
         bad = [
             ep for ep in result["episodes"]

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import subprocess
 import sys
 import tarfile
@@ -47,6 +49,9 @@ def test_validate_flat_producer_tarball_without_stats(tmp_path: Path) -> None:
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "VALIDATION OK" in proc.stdout
+    payload = json.loads(proc.stdout.split("VALIDATION OK")[0])
+    assert payload["tarball_sha256"] == hashlib.sha256(tarball.read_bytes()).hexdigest()
+    assert payload["tarball_size"] == tarball.stat().st_size
 
 
 def test_validate_flat_tarball_with_bundled_producer_agent(tmp_path: Path) -> None:
