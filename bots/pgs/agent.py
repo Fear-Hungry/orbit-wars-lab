@@ -22,6 +22,13 @@ def agent(obs: dict[str, Any]):
     return _RUNTIME.act(obs)
 
 
+def notify_fallback_applied() -> None:
+    global _RUNTIME
+    if _RUNTIME is not None:
+        _RUNTIME.notify_fallback_applied()
+    _RUNTIME = None
+
+
 def make_agent():
     """Isolated PGS agent (own runtime, operational config) for batched rollouts."""
     runtime = PGSRuntime(SUBMISSION_CONFIG)

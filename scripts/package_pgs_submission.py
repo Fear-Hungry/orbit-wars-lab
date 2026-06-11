@@ -19,9 +19,21 @@ import io
 import tarfile
 from pathlib import Path
 
-MAIN_TEMPLATE = '''import threading
+MAIN_TEMPLATE = '''import os
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+
+try:
+    import torch
+    torch.set_num_threads(1)
+    if hasattr(torch, "set_num_interop_threads"):
+        torch.set_num_interop_threads(1)
+except Exception:
+    pass
+
+import threading
 import time
-from bots.pgs.agent import agent as _pgs
+import bots.pgs.agent as _pgs_agent
 from bots.producer.agent import agent as _producer
 
 # Total PGS wrapper budget. A dedicated Producer shadow is called every turn
@@ -55,6 +67,13 @@ def _timeout_thread_still_alive():
     return False
 
 
+def _notify_fallback_applied():
+    try:
+        _pgs_agent.notify_fallback_applied()
+    except Exception:
+        pass
+
+
 def agent(obs):
     _submission_stats_increment("calls")
     fallback_error = False
@@ -69,12 +88,13 @@ def agent(obs):
         _submission_stats_increment("timeout_thread_blocks")
         if fallback_error:
             _submission_stats_increment("fallback_errors")
+        _notify_fallback_applied()
         return fallback
     box = {{}}
 
     def _run():
         try:
-            box["r"] = _pgs(obs)
+            box["r"] = _pgs_agent.agent(obs)
         except Exception:
             box["err"] = True
 
@@ -91,6 +111,7 @@ def agent(obs):
         _submission_stats_increment("fallback_errors")
     if fallback_error:
         _submission_stats_increment("fallback_errors")
+    _notify_fallback_applied()
     return fallback
 '''
 

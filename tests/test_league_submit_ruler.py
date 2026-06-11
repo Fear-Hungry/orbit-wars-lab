@@ -155,6 +155,30 @@ def test_submit_ruler_marks_low_coverage_inconclusive(tmp_path):
     assert any(c["severity"] == "inconclusive" and not c["passed"] for c in summary["checks"])
 
 
+def test_submit_ruler_rejects_missing_required_opponents(tmp_path):
+    result = _write(tmp_path, "producer_only", "2p", [
+        _game(["cand", "producer"], "cand"),
+        _game(["producer", "cand"], "cand"),
+    ])
+
+    summary = summarize_candidate(
+        "cand",
+        [result],
+        incumbent="inc",
+        min_decisive_2p=1,
+        min_producer_winrate=0.5,
+        min_incumbent_winrate=0.5,
+        min_floor_winrate=0.6,
+        max_annihilation_rate_4p=0.35,
+        weight_2p=0.5,
+    )
+
+    assert summary["verdict"] == "REJECT_LOCAL"
+    failed = {c["name"]: c for c in summary["checks"] if not c["passed"]}
+    assert failed["beats_or_ties_incumbent_h2h"]["details"] == {"missing_required_opponent": "inc"}
+    assert failed["clears_rejected_floor"]["details"] == {"missing_required_opponent": "pgs_allscripts"}
+
+
 def test_submit_ruler_2p_score_counts_ties_as_non_wins(tmp_path):
     result = _write(tmp_path, "producer_ties", "2p", [
         _game(["cand", "producer"], "cand"),
@@ -443,6 +467,68 @@ def test_load_games_accepts_complete_strict_2p_payload(tmp_path):
     assert len(ruler._load_games(path, result)) == 4
 
 
+def test_load_games_accepts_complete_strict_4p_all_rotations_payload(tmp_path):
+    games = []
+    names = ["cand", "producer", "inc", "pgs_allscripts"]
+    for seed in (100, 101):
+        for r in range(4):
+            seats = names[r:] + names[:r]
+            games.append(_game(seats, "cand", mode="4p", seed=seed))
+    path = tmp_path / "complete_4p.json"
+    path.write_text(json.dumps({
+        "agents": names,
+        "mode": "4p",
+        "seed_base": 100,
+        "seed_count": 2,
+        "steps": 500,
+        "games": games,
+    }))
+    result = {
+        "label": "cand__4p__line0",
+        "mode": "4p",
+        "candidate": "cand",
+        "names": names,
+        "seeds": 2,
+        "seed_base": 100,
+        "steps": 500,
+        "out": str(path),
+        "returncode": 0,
+    }
+
+    assert len(ruler._load_games(path, result)) == 8
+
+
+def test_load_games_rejects_old_strict_4p_one_rotation_per_seed_payload(tmp_path):
+    names = ["cand", "producer", "inc", "pgs_allscripts"]
+    games = []
+    for idx, seed in enumerate((100, 101, 102, 103)):
+        r = idx % 4
+        games.append(_game(names[r:] + names[:r], "cand", mode="4p", seed=seed))
+    path = tmp_path / "old_4p.json"
+    path.write_text(json.dumps({
+        "agents": names,
+        "mode": "4p",
+        "seed_base": 100,
+        "seed_count": 4,
+        "steps": 500,
+        "games": games,
+    }))
+    result = {
+        "label": "cand__4p__line0",
+        "mode": "4p",
+        "candidate": "cand",
+        "names": names,
+        "seeds": 4,
+        "seed_base": 100,
+        "steps": 500,
+        "out": str(path),
+        "returncode": 0,
+    }
+
+    with pytest.raises(ValueError, match="games 4 != expected 16"):
+        ruler._load_games(path, result)
+
+
 def test_cli_requires_seed_multiple_of_four_for_balanced_4p_seats(tmp_path):
     with pytest.raises(SystemExit, match="multiple of 4"):
         main([
@@ -450,6 +536,21 @@ def test_cli_requires_seed_multiple_of_four_for_balanced_4p_seats(tmp_path):
             "pgs_hold",
             "--seeds",
             "3",
+            "--skip-run",
+            "--out-dir",
+            str(tmp_path),
+        ])
+
+
+def test_cli_rejects_unknown_requested_references(tmp_path):
+    with pytest.raises(SystemExit, match="unknown references: typo_bot"):
+        main([
+            "--candidates",
+            "pgs_hold",
+            "--references",
+            "producer,typo_bot",
+            "--seeds",
+            "4",
             "--skip-run",
             "--out-dir",
             str(tmp_path),

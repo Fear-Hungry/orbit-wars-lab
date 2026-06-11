@@ -200,6 +200,9 @@ empates 2p como não-vitórias no score bruto, e o ranking é ordenado primeiro 
 veredito: `PASS_LOCAL` > `INCONCLUSIVE` > `REJECT_LOCAL`. Os mapas 2p sao
 derivados do nome do adversario, entao `vs producer` usa o mesmo slice mesmo que
 voce rode um candidato sozinho ou dentro de um painel maior.
+Em 4p, cada seed da regua decisora e jogada nas quatro rotacoes de assento; isso
+evita confundir sorte de mapa com posicao inicial e tambem impede JSON parcial
+de registrar seeds que o backend nao executou.
 
 ```bash
 rtk .venv/bin/python scripts/league_submit_ruler.py \
@@ -220,6 +223,9 @@ meio do chunk.
 O `--skip-run` e estrito: ele so aceita JSONs que batem exatamente com a tarefa
 esperada (modo, agentes, seed slice, numero de jogos, seat orders/rotacoes,
 `faults` e `agent_status`). JSON antigo, parcial ou de outro comando deve falhar.
+Fallback/timeout interno reportado por `SUBMISSION_STATS` de tarball tambem e
+falha audivel na liga; nao use ranking local que esteja medindo o Producer
+fallback como se fosse o bot.
 
 Interpretação:
 

@@ -117,3 +117,24 @@ def test_missing_tarball_fails_loud_even_with_warm_cache(fake_root, tmp_path):
     tar.unlink()
     with pytest.raises(FileNotFoundError):
         league_agents._tarball_agent(tar, "champ3")
+
+
+def test_tarball_submission_stats_fallbacks_fail_loud(fake_root, tmp_path):
+    src = tmp_path / "src_fallback"
+    src.mkdir()
+    (src / "main.py").write_text(
+        "SUBMISSION_STATS = {'calls': 0, 'fallbacks': 0}\n"
+        "def agent(obs):\n"
+        "    SUBMISSION_STATS['calls'] += 1\n"
+        "    SUBMISSION_STATS['fallbacks'] += 1\n"
+        "    return []\n"
+    )
+    tar = tmp_path / "fallback.tar.gz"
+    with tarfile.open(tar, "w:gz") as tf:
+        for f in sorted(src.iterdir()):
+            tf.add(f, arcname=f.name)
+
+    agent = league_agents._tarball_agent(tar, "fallback")
+
+    with pytest.raises(RuntimeError, match="degradation counters"):
+        agent({})

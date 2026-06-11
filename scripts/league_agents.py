@@ -47,6 +47,39 @@ LB_ANCHORS = {
 
 _EXT_N = [0]
 
+_FORBIDDEN_SUBMISSION_STATS = {
+    "fallbacks",
+    "timeouts",
+    "timeout_thread_blocks",
+    "fallback_errors",
+    "illegal_moves",
+    "policy_illegal_moves",
+    "invalid_actions",
+}
+
+
+def _submission_stats_snapshot(mod) -> dict[str, int]:
+    stats = getattr(mod, "SUBMISSION_STATS", None)
+    if not isinstance(stats, dict):
+        return {}
+    out: dict[str, int] = {}
+    for key, value in stats.items():
+        try:
+            out[str(key)] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _forbidden_submission_stats_delta(before: dict[str, int], after: dict[str, int]) -> dict[str, int]:
+    bad: dict[str, int] = {}
+    for key, value in after.items():
+        if key in _FORBIDDEN_SUBMISSION_STATS or key.endswith("_fallbacks"):
+            delta = int(value) - int(before.get(key, 0))
+            if delta > 0:
+                bad[key] = delta
+    return bad
+
 
 def _fresh_module(path: Path, tag: str):
     _EXT_N[0] += 1
@@ -159,8 +192,13 @@ def _tarball_agent(tar_path: Path, cache_name: str):
     inner = mod.agent
 
     def act(obs):
+        before = _submission_stats_snapshot(mod)
         with iso.active():
-            return inner(obs)
+            result = inner(obs)
+        bad = _forbidden_submission_stats_delta(before, _submission_stats_snapshot(mod))
+        if bad:
+            raise RuntimeError(f"{cache_name} submission degradation counters changed: {bad}")
+        return result
 
     return act
 

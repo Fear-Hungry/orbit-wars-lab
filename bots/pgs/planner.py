@@ -183,6 +183,15 @@ class PGSRuntime:
             from python.agents.value_net import load_value_net
             self._value_net = load_value_net(self.config.value_net_path, device="cpu")
 
+    def notify_fallback_applied(self) -> None:
+        """Drop non-observation-derived state after an external fallback move.
+
+        The Kaggle wrapper can return a Producer fallback while a timed-out PGS
+        thread later finishes. Any cross-turn wave state from that abandoned
+        plan must not influence the next real turn.
+        """
+        self._wave_pending = {}
+
     # -- agent glue --------------------------------------------------------
     def act(self, obs: Any):
         obs = _to_list_observation(obs)

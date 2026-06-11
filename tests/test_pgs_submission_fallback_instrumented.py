@@ -21,12 +21,15 @@ from scripts.package_pgs_submission import MAIN_TEMPLATE
 PRODUCER_SENTINEL = [[0, 0.0, 1]]
 
 
-def _render_agent(monkeypatch, pgs_fn, budget_s=0.05):
+def _render_agent(monkeypatch, pgs_fn, budget_s=0.05, notify_fn=None):
     """Exec MAIN_TEMPLATE exactly like Kaggle, with stubbed PGS/Producer."""
     for name in ("bots", "bots.pgs", "bots.producer"):
-        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+        mod = types.ModuleType(name)
+        mod.__path__ = []
+        monkeypatch.setitem(sys.modules, name, mod)
     pgs_mod = types.ModuleType("bots.pgs.agent")
     pgs_mod.agent = pgs_fn
+    pgs_mod.notify_fallback_applied = notify_fn or (lambda: None)
     prod_mod = types.ModuleType("bots.producer.agent")
     prod_mod.agent = lambda obs: PRODUCER_SENTINEL
     monkeypatch.setitem(sys.modules, "bots.pgs.agent", pgs_mod)
@@ -89,6 +92,18 @@ def test_benchmark_delta_logic_sees_the_fallback(monkeypatch):
     delta = {k: after[k] - before[k] for k in before}
     assert delta["fallbacks"] == 1.0
     assert delta["fallback_errors"] == 1.0
+
+
+def test_fallback_notifies_pgs_runtime_reset(monkeypatch):
+    resets = []
+
+    def dead(obs):
+        raise RuntimeError("PGS dies every step")
+
+    agent, _ = _render_agent(monkeypatch, dead, notify_fn=lambda: resets.append(1))
+
+    assert agent({"player": 0}) is PRODUCER_SENTINEL
+    assert resets == [1]
 
 
 def test_timeout_blocks_until_thread_finishes_then_resumes_pgs(monkeypatch):

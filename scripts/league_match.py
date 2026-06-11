@@ -247,19 +247,16 @@ def main():
                 games += play_batch(seat_names, batch, args.steps, decision_ms, crashes)
             _write_report(args.out, names, games, decision_ms, crashes, metadata=metadata)
     elif len(names) == 4:
-        rotation_chunks: list[tuple[list[str], list[list[int]]]] = []
-        for r in range(4):
-            rot = names[r:] + names[:r]
-            batch = [s for j, s in enumerate(seeds) if j % 4 == r]
-            rotation_chunks.append((rot, _seed_chunks(batch, chunk_size)))
-        max_chunks = max((len(chunks) for _, chunks in rotation_chunks), default=0)
-        for idx in range(max_chunks):
-            for rot, chunks in rotation_chunks:
-                if idx >= len(chunks):
-                    continue
-                chunk = chunks[idx]
-                if chunk:
-                    games += play_batch(rot, chunk, args.steps, decision_ms, crashes)
+        # Strict ruler semantics: every 4p map is played in all four seat
+        # rotations. The old schedule assigned one rotation per seed and passed
+        # non-contiguous seed lists (base, base+4, ...) into RustBatchBackend,
+        # which initializes contiguous env seeds; the JSON then reported seeds
+        # that were not actually played.
+        for batch in _seed_chunks(seeds, chunk_size):
+            for seed in batch:
+                for r in range(4):
+                    rot = names[r:] + names[:r]
+                    games += play_batch(rot, [seed], args.steps, decision_ms, crashes)
             _write_report(args.out, names, games, decision_ms, crashes, metadata=metadata)
     else:
         raise SystemExit("need 2 or 4 agents")

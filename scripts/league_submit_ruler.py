@@ -273,9 +273,9 @@ def _expected_seat_counter(result: dict[str, Any]) -> Counter[tuple[int, tuple[s
             counter[(seed, names)] += 1
             counter[(seed, tuple(reversed(names)))] += 1
     elif str(result["mode"]) == "4p":
-        for idx, seed in enumerate(seeds):
-            r = idx % 4
-            counter[(seed, names[r:] + names[:r])] += 1
+        for seed in seeds:
+            for r in range(4):
+                counter[(seed, names[r:] + names[:r])] += 1
     return counter
 
 
@@ -284,7 +284,7 @@ def _validate_task_payload(path: Path, payload: dict[str, Any], games: list[dict
     errors: list[str] = []
     mode = str(result["mode"])
     names = tuple(str(name) for name in result["names"])
-    expected_count = int(result["seeds"]) * (2 if mode == "2p" else 1)
+    expected_count = int(result["seeds"]) * (2 if mode == "2p" else 4)
 
     if payload.get("mode") != mode:
         errors.append(f"mode {payload.get('mode')!r} != {mode!r}")
@@ -477,7 +477,13 @@ def summarize_candidate(
         )
 
     producer = pairwise.get("producer")
-    if producer is not None and candidate != "producer":
+    if producer is None and candidate != "producer":
+        add_check(
+            "beats_or_ties_producer_floor",
+            False,
+            {"missing_required_opponent": "producer"},
+        )
+    elif producer is not None and candidate != "producer":
         wr = producer["decisive_win_rate"]
         add_check(
             "beats_or_ties_producer_floor",
@@ -488,7 +494,13 @@ def summarize_candidate(
     inc = pairwise.get(incumbent)
     if candidate == incumbent:
         add_check("incumbent_h2h", True, {"candidate_is_incumbent": True}, severity="info")
-    elif inc is not None:
+    elif inc is None:
+        add_check(
+            "beats_or_ties_incumbent_h2h",
+            False,
+            {"missing_required_opponent": incumbent},
+        )
+    else:
         wr = inc["decisive_win_rate"]
         add_check(
             "beats_or_ties_incumbent_h2h",
@@ -497,7 +509,13 @@ def summarize_candidate(
         )
 
     floor = pairwise.get("pgs_allscripts")
-    if floor is not None and candidate != "pgs_allscripts":
+    if floor is None and candidate != "pgs_allscripts":
+        add_check(
+            "clears_rejected_floor",
+            False,
+            {"missing_required_opponent": "pgs_allscripts"},
+        )
+    elif floor is not None and candidate != "pgs_allscripts":
         wr = floor["decisive_win_rate"]
         add_check(
             "clears_rejected_floor",
@@ -650,7 +668,11 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--seeds must be a multiple of 4 so 4p seat rotation is balanced")
 
     candidates = list(dict.fromkeys(args.candidates))
-    references = _known(_split_csv(args.references))
+    requested_references = _split_csv(args.references)
+    unknown_references = [name for name in requested_references if name not in FACTORIES]
+    if unknown_references:
+        raise SystemExit(f"unknown references: {', '.join(unknown_references)}")
+    references = list(dict.fromkeys(requested_references))
     if args.incumbent not in FACTORIES:
         raise SystemExit(f"unknown incumbent: {args.incumbent}")
     templates = _parse_4p_templates(args.four_player_lineup)

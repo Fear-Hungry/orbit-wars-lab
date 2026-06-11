@@ -142,10 +142,36 @@ seats com `fallbacks=0`, `timeouts=0`, `timeout_thread_blocks=0`,
 modulos de tarball por instancia, evitando runtime global compartilhado entre
 dois jogos do mesmo artefato.
 
+Nova auditoria com agentes encontrou dois vazamentos adicionais de validacao:
+o agendamento 4p registrava seeds nao-contiguas que o backend nao executava
+como escritas no JSON, e o tarball antigo podia degradar sob carga paralela
+sem a liga enxergar os counters internos. Correcoes aplicadas: 4p da regua
+decisora agora joga as quatro rotacoes para cada seed; referencias obrigatorias
+ausentes viram `REJECT_LOCAL`; unknown references falham no CLI; e a liga
+transforma deltas proibidos em `SUBMISSION_STATS` (`fallbacks`, `timeouts`,
+`*_fallbacks`, etc.) em falha audivel.
+
+Tarballs PGS reempacotados com pinning de threads Torch/OMP e reset do runtime
+PGS apos fallback aplicado:
+
+- `submission_pgs.tar.gz` sha256
+  `747b392001dfe2c044ae1b1ec17884e945a2db01996355150e4a43bf792b17d3`;
+- `submission_pgs_hold.tar.gz` sha256
+  `40f411f3a70164c0f9bddb065a2cba5ac7046449e8fa28cbbf205de785e8ae7b`;
+- `submission_pgs_wave_s100.tar.gz` sha256
+  `b8077f16a955981c03643d2e68d2740d468e1293a4521920e31900ea4de55c19`.
+
+Os tres passaram validacao paralela seat0 e validacao completa 2p/4p all seats
+com `fallbacks=0`, `timeouts=0`, `timeout_thread_blocks=0`,
+`fallback_errors=0`. `submission_producer.tar.gz` tambem passou 2p/4p all
+seats; `submission_producer_refactor_smoke.tar.gz` e artefato antigo de smoke e
+nao deve ser submetido.
+
 ## Decisao Atual
 
 Nao ha uma nova variante comprovadamente melhor que o recorde `pgs_holdwave`
-`53537753` apenas por esta auditoria.
+`53537753` apenas por esta auditoria; a regua longa precisa ser reiniciada do
+zero porque a semantica 4p foi corrigida.
 
 Decisao operacional:
 

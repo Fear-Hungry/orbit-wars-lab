@@ -261,9 +261,9 @@ def test_chunked_4p_main_interleaves_rotations_for_honest_checkpoints(monkeypatc
 
     assert calls[:4] == [
         (("a", "b", "c", "d"), (200,)),
-        (("b", "c", "d", "a"), (201,)),
-        (("c", "d", "a", "b"), (202,)),
-        (("d", "a", "b", "c"), (203,)),
+        (("b", "c", "d", "a"), (200,)),
+        (("c", "d", "a", "b"), (200,)),
+        (("d", "a", "b", "c"), (200,)),
     ]
     assert writes[0] == [
         ("a", "b", "c", "d"),
@@ -271,3 +271,37 @@ def test_chunked_4p_main_interleaves_rotations_for_honest_checkpoints(monkeypatc
         ("c", "d", "a", "b"),
         ("d", "a", "b", "c"),
     ]
+
+
+def test_chunked_4p_main_never_batches_noncontiguous_seeds(monkeypatch, tmp_path):
+    import scripts.league_match as lm
+
+    calls = []
+
+    def fake_play_batch(names_by_seat, seeds, steps, decision_ms, crashes):
+        calls.append((tuple(names_by_seat), tuple(seeds)))
+        return [{"seats": list(names_by_seat), "seed": int(seeds[0])}]
+
+    monkeypatch.setattr(lm, "play_batch", fake_play_batch)
+    monkeypatch.setattr(lm, "_write_report", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sys, "argv", [
+        "league_match.py",
+        "--agents",
+        "a,b,c,d",
+        "--seeds",
+        "8",
+        "--seed-base",
+        "200",
+        "--steps",
+        "1",
+        "--chunk-size",
+        "8",
+        "--out",
+        str(tmp_path / "out.json"),
+    ])
+
+    lm.main()
+
+    assert calls
+    assert all(len(seed_batch) == 1 for _, seed_batch in calls)
+    assert {seed_batch[0] for _, seed_batch in calls} == set(range(200, 208))
