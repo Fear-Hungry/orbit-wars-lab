@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Iterable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -44,6 +44,12 @@ DEFAULT_4P_TEMPLATES = [
     ("oep", "pgs_wave_s100", "pgs_bigwave"),
     ("pgs_holdwave", "pgs_allscripts", "ext_hellburner"),
 ]
+
+PROFILE_DEFAULTS = {
+    "quick": {"seeds": 4, "steps": 250, "min_decisive_2p": 4},
+    "standard": {"seeds": 8, "steps": 500, "min_decisive_2p": 12},
+    "strong": {"seeds": 24, "steps": 500, "min_decisive_2p": 40},
+}
 
 
 @dataclass(frozen=True)
@@ -96,7 +102,7 @@ def build_tasks(
 ) -> list[MatchTask]:
     tasks: list[MatchTask] = []
     seen: set[tuple[str, tuple[str, ...]]] = set()
-    for cand_idx, candidate in enumerate(candidates):
+    for candidate in candidates:
         if candidate not in FACTORIES:
             raise ValueError(f"unknown candidate: {candidate}")
         ref_order = []
@@ -109,7 +115,10 @@ def build_tasks(
             if key in seen:
                 continue
             seen.add(key)
-            base = seed_base + 10_000 * cand_idx + 100 * ref_idx
+            # Shared seeds per reference across candidates: candidate A vs
+            # producer and candidate B vs producer must see the same map slice,
+            # otherwise the ruler reintroduces scheduler luck into selection.
+            base = seed_base + 100 * ref_idx
             label = _safe_label([candidate, "2p", ref])
             tasks.append(MatchTask(
                 label=label,
@@ -129,7 +138,10 @@ def build_tasks(
             if key in seen:
                 continue
             seen.add(key)
-            base = seed_base + 10_000 * cand_idx + 5_000 + 100 * tpl_idx
+            # Shared 4p seeds per template across candidates for the same reason
+            # as the 2p tasks above. league_match rotates seats by seed index, so
+            # requiring seeds % 4 == 0 gives balanced seats per 4p template.
+            base = seed_base + 5_000 + 100 * tpl_idx
             label = _safe_label([candidate, "4p", f"line{tpl_idx}"])
             tasks.append(MatchTask(
                 label=label,
@@ -181,11 +193,33 @@ def _run_task(task: MatchTask) -> dict[str, Any]:
     }
 
 
-def run_tasks(tasks: list[MatchTask], jobs: int) -> list[dict[str, Any]]:
+def run_tasks(tasks: list[MatchTask], jobs: int, *, progress: bool = False) -> list[dict[str, Any]]:
+    def _note(done: int, total: int, result: dict[str, Any]) -> None:
+        if progress:
+            print(
+                f"[{done:02d}/{total:02d}] {result['label']} rc={result['returncode']} "
+                f"{result['seconds']:.1f}s",
+                file=sys.stderr,
+                flush=True,
+            )
+
     if jobs <= 1:
-        return [_run_task(task) for task in tasks]
+        out = []
+        total = len(tasks)
+        for task in tasks:
+            result = _run_task(task)
+            out.append(result)
+            _note(len(out), total, result)
+        return out
+    out = []
+    total = len(tasks)
     with ThreadPoolExecutor(max_workers=min(jobs, len(tasks))) as executor:
-        return list(executor.map(_run_task, tasks))
+        futures = [executor.submit(_run_task, task) for task in tasks]
+        for future in as_completed(futures):
+            result = future.result()
+            out.append(result)
+            _note(len(out), total, result)
+    return out
 
 
 def _load_games(path: Path) -> list[dict[str, Any]]:
@@ -449,24 +483,37 @@ def _parse_4p_templates(values: list[str] | None) -> list[tuple[str, ...]]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--candidates", nargs="+", required=True)
+    parser.add_argument("--profile", choices=sorted(PROFILE_DEFAULTS), default="strong")
     parser.add_argument("--incumbent", default=INCUMBENT)
     parser.add_argument("--references", default=",".join(DEFAULT_REFERENCES))
     parser.add_argument("--four-player-lineup", action="append",
                         help="three comma-separated opponents; candidate is inserted as seat 0")
-    parser.add_argument("--seeds", type=int, default=24)
+    parser.add_argument("--seeds", type=int, default=None)
     parser.add_argument("--seed-base", type=int, default=70_000)
-    parser.add_argument("--steps", type=int, default=500)
+    parser.add_argument("--steps", type=int, default=None)
     parser.add_argument("--jobs", type=int, default=2)
     parser.add_argument("--out-dir", type=Path, default=Path("artifacts/league/submit_ruler"))
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--skip-run", action="store_true")
-    parser.add_argument("--min-decisive-2p", type=int, default=40)
+    parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--min-decisive-2p", type=int, default=None)
     parser.add_argument("--min-producer-winrate", type=float, default=0.50)
     parser.add_argument("--min-incumbent-winrate", type=float, default=0.50)
     parser.add_argument("--min-floor-winrate", type=float, default=0.60)
     parser.add_argument("--max-annihilation-rate-4p", type=float, default=0.35)
     parser.add_argument("--weight-2p", type=float, default=0.50)
     args = parser.parse_args(argv)
+    profile = PROFILE_DEFAULTS[args.profile]
+    if args.seeds is None:
+        args.seeds = int(profile["seeds"])
+    if args.steps is None:
+        args.steps = int(profile["steps"])
+    if args.min_decisive_2p is None:
+        args.min_decisive_2p = int(profile["min_decisive_2p"])
+    if args.seeds <= 0:
+        raise SystemExit("--seeds must be positive")
+    if args.seeds % 4 != 0:
+        raise SystemExit("--seeds must be a multiple of 4 so 4p seat rotation is balanced")
 
     candidates = list(dict.fromkeys(args.candidates))
     references = _known(_split_csv(args.references))
@@ -502,7 +549,7 @@ def main(argv: list[str] | None = None) -> int:
             for task in tasks
         ]
     else:
-        task_results = run_tasks(tasks, args.jobs)
+        task_results = run_tasks(tasks, args.jobs, progress=not args.quiet)
     report = build_report(
         candidates,
         task_results,
@@ -522,6 +569,7 @@ def main(argv: list[str] | None = None) -> int:
             "seeds": args.seeds,
             "seed_base": args.seed_base,
             "steps": args.steps,
+            "profile": args.profile,
             "min_decisive_2p": args.min_decisive_2p,
             "min_producer_winrate": args.min_producer_winrate,
             "min_incumbent_winrate": args.min_incumbent_winrate,

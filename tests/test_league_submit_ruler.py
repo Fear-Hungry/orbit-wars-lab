@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 
-from scripts.league_submit_ruler import build_report, build_tasks, summarize_candidate
+import pytest
+from scripts.league_submit_ruler import build_report, build_tasks, main, summarize_candidate
 
 
 def _game(seats, winner, *, mode="2p", faults=None, status=None, died=None):
@@ -183,3 +184,37 @@ def test_build_tasks_pairs_candidates_with_incumbent_and_fixed_lineups(tmp_path)
     assert ("pgs_hold", "pgs_holdwave") in {task.names for task in tasks if task.mode == "2p"}
     assert ("pgs_hold", "producer") in {task.names for task in tasks if task.mode == "2p"}
     assert any(task.mode == "4p" and task.names[0] == "pgs_hold" and len(task.names) == 4 for task in tasks)
+
+
+def test_build_tasks_uses_shared_seed_slices_across_candidates(tmp_path):
+    tasks = build_tasks(
+        ["pgs_hold", "pgs_wave_s100"],
+        incumbent="pgs_holdwave",
+        references=["producer", "pgs_allscripts"],
+        four_player_templates=[("producer", "pgs_holdwave", "pgs_allscripts")],
+        seeds=4,
+        seed_base=1234,
+        steps=500,
+        out_dir=tmp_path,
+    )
+
+    producer_tasks = [task for task in tasks if task.mode == "2p" and task.names[1] == "producer"]
+    assert {task.candidate for task in producer_tasks} == {"pgs_hold", "pgs_wave_s100"}
+    assert {task.seed_base for task in producer_tasks} == {1234 + 100}
+
+    four_player_tasks = [task for task in tasks if task.mode == "4p"]
+    assert {task.candidate for task in four_player_tasks} == {"pgs_hold", "pgs_wave_s100"}
+    assert {task.seed_base for task in four_player_tasks} == {1234 + 5000}
+
+
+def test_cli_requires_seed_multiple_of_four_for_balanced_4p_seats(tmp_path):
+    with pytest.raises(SystemExit, match="multiple of 4"):
+        main([
+            "--candidates",
+            "pgs_hold",
+            "--seeds",
+            "3",
+            "--skip-run",
+            "--out-dir",
+            str(tmp_path),
+        ])
