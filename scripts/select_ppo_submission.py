@@ -7,7 +7,26 @@ from typing import Any
 
 from python.agents.registry import HEURISTIC_NAMES
 from scripts.benchmark_ppo_submission import benchmark_exported_checkpoint
+from scripts.benchmark_submission import (
+    INSTRUMENTATION_FAILURE_METRIC,
+    TECHNICAL_FAILURE_METRICS,
+)
 from scripts.select_ppo_checkpoint import _expand_checkpoints, checkpoint_id
+
+ZERO_TOLERANCE_METRICS = (*TECHNICAL_FAILURE_METRICS, INSTRUMENTATION_FAILURE_METRIC)
+
+
+def technical_failures_from_summary(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    failures = []
+    for metric in ZERO_TOLERANCE_METRICS:
+        value = float(summary.get(metric, 0.0))
+        if value > 0.0:
+            failures.append({"metric": metric, "value": value})
+    return failures
+
+
+def is_technically_eligible(summary: dict[str, Any]) -> bool:
+    return not technical_failures_from_summary(summary)
 
 
 def score_exported_submission(summary: dict[str, Any]) -> float:
@@ -52,6 +71,7 @@ def select_exported_submissions(
         )
         report_path = out_dir / f"{candidate_id}_submission_benchmark.json"
         report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+        failures = technical_failures_from_summary(report["summary"])
         candidates.append(
             {
                 "checkpoint": str(checkpoint),
@@ -59,17 +79,22 @@ def select_exported_submissions(
                 "submission": report["submission"],
                 "benchmark": str(report_path),
                 "score": score_exported_submission(report["summary"]),
+                "eligible": not failures,
+                "technical_failures": failures,
                 "summary": report["summary"],
             }
         )
     candidates.sort(
         key=lambda item: (
+            item["eligible"],
             item["score"],
             item["summary"].get("win_rate", 0.0),
             item["summary"].get("mean_score_margin", 0.0),
         ),
         reverse=True,
     )
+    if not candidates or not candidates[0]["eligible"]:
+        raise RuntimeError("no technically eligible PPO submission candidates")
     return {
         "best_checkpoint": candidates[0]["checkpoint"],
         "best_submission": candidates[0]["submission"],

@@ -11,6 +11,7 @@ from scripts.benchmark_submission import (
     _resolve_opponent,
     benchmark_four_player_spec,
     benchmark_two_player_spec,
+    technical_failures,
 )
 from scripts.export_submission import render_submission
 
@@ -141,6 +142,11 @@ def main() -> None:
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--skip-4p", action="store_true")
     parser.add_argument("--disable-comets", action="store_true")
+    parser.add_argument(
+        "--allow-technical-failures",
+        action="store_true",
+        help="write the report even when crash/timeout/invalid/fallback rates are nonzero",
+    )
     args = parser.parse_args()
 
     report = benchmark_exported_checkpoint(
@@ -158,6 +164,12 @@ def main() -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps({"summary": report["summary"], "submission": report["submission"]}, indent=2, sort_keys=True))
+    failures = technical_failures(report, require_submission_stats=True)
+    if failures and not args.allow_technical_failures:
+        raise SystemExit(
+            "technical failures detected; rerun with --allow-technical-failures "
+            f"for exploratory measurement: {failures}"
+        )
 
 
 if __name__ == "__main__":

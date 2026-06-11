@@ -189,9 +189,11 @@ def test_chunked_2p_main_interleaves_seat_orders_for_honest_checkpoints(monkeypa
         return [{"seats": list(names_by_seat), "seed": int(seeds[0])}]
 
     writes = []
+    metadata = []
 
-    def fake_write_report(out_path, names, games, decision_ms, crashes):
+    def fake_write_report(out_path, names, games, decision_ms, crashes, **kwargs):
         writes.append([tuple(g["seats"]) for g in games])
+        metadata.append(kwargs.get("metadata"))
 
     monkeypatch.setattr(lm, "play_batch", fake_play_batch)
     monkeypatch.setattr(lm, "_write_report", fake_write_report)
@@ -220,6 +222,7 @@ def test_chunked_2p_main_interleaves_seat_orders_for_honest_checkpoints(monkeypa
         (("right", "left"), (102, 103)),
     ]
     assert writes[1] == [("left", "right"), ("right", "left")]
+    assert metadata[0] == {"seed_base": 100, "seed_count": 4, "steps": 1, "chunk_size": 2}
 
 
 def test_chunked_4p_main_interleaves_rotations_for_honest_checkpoints(monkeypatch, tmp_path):

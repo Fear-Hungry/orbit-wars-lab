@@ -105,6 +105,9 @@ A regua forte foi corrigida e esta rodando em
   JSON parcial por `--match-chunk-size`;
 - a partir do commit `ac6ad0c`, os checkpoints de novos runs intercalam seat
   orders/rotacoes, entao o parcial fica monitoravel mais cedo.
+- a partir do experimento `191`, `--skip-run` valida modo, agentes, seed slice,
+  numero exato de jogos, seat orders/rotacoes, `faults` e `agent_status`; JSON
+  antigo/parcial/stale falha em vez de entrar no ranking.
 
 O smoke de 36 tarefas com `seeds=4`, `steps=20` fechou e provou que o report
 final e gerado, mas e curto demais para decisao competitiva. A regua v5 longa
@@ -114,6 +117,11 @@ esta em background no PID registrado em
 Observacao: a v5 foi iniciada antes do commit `ac6ad0c`, entao seus parciais
 2p so ficam honestamente comparaveis depois que a ordem reversa de assentos for
 gravada. O resultado final continua balanceado.
+
+Para PPO, benchmark/selecao agora tratam crash, timeout, invalid, fallback,
+policy-illegal, fallback-error e instrumentacao ausente como falhas tecnicas
+zero-tolerancia. Um checkpoint com score alto mas fallback/timeout nao pode ser
+selecionado como melhor submissao.
 
 ## Decisao Atual
 

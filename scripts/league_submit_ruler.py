@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import time
+from collections import Counter
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -201,6 +202,10 @@ def _run_task(task: MatchTask) -> dict[str, Any]:
         "mode": task.mode,
         "candidate": task.candidate,
         "names": list(task.names),
+        "seeds": task.seeds,
+        "seed_base": task.seed_base,
+        "steps": task.steps,
+        "chunk_size": task.chunk_size,
         "out": str(task.out),
         "returncode": proc.returncode,
         "seconds": time.perf_counter() - start,
@@ -255,9 +260,87 @@ def run_tasks(
     return out
 
 
-def _load_games(path: Path) -> list[dict[str, Any]]:
+def _task_has_strict_metadata(result: dict[str, Any]) -> bool:
+    return all(key in result for key in ("mode", "names", "seeds", "seed_base", "steps"))
+
+
+def _expected_seat_counter(result: dict[str, Any]) -> Counter[tuple[int, tuple[str, ...]]]:
+    names = tuple(str(name) for name in result["names"])
+    seeds = [int(result["seed_base"]) + i for i in range(int(result["seeds"]))]
+    counter: Counter[tuple[int, tuple[str, ...]]] = Counter()
+    if str(result["mode"]) == "2p":
+        for seed in seeds:
+            counter[(seed, names)] += 1
+            counter[(seed, tuple(reversed(names)))] += 1
+    elif str(result["mode"]) == "4p":
+        for idx, seed in enumerate(seeds):
+            r = idx % 4
+            counter[(seed, names[r:] + names[:r])] += 1
+    return counter
+
+
+def _validate_task_payload(path: Path, payload: dict[str, Any], games: list[dict[str, Any]],
+                           result: dict[str, Any]) -> None:
+    errors: list[str] = []
+    mode = str(result["mode"])
+    names = tuple(str(name) for name in result["names"])
+    expected_count = int(result["seeds"]) * (2 if mode == "2p" else 1)
+
+    if payload.get("mode") != mode:
+        errors.append(f"mode {payload.get('mode')!r} != {mode!r}")
+    if tuple(payload.get("agents") or ()) != names:
+        errors.append(f"agents {payload.get('agents')!r} != {list(names)!r}")
+    if payload.get("seed_base") != int(result["seed_base"]):
+        errors.append(f"seed_base {payload.get('seed_base')!r} != {int(result['seed_base'])!r}")
+    if payload.get("seed_count") != int(result["seeds"]):
+        errors.append(f"seed_count {payload.get('seed_count')!r} != {int(result['seeds'])!r}")
+    if payload.get("steps") != int(result["steps"]):
+        errors.append(f"steps {payload.get('steps')!r} != {int(result['steps'])!r}")
+    if len(games) != expected_count:
+        errors.append(f"games {len(games)} != expected {expected_count}")
+
+    actual: Counter[tuple[int, tuple[str, ...]]] = Counter()
+    for idx, game in enumerate(games):
+        seats = tuple(str(name) for name in (game.get("seats") or ()))
+        if len(seats) != len(names):
+            errors.append(f"game[{idx}] has invalid seats {list(seats)!r}")
+        try:
+            seed = int(game["seed"])
+            actual[(seed, seats)] += 1
+        except (KeyError, TypeError, ValueError):
+            errors.append(f"game[{idx}] has invalid seed {game.get('seed')!r}")
+        if "faults" not in game or not isinstance(game.get("faults"), dict):
+            errors.append(f"game[{idx}] missing audited faults dict")
+        status = game.get("agent_status")
+        if (
+            not isinstance(status, list)
+            or len(status) != len(seats)
+            or any(item not in {"DONE", "ERROR", "TIMEOUT"} for item in status)
+        ):
+            errors.append(f"game[{idx}] has invalid agent_status {status!r}")
+
+    expected = _expected_seat_counter(result)
+    if actual != expected:
+        missing = expected - actual
+        extra = actual - expected
+        if missing:
+            errors.append(f"missing seed/seat entries {list(missing.elements())[:4]!r}")
+        if extra:
+            errors.append(f"unexpected seed/seat entries {list(extra.elements())[:4]!r}")
+
+    if errors:
+        label = result.get("label", path.name)
+        sample = "; ".join(errors[:8])
+        if len(errors) > 8:
+            sample += f"; ... +{len(errors) - 8} more"
+        raise ValueError(f"{path} does not match task {label}: {sample}")
+
+
+def _load_games(path: Path, result: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     payload = json.loads(path.read_text())
     games = payload["games"]
+    if result is not None and _task_has_strict_metadata(result):
+        _validate_task_payload(path, payload, games, result)
     for game in games:
         game["mode"] = payload["mode"]
     return games
@@ -351,7 +434,7 @@ def summarize_candidate(
     for result in task_results:
         if result["candidate"] != candidate or result["returncode"] != 0:
             continue
-        games = _load_games(Path(result["out"]))
+        games = _load_games(Path(result["out"]), result)
         all_games.extend(games)
         if result["mode"] == "2p":
             opponent = [name for name in result["names"] if name != candidate][0]
@@ -592,6 +675,10 @@ def main(argv: list[str] | None = None) -> int:
                 "mode": task.mode,
                 "candidate": task.candidate,
                 "names": list(task.names),
+                "seeds": task.seeds,
+                "seed_base": task.seed_base,
+                "steps": task.steps,
+                "chunk_size": task.chunk_size,
                 "out": str(task.out),
                 "returncode": 0,
                 "seconds": 0.0,

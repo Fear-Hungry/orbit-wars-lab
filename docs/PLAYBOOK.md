@@ -214,6 +214,9 @@ Em runs longos, mantenha `--match-chunk-size` ligado. Os JSONs parciais sao
 gravados por chunk e, nos runs iniciados apos o commit `ac6ad0c`, os chunks sao
 intercalados por seat order/rotacao para que o progresso parcial ja seja
 monitoravel sem esperar o match inteiro.
+O `--skip-run` e estrito: ele so aceita JSONs que batem exatamente com a tarefa
+esperada (modo, agentes, seed slice, numero de jogos, seat orders/rotacoes,
+`faults` e `agent_status`). JSON antigo, parcial ou de outro comando deve falhar.
 
 Interpretação:
 

@@ -7,7 +7,7 @@ import scripts.league_submit_ruler as ruler
 from scripts.league_submit_ruler import build_report, build_tasks, main, summarize_candidate
 
 
-def _game(seats, winner, *, mode="2p", faults=None, status=None, died=None):
+def _game(seats, winner, *, mode="2p", faults=None, status=None, died=None, seed=1):
     if winner is None:
         ships = [10.0] * len(seats)
         winner_seat = -1
@@ -18,7 +18,7 @@ def _game(seats, winner, *, mode="2p", faults=None, status=None, died=None):
         winner_seat = seats.index(winner)
         tie = False
     return {
-        "seed": 1,
+        "seed": seed,
         "seats": list(seats),
         "final_ships": ships,
         "winner": winner,
@@ -352,6 +352,95 @@ def test_build_tasks_keeps_reference_seed_slice_stable_across_candidate_panels(t
     solo_producer = next(task for task in solo if task.mode == "2p" and task.names == ("pgs_hold", "producer"))
     panel_producer = next(task for task in panel if task.mode == "2p" and task.names == ("pgs_hold", "producer"))
     assert solo_producer.seed_base == panel_producer.seed_base
+
+
+def test_load_games_rejects_partial_strict_task_payload(tmp_path):
+    path = tmp_path / "partial.json"
+    path.write_text(json.dumps({
+        "agents": ["cand", "producer"],
+        "mode": "2p",
+        "seed_base": 100,
+        "seed_count": 2,
+        "steps": 500,
+        "games": [
+            _game(["cand", "producer"], "cand", seed=100),
+        ],
+    }))
+    result = {
+        "label": "cand__2p__producer",
+        "mode": "2p",
+        "candidate": "cand",
+        "names": ["cand", "producer"],
+        "seeds": 2,
+        "seed_base": 100,
+        "steps": 500,
+        "out": str(path),
+        "returncode": 0,
+    }
+
+    with pytest.raises(ValueError, match="games 1 != expected 4"):
+        ruler._load_games(path, result)
+
+
+def test_load_games_rejects_missing_agent_status_in_strict_payload(tmp_path):
+    games = []
+    for seed in (100, 101):
+        for seats in (["cand", "producer"], ["producer", "cand"]):
+            game = _game(seats, "cand", seed=seed)
+            game.pop("agent_status")
+            games.append(game)
+    path = tmp_path / "missing_status.json"
+    path.write_text(json.dumps({
+        "agents": ["cand", "producer"],
+        "mode": "2p",
+        "seed_base": 100,
+        "seed_count": 2,
+        "steps": 500,
+        "games": games,
+    }))
+    result = {
+        "label": "cand__2p__producer",
+        "mode": "2p",
+        "candidate": "cand",
+        "names": ["cand", "producer"],
+        "seeds": 2,
+        "seed_base": 100,
+        "steps": 500,
+        "out": str(path),
+        "returncode": 0,
+    }
+
+    with pytest.raises(ValueError, match="agent_status"):
+        ruler._load_games(path, result)
+
+
+def test_load_games_accepts_complete_strict_2p_payload(tmp_path):
+    games = []
+    for seed in (100, 101):
+        games.append(_game(["cand", "producer"], "cand", seed=seed))
+        games.append(_game(["producer", "cand"], "producer", seed=seed))
+    path = tmp_path / "complete.json"
+    path.write_text(json.dumps({
+        "agents": ["cand", "producer"],
+        "mode": "2p",
+        "seed_base": 100,
+        "seed_count": 2,
+        "steps": 500,
+        "games": games,
+    }))
+    result = {
+        "label": "cand__2p__producer",
+        "mode": "2p",
+        "candidate": "cand",
+        "names": ["cand", "producer"],
+        "seeds": 2,
+        "seed_base": 100,
+        "steps": 500,
+        "out": str(path),
+        "returncode": 0,
+    }
+
+    assert len(ruler._load_games(path, result)) == 4
 
 
 def test_cli_requires_seed_multiple_of_four_for_balanced_4p_seats(tmp_path):

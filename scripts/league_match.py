@@ -190,8 +190,15 @@ def _seed_chunks(seeds: list[int], chunk_size: int) -> list[list[int]]:
     return [seeds[i: i + size] for i in range(0, len(seeds), size)]
 
 
-def _write_report(out_path: str, names: list[str], games: list[dict], decision_ms: dict[str, list[float]],
-                  crashes: dict[str, int]) -> None:
+def _write_report(
+    out_path: str,
+    names: list[str],
+    games: list[dict],
+    decision_ms: dict[str, list[float]],
+    crashes: dict[str, int],
+    *,
+    metadata: dict[str, int] | None = None,
+) -> None:
     out = {
         "agents": names,
         "mode": f"{len(names)}p",
@@ -199,6 +206,8 @@ def _write_report(out_path: str, names: list[str], games: list[dict], decision_m
         "decision_ms_p95": {k: float(np.percentile(v, 95)) for k, v in decision_ms.items() if v},
         "crashes": crashes,
     }
+    if metadata:
+        out.update(metadata)
     path = Path(out_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -221,6 +230,12 @@ def main():
     names = [s.strip() for s in args.agents.split(",")]
     seeds = list(range(args.seed_base, args.seed_base + args.seeds))
     chunk_size = int(args.chunk_size) if int(args.chunk_size) > 0 else len(seeds)
+    metadata = {
+        "seed_base": int(args.seed_base),
+        "seed_count": int(args.seeds),
+        "steps": int(args.steps),
+        "chunk_size": int(args.chunk_size),
+    }
     decision_ms: dict[str, list[float]] = {}
     crashes: dict[str, int] = {}
     games = []
@@ -231,7 +246,7 @@ def main():
         for batch in _seed_chunks(seeds, chunk_size):
             for seat_names in (names, names[::-1]):
                 games += play_batch(seat_names, batch, args.steps, decision_ms, crashes)
-                _write_report(args.out, names, games, decision_ms, crashes)
+                _write_report(args.out, names, games, decision_ms, crashes, metadata=metadata)
     elif len(names) == 4:
         rotation_chunks: list[tuple[list[str], list[list[int]]]] = []
         for r in range(4):
@@ -246,10 +261,10 @@ def main():
                 chunk = chunks[idx]
                 if chunk:
                     games += play_batch(rot, chunk, args.steps, decision_ms, crashes)
-                    _write_report(args.out, names, games, decision_ms, crashes)
+                    _write_report(args.out, names, games, decision_ms, crashes, metadata=metadata)
     else:
         raise SystemExit("need 2 or 4 agents")
-    _write_report(args.out, names, games, decision_ms, crashes)
+    _write_report(args.out, names, games, decision_ms, crashes, metadata=metadata)
     print(json.dumps({"out": args.out, "games": len(games), "crashes": crashes}))
 
 
