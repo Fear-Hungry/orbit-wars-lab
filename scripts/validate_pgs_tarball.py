@@ -18,24 +18,90 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-RUNNER = '''
-import json, sys, time
+RUNNER = r'''
+import importlib.util
+import itertools
+import json
+import sys
+import time
+from pathlib import Path
+
 sys.path.insert(0, ".")
 cfg = json.loads(sys.argv[1])
-src = open("main.py").read()
-ns = {}
-exec(compile(src, "main.py", "exec"), ns)
-last_callable = None
-for name, value in ns.items():
-    if callable(value) and not name.startswith("__"):
-        last_callable = (name, value)
-assert last_callable is not None, "no callable in main.py namespace"
-agent_name, agent = last_callable
-assert agent_name == "agent", f"LAST callable is {agent_name!r}, not agent (Kaggle picks the last!)"
 
-from bots.producer.agent import make_agent as make_producer
+
+def _last_agent_from_source(path, module_name):
+    src = Path(path).read_text()
+    ns = {"__name__": module_name}
+    exec(compile(src, str(path), "exec"), ns)
+    last_callable = None
+    for name, value in ns.items():
+        if callable(value) and not name.startswith("__"):
+            last_callable = (name, value)
+    assert last_callable is not None, f"no callable in {path} namespace"
+    agent_name, loaded_agent = last_callable
+    assert agent_name == "agent", (
+        f"LAST callable is {agent_name!r}, not agent (Kaggle picks the last!)"
+    )
+    return loaded_agent, ns
+
+
+def _load_module(path, module_name):
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    assert spec is not None and spec.loader is not None, f"cannot load module {path}"
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_main_counter = itertools.count()
+
+
+def _fresh_main_agent():
+    loaded_agent, _ = _last_agent_from_source(
+        "main.py", f"_validator_submission_main_{next(_main_counter)}"
+    )
+    return loaded_agent
+
+
+agent, ns = _last_agent_from_source("main.py", "submission_main")
+
+
+def _producer_factory_from_tarball():
+    if Path("bots/producer/agent.py").exists():
+        from bots.producer.agent import make_agent as make_producer
+
+        return make_producer
+    if Path("_producer_agent.py").exists():
+        counter = itertools.count()
+
+        def make_flat_producer():
+            mod = _load_module(
+                "_producer_agent.py",
+                f"_validator_flat_producer_{next(counter)}",
+            )
+            make_agent = getattr(mod, "make_agent", None)
+            if callable(make_agent):
+                return make_agent()
+            producer_agent = getattr(mod, "agent", None)
+            assert callable(producer_agent), "_producer_agent.py has no agent/make_agent"
+            return producer_agent
+
+        return make_flat_producer
+    if Path("_upstream.py").exists():
+        # Flat Producer tarball: use fresh main.py copies as mirror opponents.
+        return _fresh_main_agent
+    raise AssertionError(
+        "tarball has no bundled Producer opponent "
+        "(expected bots/producer/agent.py, _producer_agent.py, or _upstream.py)"
+    )
+
+
+make_producer = _producer_factory_from_tarball()
 if cfg.get("check_pgs_planner", True):
     import bots.pgs.planner as pgs_planner
+
     assert not hasattr(
         pgs_planner, "agent"
     ), "bundled bots/pgs/planner.py exposes rejected all-scripts agent(); regenerate the tarball"
@@ -44,8 +110,13 @@ if cfg.get("check_pgs_planner", True):
     ), "bundled bots/pgs/planner.py exposes module runtime; regenerate the tarball"
 
 from kaggle_environments import make
+
 stats = ns.get("SUBMISSION_STATS")
-assert isinstance(stats, dict), "main.py must define SUBMISSION_STATS (instrumented fallback)"
+if cfg.get("require_submission_stats", True):
+    assert isinstance(stats, dict), "main.py must define SUBMISSION_STATS (instrumented fallback)"
+elif not isinstance(stats, dict):
+    stats = {}
+
 episodes = []
 all_times = []
 for players in cfg["players"]:
@@ -54,11 +125,13 @@ for players in cfg["players"]:
     ]
     for seat in seat_values:
         times = []
+
         def timed(obs):
             t0 = time.perf_counter()
             r = agent(obs)
             times.append((time.perf_counter() - t0) * 1000.0)
             return r
+
         lineup = [make_producer() for _ in range(players)]
         lineup[seat] = timed
         env = make("orbit_wars", debug=True)
@@ -77,6 +150,7 @@ for players in cfg["players"]:
             "decision_ms_max": times[-1] if times else None,
             "submission_status": statuses[seat],
         })
+
 all_times.sort()
 out = {
     "episodes": episodes,
@@ -103,6 +177,11 @@ def main() -> None:
         action="store_true",
         help="validate a non-PGS tarball with the same official runner",
     )
+    ap.add_argument(
+        "--allow-missing-submission-stats",
+        action="store_true",
+        help="allow pure baseline tarballs without SUBMISSION_STATS instrumentation",
+    )
     args = ap.parse_args()
     seat_cfg: str | list[int]
     if args.seats.strip().lower() == "all":
@@ -113,6 +192,7 @@ def main() -> None:
         "players": [int(p) for p in args.players],
         "seats": seat_cfg,
         "check_pgs_planner": not args.skip_pgs_planner_check,
+        "require_submission_stats": not args.allow_missing_submission_stats,
     }
 
     with tempfile.TemporaryDirectory() as tmp:
