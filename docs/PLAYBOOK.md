@@ -191,6 +191,26 @@ ou em `artifacts/league/tarballs/<nome>.tar.gz`, use H2H contra o pool:
 rtk .venv/bin/python scripts/league_challenger.py --candidate candidate --seeds 20 --workers 4
 ```
 
+Para escolher submissão entre candidatos, use a régua pareada forte. Ela não usa
+BT/ranking aleatório: roda cada candidato contra as mesmas âncoras 2p, lineups
+4p fixas, H2H direto contra o incumbente, e só recomenda `PASS_LOCAL` se todos
+os gates técnicos e competitivos passarem.
+
+```bash
+rtk .venv/bin/python scripts/league_submit_ruler.py \
+  --candidates pgs_hold pgs_holdwave pgs_wave_s100 \
+  --incumbent pgs_holdwave \
+  --seeds 24 --steps 500 --jobs 2 \
+  --out artifacts/league/submit_ruler/report.json
+```
+
+Interpretação:
+
+- `PASS_LOCAL`: candidato passou faults/status, cobriu H2H mínimo, empatou/bateu
+  Producer e incumbente, limpou o floor rejeitado e não morreu demais em 4p;
+- `INCONCLUSIVE`: a amostra não tem decisivos suficientes; aumente `--seeds`;
+- `REJECT_LOCAL`: há falha técnica ou gate competitivo local ruim.
+
 Regra operacional: a liga é **veto-only**. Ela é boa para detectar crash, timeout,
 ação inválida, perda H2H clara, fragilidade 4p e estilos exploradores. Ela não
 promove sozinha entre configs próximas; promoção final exige score Kaggle/LB
