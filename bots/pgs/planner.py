@@ -17,27 +17,13 @@ Submission-safe: pure Python over ``orbit_lite``/``bots`` (no Rust import).
 """
 from __future__ import annotations
 
-import dataclasses
 import math
+import os
 import time
 from dataclasses import dataclass
 from typing import Any
 
 import torch
-from torch import Tensor
-
-from bots.pgs._helpers import (
-    _clone_movement,
-    _debit_entry_sources,
-    _entries_from_sparse_row,
-    _to_list_observation,
-    _with_tensor_player,
-)
-from bots.producer._upstream import (
-    ProducerLiteRuntime,
-    _config_for as _producer_config_for,
-    plan_lite_waves,
-)
 from orbit_lite.adapter import single_obs_to_tensor, sparse_action_row_to_moves
 from orbit_lite.distance_cache import build_distance_cache
 from orbit_lite.intercept_aim import intercept_angle
@@ -57,9 +43,22 @@ from orbit_lite.planner_core import (
     entries_to_sparse_payload,
     largest_initial_player_count,
 )
+from torch import Tensor
 
-
-import os
+from bots.pgs._helpers import (
+    _clone_movement,
+    _debit_entry_sources,
+    _entries_from_sparse_row,
+    _to_list_observation,
+    _with_tensor_player,
+)
+from bots.producer._upstream import (
+    ProducerLiteRuntime,
+    plan_lite_waves,
+)
+from bots.producer._upstream import (
+    _config_for as _producer_config_for,
+)
 
 _DEBUG = os.getenv("PGS_DEBUG", "").strip() not in {"", "0"}
 
@@ -105,9 +104,28 @@ class PGSConfig:
     wave_min_ships: float = 0.0
     wave_start_step: int = 50
     wave_max_delay: int = 8
+    # H7 E4 — learned value net plugs into the search. When set, _plan_value scores
+    # the POST-LAUNCH board (current state + this plan's launches applied) with the
+    # net instead of the margin-at-H heuristic. The post-launch board is a REAL game
+    # state (in-distribution for the net trained on encode_state of real states), so
+    # different plans get different values — unblocking the 4p deviation collapse
+    # (DB 118: hand-coded value gave PROD==HOLD identical). value_net_arbiter_margin
+    # is in NET units (~[-1,1]); the hand-coded arbiter_margin (25) would always veto.
+    value_net_path: str | None = None
+    value_net_arbiter_margin: float = 0.0
     # 4p plays the exact Producer floor (no deviations, no wave) when True —
     # the 2026-06-09 tarball behaved this way via its 2p-only early return.
     floor_in_4p: bool = False
+    # 4p SURVIVAL defense (H-118). INERT in practice — kept as a documented hook.
+    # Root cause (DB id=118, PGS_DBG4P probe): in 4p the value model (ship+territory
+    # margin at horizon H) is INSENSITIVE to launch/hold/defend — PROD==HOLD value at
+    # ANY horizon, because ships are conserved and the Producer launches don't resolve
+    # (capture/die) by H; and _script_reinforce never fires because the single-turn,
+    # per-opponent projection can't see the sustained 3-opponent assault that actually
+    # annihilates us. So unioning {reinforce,evac} changes nothing (the search never
+    # selects them). A real 4p fix needs a LEARNED value (H7) or a 4p-aware multi-turn
+    # threat model — not a flag. Left off by default.
+    defend_in_4p: bool = False
 
 
 def _select_entries(entries: LaunchEntries, mask: Tensor) -> LaunchEntries:
@@ -136,18 +154,39 @@ def _single_entry(
 
 
 class PGSRuntime:
-    """Per-game PGS planner. Stateless across turns in v0 (fresh Producer plans)."""
+    """Per-game PGS planner."""
 
     def __init__(self, config: PGSConfig | None = None) -> None:
         self.config = config or PGSConfig()
         # wave v1 cross-turn state: target_slot -> step when its attack group
         # was first withheld (age gate). Reset at step 0.
         self._wave_pending: dict[int, int] = {}
+        # one PERSISTENT ProducerLiteRuntime per owner: the real Producer keeps
+        # a rolling PlanetMovement memory (planned-launch ledger reconciled
+        # against the next obs); a fresh runtime per turn re-estimates in-flight
+        # arrivals from the obs alone and diverges from the real Producer
+        # (fidelity probe: ~45% of steps, incl. different move counts).
+        self._floor_runtimes: dict[int, ProducerLiteRuntime] = {}
         self._player_count: int | None = None
+        # H7 E4: learned value net (loaded once; CPU inference)
+        self._value_net = None
+        self._cur_planets: list = []
+        self._cur_fleets: list = []
+        # generator draws angular_velocity from [0.025, 0.05); 0.0 is
+        # out-of-distribution for the value net's global feature 1
+        self._cur_angular: float = 0.0
+        if self.config.value_net_path:
+            from python.agents.value_net import load_value_net
+            self._value_net = load_value_net(self.config.value_net_path, device="cpu")
 
     # -- agent glue --------------------------------------------------------
     def act(self, obs: Any):
         obs = _to_list_observation(obs)
+        if self._value_net is not None and isinstance(obs, dict):
+            # snapshot the real board for post-launch value scoring (E4)
+            self._cur_planets = list(obs.get("planets", []))
+            self._cur_fleets = list(obs.get("fleets", []))
+            self._cur_angular = float(obs.get("angular_velocity", 0.0))
         player = obs.get("player", 0) if isinstance(obs, dict) else obs.player
         player_id = int(player)
         obs_tensors = single_obs_to_tensor(obs, player_id=player_id)
@@ -159,7 +198,9 @@ class PGSRuntime:
     def _producer_entries(
         self, owner_id: int, obs_tensors: dict, movement: PlanetMovement
     ) -> LaunchEntries:
-        runtime = ProducerLiteRuntime()
+        # at most ONE tensor_action call per (owner, turn): run_turn mutates the
+        # runtime's rolling memory, a second same-turn call would corrupt it
+        runtime = self._floor_runtimes.setdefault(int(owner_id), ProducerLiteRuntime())
         with torch.no_grad():
             row = runtime.tensor_action(_with_tensor_player(obs_tensors, int(owner_id)))
         return _entries_from_sparse_row(
@@ -239,7 +280,6 @@ class PGSRuntime:
         launches applied) says will flip — reinforcements must arrive before the
         flip step. Defending a known incoming attack is the cheapest sound
         deviation against a deterministic opponent."""
-        H = int(self.config.value_horizon)
         owner = status.owner
         mine_now = owner[:, 0] == int(me)
         lost_mask = (owner[:, 1:] >= 0) & (owner[:, 1:] != int(me))
@@ -375,6 +415,55 @@ class PGSRuntime:
         )
 
     # -- plan value ----------------------------------------------------------
+    def _value_net_plan_value(self, obs_tensors: dict, my_entries: LaunchEntries,
+                              opp_entries_by_owner: list[tuple[int, LaunchEntries]], me: int) -> float:
+        """H7 E4: score the POST-LAUNCH board (real state + this plan's launches AND the
+        opponents' predicted launches) with the learned value net. Including the enemy
+        incoming fleets lets the net SEE the threat — so naive HOLD on a planet under
+        attack is no longer valued as safe (fix for the 4p passivity regression)."""
+        from python.orbit_wars_gym.encoding import encode_state
+
+        planet_ids = obs_tensors["planets"][..., 0].long()
+
+        def _moves(entries):
+            out = []
+            valid = entries.valid & (entries.ships >= 1.0)
+            for i in torch.where(valid)[0].tolist():
+                slot = int(entries.source_slots[i].item())
+                if 0 <= slot < int(planet_ids.shape[0]):
+                    out.append((int(planet_ids[slot].item()),
+                                float(entries.angle[i].item()), float(entries.ships[i].item())))
+            return out
+
+        by_owner = [(int(me), _moves(my_entries))]
+        for oid, ent in opp_entries_by_owner:
+            by_owner.append((int(oid), _moves(ent)))
+
+        pos = {int(p[0]): (float(p[2]), float(p[3])) for p in self._cur_planets}
+        debit: dict[int, float] = {}
+        for _o, mvs in by_owner:
+            for fpid, _a, sh in mvs:
+                debit[fpid] = debit.get(fpid, 0.0) + sh
+        planets = []
+        for p in self._cur_planets:
+            row = list(p)
+            d = debit.get(int(row[0]), 0.0)
+            if d:
+                row[5] = max(float(row[5]) - d, 0.0)
+            planets.append(row)
+        fleets = [list(f) for f in self._cur_fleets]
+        fid = 9000
+        for owner, mvs in by_owner:
+            for fpid, ang, sh in mvs:
+                x, y = pos.get(fpid, (0.0, 0.0))
+                fleets.append([fid, owner, x, y, ang, fpid, sh])
+                fid += 1
+        obs_vec = encode_state({"planets": planets, "fleets": fleets,
+                                "step": int(obs_tensors["step"].item()),
+                                "angular_velocity": self._cur_angular}, int(me))
+        with torch.no_grad():
+            return float(self._value_net(torch.as_tensor(obs_vec[None], dtype=torch.float32))[0])
+
     def _plan_value(
         self,
         movement: PlanetMovement,
@@ -384,6 +473,8 @@ class PGSRuntime:
         me: int,
     ) -> float:
         cfg = self.config
+        if self._value_net is not None:
+            return self._value_net_plan_value(obs_tensors, my_entries, opp_entries_by_owner, me)
         H = int(cfg.value_horizon)
         clone = _clone_movement(movement)
         for owner_id, entries in [(me, my_entries)] + opp_entries_by_owner:
@@ -440,6 +531,7 @@ class PGSRuntime:
         cfg = self.config
         if bool((obs_tensors["step"] == 0).all()):
             self._player_count = None
+            self._floor_runtimes = {}
         if self._player_count is None:
             self._player_count = largest_initial_player_count(obs_tensors)
         player_count = int(self._player_count)
@@ -524,6 +616,8 @@ class PGSRuntime:
         fixed_base = _select_entries(my_base, other_mask)  # base moves outside search set
 
         enabled = {t.strip().lower() for t in str(cfg.scripts).split(",") if t.strip()}
+        if player_count != 2 and bool(cfg.defend_in_4p):
+            enabled |= {"reinforce", "evac"}  # mode-gated 4p survival defense (H-118)
         portfolio: dict[int, list[tuple[str, LaunchEntries]]] = {}
         for s in sources:
             a = float(avail[s].item())
@@ -599,7 +693,9 @@ class PGSRuntime:
                 ]
                 return self._plan_value(movement, obs_tensors, plan, replies, me)
 
-            if reactive_value(plan_dev) <= reactive_value(plan_prod) + float(cfg.arbiter_margin):
+            _arb = (float(cfg.value_net_arbiter_margin) if self._value_net is not None
+                    else float(cfg.arbiter_margin))
+            if reactive_value(plan_dev) <= reactive_value(plan_prod) + _arb:
                 assign = {s: 0 for s in sources}
 
         if _DEBUG and any(assign[s] != 0 for s in sources):
@@ -613,16 +709,14 @@ class PGSRuntime:
         return entries_to_sparse_payload(final, planet_ids=planet_ids)
 
 
-_RUNTIME: PGSRuntime | None = None
-
-
 def make_runtime(config: PGSConfig | None = None) -> PGSRuntime:
     """Fresh, fully isolated PGS runtime (safe for vectorized rollouts)."""
     return PGSRuntime(config)
 
 
-def agent(obs: Any):
-    global _RUNTIME
-    if _RUNTIME is None or (isinstance(obs, dict) and int(obs.get("step", 0)) == 0):
-        _RUNTIME = PGSRuntime()
-    return _RUNTIME.act(obs)
+# NOTE (2026-06-11): this module deliberately exposes NO ready-made `agent`.
+# The dataclass defaults of PGSConfig keep ALL scripts enabled as an ablation
+# knob — the REJECTED config (LB 1022, id=129/142). A module-level agent()
+# built on those defaults is exactly how the 2026-06-09 submission shipped the
+# wrong bot. The single operational entrypoint is bots.pgs.agent (pinned
+# SUBMISSION_CONFIG); ablations must construct PGSConfig(...) explicitly.

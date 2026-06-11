@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-
 from python.agents.registry import get_isolated_opponents
 from python.orbit_wars_gym.backend import RustBatchBackend, RustConfig
 from python.orbit_wars_gym.observation import to_official_observation
@@ -68,3 +67,28 @@ def test_pgs_floor_matches_producer_modulo_float() -> None:
             for m in floor.act(to_official_observation(state, 0))
         )
         assert mine == real
+
+
+def test_planner_exposes_no_default_entrypoint() -> None:
+    """Regressão id=129/142 (2026-06-11): planner.py expunha agent() sobre os
+    DEFAULTS do dataclass (all-scripts, config REJEITADA) — dependendo do
+    import, "pgs" significava outro bot (foi assim que a submissão de
+    2026-06-09 embarcou o bot errado). Entrypoint único: bots.pgs.agent."""
+    import bots.pgs.planner as planner
+
+    assert not hasattr(planner, "agent"), (
+        "entrypoint duplicado reintroduzido no planner — use bots.pgs.agent")
+
+
+def test_registry_pgs_routes_to_operational_entrypoint(monkeypatch) -> None:
+    """O 'pgs' das heurísticas do registry deve rotear pro entrypoint
+    operacional (SUBMISSION_CONFIG), o mesmo bot dos isolados."""
+    import bots.pgs.agent as op_agent
+    import python.orbit_wars_gym.observation as obs_mod
+    from python.agents.registry import pgs_agent
+
+    sentinel = [[1.0, 2.0, 3.0]]
+    monkeypatch.setattr(op_agent, "agent", lambda obs: sentinel)
+    monkeypatch.setattr(obs_mod, "to_official_observation",
+                        lambda state, player: {"step": 0})
+    assert pgs_agent({}, 0) == sentinel

@@ -6,14 +6,13 @@ import dataclasses
 from typing import Any
 
 import torch
-from torch import Tensor
-
 from orbit_lite.movement import PlanetMovement
 from orbit_lite.movement_step import (
     LaunchEntries,
     infer_planned_launches_from_entries,
 )
 from orbit_lite.planner_core import _empty_entries
+from torch import Tensor
 
 
 def _planet_row(planet: Any) -> Any:

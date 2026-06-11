@@ -14,13 +14,13 @@ from typing import Any
 import torch
 
 from .constants import (
-    P_MAX,
-    F_MAX,
     COMET_EVENTS,
-    COMETS_PER_EVENT,
     COMET_PATH_MAX,
+    COMETS_PER_EVENT,
+    DEFAULT_EPISODE_STEPS,
+    F_MAX,
+    P_MAX,
 )
-from .constants import DEFAULT_EPISODE_STEPS
 
 
 def _infer_player_count_from_obs(planets: list[Any], fleets: list[Any], player_id: int) -> int:

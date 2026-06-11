@@ -341,7 +341,6 @@ def sparse_launch_flow_delta(
 
     src, tgt, ships, eta, owner, valid = _normalize_launches_bcl(launches)
     C = int(src.shape[0])
-    L = int(src.shape[-1])
     src = src.to(device=device, dtype=torch.long)
     tgt = tgt.to(device=device, dtype=torch.long)
     ships = ships.to(device=device, dtype=fdtype)

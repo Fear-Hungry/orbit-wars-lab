@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from python.agents.registry import (
     STATEFUL_SINGLETON_OPPONENTS,
     get_heuristic_policies,

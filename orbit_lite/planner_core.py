@@ -13,15 +13,13 @@ from collections.abc import Callable
 import torch
 from torch import Tensor
 
+from .distance_cache import min_distance_to_targets
 from .garrison_launch import GarrisonFlowDiff, LaunchSet, sparse_launch_flow_delta
-from .movement import PlanetGarrisonStatus, PlanetMovement
 from .geometry import fleet_speed
 from .intercept_aim import intercept_angle
+from .movement import PlanetGarrisonStatus, PlanetMovement
 from .movement_aiming import LAUNCH_SURFACE_OFFSET, TARGET_HIT_SURFACE_OFFSET
 from .movement_step import LaunchEntries
-from .distance_cache import min_distance_to_targets
-
-
 
 
 def largest_initial_player_count(obs_tensors: dict) -> int:
@@ -278,7 +276,6 @@ def build_target_shortlist(
     two caps are independent (shortlist width == offensive + defensive), so each can
     be swept on its own. Returns ``(target_idx, target_exists)``."""
     P = obs.P
-    device = obs.device
     n_attack = max(1, min(int(config.max_offensive_targets), P))
     R = max(0, min(int(config.max_defensive_targets), P))
 
@@ -334,15 +331,20 @@ def reachable_mask(
     sy = movement.y[0][src].view(S, 1, 1)
     tx = movement.x[: K + 1].gather(1, tgt.view(1, T).expand(K + 1, T))     # [K+1,T]
     ty = movement.y[: K + 1].gather(1, tgt.view(1, T).expand(K + 1, T))
-    ax = tx[:K, :].view(1, K, T); ay = ty[:K, :].view(1, K, T)             # tgt@(k-1)
-    bx = tx[1:, :].view(1, K, T); by = ty[1:, :].view(1, K, T)             # tgt@k
+    ax = tx[:K, :].view(1, K, T)             # tgt@(k-1)
+    ay = ty[:K, :].view(1, K, T)             # tgt@(k-1)
+    bx = tx[1:, :].view(1, K, T)             # tgt@k
+    by = ty[1:, :].view(1, K, T)             # tgt@k
 
     # Point-to-segment distance from (sx,sy) to segment [(ax,ay),(bx,by)] → [S,K,T].
-    abx = bx - ax; aby = by - ay
-    apx = sx - ax; apy = sy - ay
+    abx = bx - ax
+    aby = by - ay
+    apx = sx - ax
+    apy = sy - ay
     denom = (abx * abx + aby * aby).clamp(min=1e-12)
     u = ((apx * abx + apy * aby) / denom).clamp(0.0, 1.0)
-    cx = ax + u * abx; cy = ay + u * aby
+    cx = ax + u * abx
+    cy = ay + u * aby
     seg_dist = torch.sqrt(((sx - cx) ** 2 + (sy - cy) ** 2).clamp(min=0.0))  # [S,K,T]
 
     src_r = movement.radii[src].view(S, 1, 1)
@@ -370,7 +372,7 @@ def _greedy_select(
     """Masking-only greedy over [C, L] candidates: pick the best wave each iter,
     one per target, source-budget aware across all L contributors. Enforces the
     role mutex: a reinforced planet can't also be a source, and vice-versa."""
-    C, L = int(cand_src.shape[0]), int(cand_src.shape[1])
+    L = int(cand_src.shape[1])
     target_taken = ~target_exists.clone()                                        # [T]
     defended = torch.zeros(P, dtype=torch.bool, device=device)                   # reinforced this turn
     used_src = torch.zeros(P, dtype=torch.bool, device=device)                   # contributed this turn
@@ -556,7 +558,6 @@ def _empty_entries(device: torch.device, dtype: torch.dtype) -> LaunchEntries:
 
 def entries_to_sparse_payload(entries: LaunchEntries, *, planet_ids: Tensor) -> dict[str, Tensor]:
     """Convert a LaunchEntries table to the sparse action-row payload."""
-    L = entries.source_slots.shape[0]
     device = entries.source_slots.device
     P = int(planet_ids.shape[0])
     valid_long = entries.valid.to(torch.int64)

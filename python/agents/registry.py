@@ -85,7 +85,11 @@ def oep_agent(state: dict[str, Any], player: int) -> list[list[float]]:
 
 
 def pgs_agent(state: dict[str, Any], player: int) -> list[list[float]]:
-    from bots.pgs.planner import agent as _pgs
+    # bots.pgs.agent = ONLY pgs entrypoint (pinned SUBMISSION_CONFIG). The old
+    # import from bots.pgs.planner ran the all-scripts dataclass DEFAULTS — the
+    # rejected config (id=129/142) — so "pgs" meant a different bot here than
+    # in _make_isolated_policy.
+    from bots.pgs.agent import agent as _pgs
     from python.orbit_wars_gym.observation import to_official_observation
 
     moves = _pgs(to_official_observation(state, player=player))
