@@ -225,15 +225,25 @@ def main():
     crashes: dict[str, int] = {}
     games = []
     if len(names) == 2:
-        for seat_names in (names, names[::-1]):
-            for batch in _seed_chunks(seeds, chunk_size):
+        # Interleave seat orders per seed chunk so partial checkpoint JSONs are
+        # already seat-balanced enough for monitoring. The final report was
+        # balanced before this; the fix is for honest long-run progress reads.
+        for batch in _seed_chunks(seeds, chunk_size):
+            for seat_names in (names, names[::-1]):
                 games += play_batch(seat_names, batch, args.steps, decision_ms, crashes)
                 _write_report(args.out, names, games, decision_ms, crashes)
     elif len(names) == 4:
+        rotation_chunks: list[tuple[list[str], list[list[int]]]] = []
         for r in range(4):
             rot = names[r:] + names[:r]
             batch = [s for j, s in enumerate(seeds) if j % 4 == r]
-            for chunk in _seed_chunks(batch, chunk_size):
+            rotation_chunks.append((rot, _seed_chunks(batch, chunk_size)))
+        max_chunks = max((len(chunks) for _, chunks in rotation_chunks), default=0)
+        for idx in range(max_chunks):
+            for rot, chunks in rotation_chunks:
+                if idx >= len(chunks):
+                    continue
+                chunk = chunks[idx]
                 if chunk:
                     games += play_batch(rot, chunk, args.steps, decision_ms, crashes)
                     _write_report(args.out, names, games, decision_ms, crashes)

@@ -26,6 +26,7 @@ Locked-down bugs (2026-06-10):
 """
 from __future__ import annotations
 
+import sys
 import time
 
 
@@ -176,3 +177,83 @@ def test_normal_game_carries_empty_faults_key_and_tie_flag(monkeypatch):
     assert g["tie"] in (True, False)
     if not g["tie"]:
         assert g["winner_seat"] >= 0 or max(g["final_ships"]) <= 0
+
+
+def test_chunked_2p_main_interleaves_seat_orders_for_honest_checkpoints(monkeypatch, tmp_path):
+    import scripts.league_match as lm
+
+    calls = []
+
+    def fake_play_batch(names_by_seat, seeds, steps, decision_ms, crashes):
+        calls.append((tuple(names_by_seat), tuple(seeds)))
+        return [{"seats": list(names_by_seat), "seed": int(seeds[0])}]
+
+    writes = []
+
+    def fake_write_report(out_path, names, games, decision_ms, crashes):
+        writes.append([tuple(g["seats"]) for g in games])
+
+    monkeypatch.setattr(lm, "play_batch", fake_play_batch)
+    monkeypatch.setattr(lm, "_write_report", fake_write_report)
+    monkeypatch.setattr(sys, "argv", [
+        "league_match.py",
+        "--agents",
+        "left,right",
+        "--seeds",
+        "4",
+        "--seed-base",
+        "100",
+        "--steps",
+        "1",
+        "--chunk-size",
+        "2",
+        "--out",
+        str(tmp_path / "out.json"),
+    ])
+
+    lm.main()
+
+    assert calls[:4] == [
+        (("left", "right"), (100, 101)),
+        (("right", "left"), (100, 101)),
+        (("left", "right"), (102, 103)),
+        (("right", "left"), (102, 103)),
+    ]
+    assert writes[1] == [("left", "right"), ("right", "left")]
+
+
+def test_chunked_4p_main_interleaves_rotations_for_honest_checkpoints(monkeypatch, tmp_path):
+    import scripts.league_match as lm
+
+    calls = []
+
+    def fake_play_batch(names_by_seat, seeds, steps, decision_ms, crashes):
+        calls.append((tuple(names_by_seat), tuple(seeds)))
+        return [{"seats": list(names_by_seat), "seed": int(seeds[0])}]
+
+    monkeypatch.setattr(lm, "play_batch", fake_play_batch)
+    monkeypatch.setattr(lm, "_write_report", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sys, "argv", [
+        "league_match.py",
+        "--agents",
+        "a,b,c,d",
+        "--seeds",
+        "8",
+        "--seed-base",
+        "200",
+        "--steps",
+        "1",
+        "--chunk-size",
+        "1",
+        "--out",
+        str(tmp_path / "out.json"),
+    ])
+
+    lm.main()
+
+    assert calls[:4] == [
+        (("a", "b", "c", "d"), (200,)),
+        (("b", "c", "d", "a"), (201,)),
+        (("c", "d", "a", "b"), (202,)),
+        (("d", "a", "b", "c"), (203,)),
+    ]
