@@ -22,14 +22,6 @@ from python.agents.policy import (
     _action_value_from_heads,
     launch_gated_kl,
 )
-
-_POLICY_ARCHS = {"flat": FlatActorCritic, "entity": EntityActorCritic}
-
-
-def _build_policy(arch: str, obs_dim: int):
-    if arch not in _POLICY_ARCHS:
-        raise ValueError(f"unknown policy arch {arch!r}; valid: {sorted(_POLICY_ARCHS)}")
-    return _POLICY_ARCHS[arch](obs_dim)
 from python.agents.registry import (
     STATEFUL_SINGLETON_OPPONENTS,
     get_heuristic_policies,
@@ -43,6 +35,15 @@ from orbit_wars_gym.action_masks import build_action_masks, split_masks
 from orbit_wars_gym.backend import RustBatchBackend, RustConfig
 from orbit_wars_gym.encoding import observation_dim
 from orbit_wars_gym.entities import fleet_owner, planet_id, planet_owner
+
+_POLICY_ARCHS = {"flat": FlatActorCritic, "entity": EntityActorCritic}
+
+
+def _build_policy(arch: str, obs_dim: int):
+    if arch not in _POLICY_ARCHS:
+        raise ValueError(f"unknown policy arch {arch!r}; valid: {sorted(_POLICY_ARCHS)}")
+    return _POLICY_ARCHS[arch](obs_dim)
+
 
 _HEURISTIC_POLICIES = get_heuristic_policies()
 PHASE0_OPPONENTS = {

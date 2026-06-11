@@ -33,12 +33,12 @@ import argparse
 import hashlib
 import json
 import math
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
-
 from python.agents.registry import get_heuristic_policies
 from python.orbit_wars_gym.action_decoder import DEFAULT_DECODER_CONFIG, DecoderConfig
 from python.orbit_wars_gym.action_inverse import (

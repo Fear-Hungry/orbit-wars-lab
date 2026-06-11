@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 import torch
-
 from python.agents.policy import EntityActorCritic
 from python.orbit_wars_gym.action_masks import LAUNCH_N, SOURCE_N, TARGET_N
 from python.orbit_wars_gym.encoding import observation_dim

@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 
-import numpy as np
 import pytest
-
 from python.agents.registry import _make_isolated_policy
 from python.orbit_wars_gym.backend import RustBatchBackend, RustConfig
 

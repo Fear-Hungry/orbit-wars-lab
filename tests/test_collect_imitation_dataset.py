@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import numpy as np
-
 from python.orbit_wars_gym.action_decoder import DEFAULT_DECODER_CONFIG, decode_discrete_action
 from python.orbit_wars_gym.action_inverse import invert_moves, move_set_distance
 from python.orbit_wars_gym.backend import RustBatchBackend, RustConfig
 from scripts.collect_imitation_dataset import (
     DEFAULT_DECODER_CONFIG as COLLECT_DECODER_CFG,
+)
+from scripts.collect_imitation_dataset import (
     DEFAULT_INVERSE_CONFIG,
     _content_hash,
     _dataset_report,

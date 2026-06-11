@@ -81,7 +81,7 @@ def build_action_masks(
     return mask
 
 
-def split_masks(flat: "np.ndarray | object") -> dict:
+def split_masks(flat: np.ndarray | object) -> dict:
     """Split a flat mask row/batch into the per-head dict the policy expects.
 
     Accepts a numpy array or a torch tensor with last dim :data:`MASK_DIM`;

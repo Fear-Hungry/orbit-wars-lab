@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-
 from python.agents.registry import (
     _make_isolated_policy,
     get_heuristic_policies,

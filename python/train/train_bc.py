@@ -31,7 +31,6 @@ from typing import Any
 import numpy as np
 import torch
 import torch.nn.functional as F
-
 from python.agents.policy import EntityActorCritic, FlatActorCritic
 from python.orbit_wars_gym.action_decoder import DEFAULT_DECODER_CONFIG
 from python.orbit_wars_gym.encoding import observation_dim

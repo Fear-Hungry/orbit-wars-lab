@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import torch
-
 from python.agents.policy import FlatActorCritic
 from python.orbit_wars_gym.action_masks import (
     LAUNCH_N,

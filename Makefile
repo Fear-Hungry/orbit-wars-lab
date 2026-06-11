@@ -130,7 +130,7 @@ fmt:
 
 lint:
 	cargo clippy --workspace --all-targets -- -D warnings || true
-	python -m ruff check python tests scripts || true
+	$(UV_RUN) python -m ruff check
 
 clean:
 	rm -rf target .pytest_cache .ruff_cache __pycache__ python/**/__pycache__ tests/**/__pycache__

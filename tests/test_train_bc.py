@@ -2,15 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import torch
-
 from python.orbit_wars_gym.action_decoder import DEFAULT_DECODER_CONFIG
 from python.orbit_wars_gym.action_inverse import DEFAULT_INVERSE_CONFIG
 from python.train.train_bc import bc_loss, train_bc
 from scripts.collect_imitation_dataset import _pack, collect_dataset
 from scripts.export_submission import _load_checkpoint_payload
-
-import numpy as np
 
 
 def _tiny_dataset(tmp_path: Path) -> Path:

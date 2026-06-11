@@ -20,7 +20,6 @@ import random
 from typing import Any
 
 from kaggle_environments import make
-
 from python.orbit_wars_gym.backend import RustBatchBackend, RustConfig
 from python.orbit_wars_gym.snapshots import snapshot_to_state  # noqa: F401  (kept for parity API)
 from scripts.parity_probe import (

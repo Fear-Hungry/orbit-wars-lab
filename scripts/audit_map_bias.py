@@ -24,7 +24,6 @@ from typing import Any
 
 import numpy as np
 import torch
-
 from python.agents.policy import FlatActorCritic
 from python.agents.registry import get_heuristic_policies
 from python.orbit_wars_gym.backend import RustBatchBackend, RustConfig

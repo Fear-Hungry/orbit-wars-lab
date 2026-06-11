@@ -5,7 +5,233 @@
 
 ---
 
-# 🎯 FOCO ATUAL (2026-06-09, tarde) — frente HEURÍSTICA nesta worktree; BReP/DRL fica na worktree B
+# ✅ RESOLVIDO (2026-06-11) — entrypoint duplicado do PGS: "pgs" podia significar OUTRO bot
+
+> Achado (auditoria do usuário, confirmado): `bots/pgs/planner.py` ainda expunha `agent()` sobre
+> `PGSRuntime()` com os DEFAULTS do dataclass = **all-scripts (config rejeitada, LB 1022)**,
+> enquanto `bots/pgs/agent.py` pina `SUBMISSION_CONFIG` (hold+w60s150). Divergência REAL em uso:
+> `registry.pgs_agent` (heuristic policies, usado em treino/eval) importava do planner —
+> `get_heuristic_policies()["pgs"]` e `get_isolated_opponents("pgs")` eram bots DIFERENTES.
+> Mesmo mecanismo do incidente da submissão all-scripts acidental (id=129/142).
+
+- [x] **Entrypoint único** ✅ 2026-06-11 (DB id=181): `agent()`+`_RUNTIME` REMOVIDOS do planner
+  (nota no lugar explicando o porquê; `make_runtime` fica); `registry.pgs_agent` roteia para
+  `bots.pgs.agent`; `pgs_allscripts` da liga segue existindo mas EXPLÍCITO e nomeado (intencional,
+  âncora do hard gate).
+  - [x] verificar: `test_planner_exposes_no_default_entrypoint` (trava a reintrodução) +
+    `test_registry_pgs_routes_to_operational_entrypoint`; 25 testes passam nas 7 suítes
+    consumidoras (pgs_bot, isolation, registry, floor_fidelity, parallel, entity, masks)
+- [ ] **atenção (não-bloqueante)**: resultados de treino/eval ANTIGOS que usaram
+  `get_heuristic_policies()["pgs"]` mediram contra o all-scripts (bot fraco, LB 1022) — se alguma
+  conclusão dependeu desse oponente, reler com isso em mente
+  - [ ] verificar: grep nos configs/logs de treino por oponente "pgs" não-isolado antes de reusar conclusão
+
+# ✅ RESOLVIDO (2026-06-11) — cache de tarball da liga rodava código VELHO após re-export
+
+> Achado (auditoria do usuário): `league_agents._tarball_agent` só extraía se `cache/main.py` não
+> existisse — re-exportar um tarball com o mesmo nome (ex.: novo campeão da worktree B em
+> `submission_brep.tar.gz`) continuava rodando o código da PRIMEIRA extração. Clássico "testei o
+> bot novo, mas era cache velho" — e os jogos da liga atribuíam o resultado à versão errada.
+
+- [x] **Cache keyed por hash de conteúdo** ✅ 2026-06-11 (DB id=180): dir = `<nome>-<sha1[:12]>`;
+  re-export ⇒ extração E overlay de import (`_TARBALL_ISO`) novos; instâncias já construídas
+  mantêm a própria versão (sem swap retroativo); tarball ausente agora falha LOUD mesmo com
+  cache quente (antes rodava versão desconhecida em silêncio).
+  - [x] verificar: `tests/test_league_tarball_isolation.py` 4 passed (re-export invalida cache;
+    versão antiga preservada na instância em voo; FileNotFoundError sem o tarball); smoke real
+    criou `cache/brep-e55f6dedfbdc/` e o agente carrega
+- [ ] **limpeza opcional**: os dirs antigos keyed por nome (`cache/brep/`, `brep_league3/`,
+  `*_probe/`) viraram órfãos — nunca mais são usados; deletar quando quiser
+  - [ ] verificar: `ls artifacts/league/cache/` só com dirs `<nome>-<hash>` após a limpeza
+
+# ✅ RESOLVIDO (2026-06-11) — report encoda a falsificação do BT (veto-only legível por máquina)
+
+> Achado (auditoria do usuário): spearman_lb=0.036 impresso, mas a tabela seguia ranqueando
+> `pgs_wave_s100` ACIMA de `pgs_holdwave` (CI90 até separado!) com o LB real dizendo o contrário
+> (1228.8 vs 1138.6, gap 90 > ruído ±60) — o banner avisava, mas o `ranking` do report.json
+> continuava consumível como ordem de promoção.
+
+- [x] **`bt_predictive` + `lb_inversions` no report** ✅ 2026-06-11 (DB id=179): `bt_predictive`
+  exige spearman ≥ +0.6 com ≥ 5 âncoras (a condição "sustentado ≥10 rounds" segue manual/loop —
+  report é stateless); `lb_inversions` lista par-a-par onde o BT inverte o LB com gap acima do
+  ruído de resubmissão (±60). Real: **5 inversões** — `pgs_hold` inflado em 4 pares (vs holdwave/
+  oep/producer/brep) + `s100 > holdwave` (a do achado). Aviso explícito: "ordem da tabela é
+  INTERNA da pool — não usar como ranking de submissão".
+  - [x] verificar: 15 testes passam (unidade `lb_inversions` filtra gap ≤ ruído; fim-a-fim exige o
+    aviso + campos no JSON); report real imprime as 5 inversões e `bt_predictive=false`
+  - [ ] consumidores futuros do `report.json` devem checar `bt_predictive` antes de usar `ranking`
+    como ordem de campo. Hoje há UM consumidor automático: `league_run.top5()` usa o ranking p/
+    adensar matchmaking (30% dos 2p no topo) — uso INTERNO da pool, legítimo (não é promoção);
+    challenger/intransitivity não leem report.json (verificado)
+
+# ✅ RESOLVIDO (2026-06-11) — liga agora APLICA semântica Kaggle (antes só media timeout/invalid)
+
+> Diagnóstico (auditoria do usuário, confirmado no código oficial instalado): a liga contava
+> timeout/invalid mas deixava a ação entrar — bot que crashava/estourava tempo continuava jogando e
+> podia VENCER localmente, quando na Kaggle estaria morto. Semântica real (core.py/agent.py/
+> orbit_wars.py do kaggle_environments): exceção → `ERROR`; estouro de act além do banco
+> `remainingOverageTime` (**12s**, checado ANTES do decremento) → `DeadlineExceeded` → `TIMEOUT`;
+> nos dois casos o agente NUNCA mais age e recebe `reward=None` (não pode vencer nem com max ships).
+> Movimento inválido NÃO penaliza (o `process_moves` oficial só pula a entrada) — regra exata `len==3`.
+
+- [x] **Semântica aplicada no `league_match`** ✅ 2026-06-11 (DB id=178): banco de overage 12s por
+  assento; ERROR/TIMEOUT matam o agente até o fim do jogo (planetas seguem produzindo, frotas em
+  voo continuam); assento errado é EXCLUÍDO do argmax de vencedor; `agent_status` por assento
+  sempre gravado no game dict; check de entrada inválida alinhado ao oficial (`len==3`).
+- [x] **Consumidores alinhados à fonte única** ✅: `decisive_winner` do `league_report` respeita
+  `agent_status` (ausente = jogos antigos, todos elegíveis — comportamento inalterado);
+  `league_challenger` e `league_intransitivity` deixam de ter argmax próprio e importam a regra.
+  - [x] verificar: 14 testes passam (kill por ERROR, kill por exaustão do banco, banco absorve
+    overrun pequeno, errado não vence, invalid sem penalidade); report real inalterado
+    (4997 decisivos no acervo antigo)
+- [ ] **ressalva a monitorar**: timing local tem contenção (liga roda jogos em paralelo) — o banco
+  de 12s absorve ruído, mas se aparecer TIMEOUT local em bot validado <1s no tarball oficial,
+  suspeitar de contenção antes de culpar o bot
+  - [ ] verificar: nos próximos rounds, seção FAULTS sem TIMEOUT esporádico em bots com p95 < 200ms
+
+# ✅ RESOLVIDO (2026-06-11) — liga v1 inauditável p/ faults: ausência da chave era lida como "limpo"
+
+> Diagnóstico (auditoria do usuário, confirmado fim-a-fim): **5025/5025 jogos** em `artifacts/league/v1`
+> sem a chave `faults`, e `league_report.aggregate_faults` tratava ausência como zero fault —
+> crash/timeout/invalid antigos viraram "jogo limpo". Causa-raiz: o contrato omit-when-clean do
+> `league_match` (chave omitida quando limpo, "old-JSON compat") tornava jogo PRÉ-instrumentação
+> indistinguível de jogo limpo PÓS-fix — por isso até os rounds pós-112 estão sem a chave.
+
+- [x] **Contrato invertido + cobertura de auditoria** ✅ 2026-06-11 (DB id=177): `league_match` agora
+  SEMPRE grava `faults` (`{}` = auditado limpo; ausente = pré-instrumentação/NÃO auditado);
+  `league_report` ganhou `fault_audit()` + linha `⚠ auditoria de faults: X/N auditados` + campo
+  `fault_audit` no `report.json`; docstrings corrigidas (ausência ≠ limpo).
+  - [x] verificar: 12 testes passam (`test_league_match_faults` com o contrato novo travado +
+    `test_fault_audit_separates_unaudited_from_clean`); report real imprime
+    `0/5025 jogos auditados — 5025 pré-instrumentação`
+- [ ] **decorrência**: o acervo histórico segue não-auditável retroativamente (faults nunca foram
+  medidos lá) — a decisão já aberta de arquivar/re-acumular `cont/` (itens pgs_* e brep pré-fix
+  acima) agora tem mais um motivo; novos rounds entram auditados automaticamente
+  - [ ] verificar: após os próximos rounds da liga, `report.json["fault_audit"]["audited"]` > 0 e crescendo
+
+# ✅ RESOLVIDO (2026-06-11) — empacotador OEP com fallback SILENCIOSO (mesmo bug já corrigido no PGS)
+
+> Diagnóstico (/diagnose, reproduzido): `scripts/package_oep_submission.py` (MAIN_TEMPLATE) engolia
+> exceção com `except Exception: pass` e retornava `_producer(obs)` em timeout/erro **sem
+> `SUBMISSION_STATS`**. Repro determinístico: OEP 100% morto → 10/10 jogadas do Producer, episódio
+> "completa", e `benchmark_submission` (que detecta fallback SÓ via
+> `agent.__globals__["SUBMISSION_STATS"]`) via **0 fallbacks** — Producer rodando escondido no LB.
+> Era exatamente o bug travado no PGS em 2026-06-10; o template OEP nunca recebeu o fix (único
+> commit: d601511).
+
+- [x] **Portado o template instrumentado do PGS** ✅ 2026-06-11: SUBMISSION_STATS
+  (calls/fallbacks/timeouts/fallback_errors) + `box["err"]` no except + kill-switch
+  `_MAX_CONSEC_TIMEOUTS=3` (threads daemon estouradas roubam CPU dos steps seguintes);
+  preservados o `os.environ.setdefault("OEP_MIN_ADVANTAGE", ...)` e `agent` como ÚLTIMO
+  callable (gotcha get_last_callable).
+  - [x] verificar: `tests/test_oep_submission_fallback_instrumented.py` (espelho do PGS, 6 testes)
+    passa — OEP morto 10x → stats {calls:10, fallbacks:10, fallback_errors:10}; kill-switch para
+    de lançar OEP após 3 timeouts; repro original re-rodado pós-fix: fallback agora VISÍVEL.
+- [x] **Tarballs STALE re-empacotados** ✅ 2026-06-11: `submission_pgs_hold.tar.gz` e
+  `submission_pgs_wave_s100.tar.gz` também tinham o wrapper SEM instrumentação (0 ocorrências de
+  SUBMISSION_STATS — fallback invisível; explica underperformance "sem erro" dos refs 53541125/53542864:
+  timeout no hardware Kaggle vira Producer silencioso, e o wrapper antigo nem tinha kill-switch →
+  espiral de CPU). Re-empacotados com as MESMAS configs pinadas (hold: `scripts="hold"`; wave_s100:
+  `scripts="hold", wave_min_ships=60.0, wave_start_step=100`) + `submission_oep.tar.gz` (defaults
+  min_advantage=15, budget 0.6); os três embarcam o bots/pgs atual (inclui fix floor fidelity id=171).
+  - [x] verificar: `tar -xzOf <t> main.py | grep -c SUBMISSION_STATS` = 2 nos três; configs pinadas
+    conferidas; `validate_pgs_tarball` 500 steps = VALIDATION OK nos três (0 fallbacks locais)
+  - [ ] **decidir: re-submeter hold/wave_s100 com os tarballs instrumentados?** Ressalva honesta:
+    (a) a hipótese "fallback silencioso explica o LB baixo" é PLAUSÍVEL mas não-verificada (local
+    valida com 0 fallbacks; só o hardware Kaggle mais lento dispararia timeouts); (b) o Kaggle NÃO
+    expõe SUBMISSION_STATS — o ganho real lá é o kill-switch (evita a espiral de timeouts), a
+    instrumentação serve aos gates/benchmarks LOCAIS; (c) custa slots de submissão
+    - [ ] verificar: se re-submeter, comparar score estabilizado novo vs antigo (mesma config) —
+      delta >> ruído ±60 confirmaria a hipótese do fallback
+- [ ] **(prevenção) decidir: extrair o wrapper para módulo único** compartilhado pelos empacotadores
+  (PGS/OEP/BReP geram o mesmo wrapper por cópia — foi a duplicação que deixou o OEP para trás)
+  - [ ] verificar: um único template-fonte; os testes de fallback dos dois empacotadores importam dele
+
+# ✅ RESOLVIDO (2026-06-10, noite) — instrumento da liga consertado; separação fina DEFERIDA a H4/H5
+
+> **Decisão do usuário (2026-06-10):** PARAR a frente de exploiter manual. Instrumento consertado (VETO + regra de
+> promoção + coluna H2H + âncoras + footgun). A **retrodição NÃO foi perseguida até o fim de propósito**: (1) parte
+> da ordem de campo que ela exige reproduzir é RUÍDO Kaggle (~±60-80, medido no resubmit idêntico do holdwave
+> 1228→1151-1189): s100 vs hold (51 pts) e holdwave vs s100 (~80-120) não são estatisticamente separáveis no
+> próprio campo; só **holdwave >> hold (170 pts) é real** — e a liga ainda empata os dois porque vs o pool eles
+> jogam quase idêntico (holdwave só segura ondas <60 navios até step 150, raramente decisivo vs família Producer).
+> (2) Separá-los exigiria um exploiter INTERCEPTADOR (counter-puncher que abate frotas pequenas), não um atacante —
+> mas exploiter MANUAL já se mostrou insuficiente (rusher 0-win, bigwave aniquila mas perde). → separação fina
+> deferida às hipóteses APRENDIDAS H4 (MAP-Elites, DB 160) e H5 (PSRO+rectified-Nash, DB 161).
+
+## FOCO ANTERIOR (resolvido acima) — gate da liga FALSIFICADO pelo campo
+
+> Diagnóstico (sessão 2026-06-10): `pgs_hold` (liga #2, P≥producer=1.00) → LB **1057.6** e `pgs_wave_s100`
+> (liga #1, LB_est ~1225) → LB **1036.6** — ambos ~115-135 pts ABAIXO do producer (1173.1), nível allscripts.
+> Spearman recalculado com as âncoras de hoje: **0.0** (7 âncoras) e **-0.6** na faixa competitiva (sem allscripts).
+> Empacotamento DESCARTADO (configs pinadas verificadas nos 3 tarballs); ext agents sem crash (probe 0 exceções).
+> Causa: rating BT é relativo à população — pool 8/10 producer-lineage, ext bots fracos demais p/ discriminar o topo
+> (Balduzzi et al. 2018, arXiv:1806.02643; AlphaStar/PSRO p/ exploiters). Detalhe: s100 foi promovido com CI90
+> sobreposto ao holdwave e PERDENDO H2H p/ hold (0.44).
+
+- [x] **Rebaixar o gate da liga a VETO** ✅: `GATE_REFERENCE` agora é "veto floor" + `INCUMBENT="pgs_holdwave"`;
+  docstring de `league_report.py` traz a regra de promoção de 3 condições. Liga não promove sozinha.
+  - [x] verificar: `scripts/league_agents.py` documenta a regra nova (comentário VETO ONLY + falsificação)
+- [x] **Adicionar âncoras de hoje em `LB_ANCHORS`** ✅: `pgs_hold=1057.6`, `pgs_wave_s100=1109.4` (ainda subindo,
+  marcado p/ refresh); resubmit holdwave 53542884 anotado como ruído ~±60 (1151.6 hoje), não âncora.
+  - [x] verificar: report imprime 7 âncoras (producer/oep/brep/allscripts/holdwave/hold/s100); Spearman caiu p/ +0.1-0.3
+- [~] **Injetar exploiters de estilo no pool** — PARCIAL (achado honesto): `pgs_bigwave` (hold/wave100/delay25) entrou
+  no pool — em 24 seeds PERDE a família hold na média (win 0.38/0.25/0.23 vs hold/holdwave/s100) MAS ANIQUILA
+  23-38% dos jogos (sinal discriminativo real, ≠ rusher 0-win). Útil como sonda, insuficiente sozinho. Mas o
+  **RUSHER FALHOU**: v1 (spread/s50) e v2 (focus-fire/f120) deram **0-win vs a pool inteira** → fica FORA (free win =
+  viés de população, Balduzzi 2018). Construído em `bots/exploiters/rusher.py` mas não registrado no POOL.
+  - [ ] verificar (retrodição) — **NÃO ATINGIDO** com exploiters baratos: a liga AINDA não ranqueia holdwave acima de
+    hold/s100 com CI90 separados (s100 1080[1056,1100] ≈ holdwave 1065[1042,1085] ≈ hold 1064[1043,1087], sobrepostos).
+    → ESTE é o achado que motiva H4/H5: exploiter manual não reproduz o campo; precisa de exploiter APRENDIDO/QD.
+- [x] **Regra estatística de promoção** ✅: docstring do `league_report.py` exige (1) P≥ref≥0.6 (2) CI90 separado do
+  incumbente (3) H2H≥0.5 com N≥60; report imprime a coluna `H2Hinc` (cand vs incumbente) + 2 linhas de veredito.
+  - [x] verificar: regra escrita no league_report E coluna H2Hinc impressa (ex.: s100 46-41, hold 91-91 vs holdwave)
+- [x] **Footgun do report** ✅: default agora é `DEFAULT_GLOBS` (p*+cont+waveround+bl3round); `league_run.py` importa e
+  usa o MESMO glob no standings.
+  - [x] verificar: `python -m scripts.league_report` sem args agrega 2779 jogos (não mais o subset p*)
+- [x] **Registrar no experiments.duckdb** ✅: id=159 (falsificação do gate, status=measured) com diagnóstico completo.
+
+### Liga "redonda" = validador todos-contra-todos do PPO (2026-06-10, noite)
+
+> Objetivo do usuário: liga como validador all-vs-all (como o Kaggle), sem viés de comparar só vs Producer, para
+> mostrar que o PPO bate QUALQUER bot anterior. Métrica certa = matriz H2H par-a-par (não o BT agregado, que é
+> enviesado pela população — Balduzzi 2018).
+
+- [x] **#1 Challenger report** (`scripts/league_challenger.py`): dado um bot, roda H2H vs CADA membro do pool
+  (2p ambos assentos, 500 steps, paralelo), com Wilson CI + coluna LB + veredito `DOMINA / bate N de M`. Validado
+  (holdwave bate producer/allscripts, perde p/ hold → reproduz a liga). **Critério p/ PPO:** win ≥ 0.50 vs cada bot
+  real, ≥40 jogos decisivos/par.
+- [~] **#2 Adicionar elite do MAP-Elites ao pool — PULADO (redundante)**: o "vencedor" w2_c3/w3_c4 tem genoma =
+  `pgs_bigwave` (já no pool); o "fit +1.00" foi inflação de amostra pequena (8 jogos; bigwave tem BT 940 na liga).
+  MAP-Elites re-achou estilos existentes, não gerou novo → nada a adicionar.
+- [~] **#3 Burst nos pares magros** (`/tmp/burst_thin.sh` → cont/burst_*.json): 11 pares <30 jogos (bigwave/
+  brep_league3 recém-entrados) + 1 par vazio (allscripts×bigwave). Rodando. **verificar:** após o burst, todos os
+  55 pares do pool com ≥30 jogos decisivos.
+
+### Novas hipóteses (pedido do usuário: não chegamos a #1 → pesquisar gap + levantar hipóteses no DB)
+
+> Gap estrutural confirmado: melhor do time = holdwave 1228 (estável); top-5 ≈ 1575; líder 1679 → ~350-450 pts.
+> A falha de avaliação de hoje (pool não-diversa, BT enviesado, intransitividade) é exatamente o que QD e PSRO+Nash
+> foram desenhados para resolver. Exploiters MANUAIS não bastam (rusher 0-win) → precisa de geração APRENDIDA.
+
+- [~] **H4 (DB id=160, EXECUTADA id=164) — MAP-Elites/QD sobre o espaço do PGS** (`scripts/mapelites_pgs.py`):
+  48 evals, 4 workers, descritores medidos do jogo (wave_size × cadence), fitness vs {producer,holdwave}.
+  - [x] verificar (local): arquivo cobre ≥4 nichos com ≥3 batendo Producer → **ATINGIDO: 9 nichos, 4 batendo Producer**
+    (w1_c3 wave24, w2_c3 wave47 fit+1.0, w2_c4 wave35=s100, w3_c4 wave72=big-wave).
+  - [x] verificar (não-hold): **REFUTADO** — única região não-hold (`hold,snipe`) não bate nem Producer (fit −0.75).
+    Confirma ablação DB 77-84: hold é o ÚNICO desvio vencedor do PGS. → diversidade vencedora NÃO existe dentro do PGS.
+  - [ ] ≥1 elite não-hold cruza 1228 no LB → **impossível** (não há elite não-hold vencedor); candidato hold-family
+    `w3_c4` (big-wave, wave_min~100/start~68) pode ser submetido se o usuário quiser — mas é da família hold.
+- [~] **H5 (DB id=161, PARCIAL id=163) — Liga open-ended PSRO+rectified-Nash** (`scripts/league_intransitivity.py`):
+  - [x] verificar (intransitividade): matriz mostra ciclo real holdwave→bigwave→oep→holdwave; ||cíclico||/||A||=0.729
+    (inflado por quase-empates do topo — ressalva honesta, mas o ciclo é real).
+  - [x] verificar (meta-Nash): **MEDIDO — NÃO supera puras**: no pool atual `pgs_hold` é Nash PURO não-explorável
+    (max ganho de qualquer pura = +0.000). Achado: pool hand-picked tem Nash puro → precisa exploiter do hold p/ Nash misto.
+  - [ ] best-response treinado cruza 1228 no LB → **🔒 não-executável nesta sessão** (precisa PPO worktree B + submissão).
+
+---
+
+# 🎯 FOCO ANTERIOR (2026-06-09, tarde) — frente HEURÍSTICA nesta worktree; BReP/DRL fica na worktree B
 
 > Decisão do usuário: BReP roda em paralelo na **worktree B** (sem conflito com esta); esta worktree ataca
 > **heurística/metaheurística/hiperheurística**. Linhas MORTAS que NÃO voltam (DB 77–99 + memória): tuning de
@@ -196,6 +422,62 @@
 ---
 
 # 🏟️ LIGA LOCAL (decisão do usuário 2026-06-10: ela pontua e decide submissões)
+
+> **ATUALIZAÇÃO 2026-06-10 (noite): liga ENXUGADA para só o que funciona.** A liga contínua parou
+> no meio do round 102 (~20:01, sem traceback — interrupção externa; state.json consistente em
+> round=101, retomável). Calibração colapsou nos rounds 100–101: Spearman BT vs LB caiu de +0.214
+> para **+0.036** (≈0 com 6 âncoras; hold LB=1058 e holdwave LB=1229 empatados em BT). Removido do
+> `league_report.py` o que estava FALSIFICADO: **µ-kaggle** (réplica do rating online, spearman ~0)
+> e **LB_est** (regressão BT→LB). Mantido o que funciona: BT+CI90 bootstrap, hard gate de veto
+> (allscripts < cluster), piso de veto P≥ref, H2H vs incumbente, win2p/4p/annih, spearman BT como
+> métrica de SAÚDE. Report validado de ponta a ponta nos 4029 jogos acumulados; `report.json` sem
+> os campos removidos; docstring do `league_run.py` corrigido (cap real = 3 lineage por mesa 4p).
+
+- [x] decidir se retoma a liga contínua (`league_run.py`) — RETOMADA (pedido do usuário 2026-06-10
+  noite); rounds 102–112 rodaram limpos (fails=0); pausada para o bugfix do floor PGS (abaixo) e
+  religada em seguida com o planner corrigido
+  - [ ] verificar: qualquer liga futura só volta a valer como gate se spearman BT vs LB ≥ +0.6
+    sustentado por ≥10 rounds com as âncoras atuais
+
+> **BUGFIX 2026-06-10 (noite, DB id=171): floor do PGS não reproduzia o Producer real.**
+> `_producer_entries()` criava `ProducerLiteRuntime()` ZERADO a cada chamada — perdia a memória
+> rolante (`memory.movement`, ledger de lançamentos próprios reconciliado contra a próxima obs).
+> Probe (`check_pgs_floor_fidelity.py`, agora com classes de severidade): 36/80 steps divergentes
+> (count=3, angle_tiny=33). Fix: `PGSRuntime._floor_runtimes` persistente POR OWNER (reset no
+> step 0, 1 chamada por owner/turno; `PlanetMovement.update` é gap-robusto p/ oponentes pulados).
+> Pós-fix: **0/200 (seed 1000) e 0/120 (seed 4242)** — paridade EXATA. Regressão:
+> `tests/test_pgs_floor_fidelity.py`; 7/7 testes pgs+isolation passam.
+
+- [ ] decidir o que fazer com os jogos pgs_* PRÉ-FIX da liga (cont/ até r0112): o floor bugado
+  era um agente ligeiramente diferente — mistura de versões no pool BT append-only (liga é
+  veto-only, então o impacto é baixo, mas a medição não é pura)
+  - [ ] verificar: ou (a) arquivar cont/ pré-fix e re-acumular, ou (b) aceitar a mistura e anotar
+    no report que ratings pgs_* misturam versões até r0112
+
+> **BUGFIX 2026-06-10 (madrugada, DB ids=173/174): 5 bugs de instrumentação da liga corrigidos**
+> (auditoria do usuário; fixes via subagentes; 20 testes passam, report fim-a-fim OK nos 4645 jogos):
+> (1) **isolamento de tarballs** — `_tarball_agent` punha o cache no `sys.path` global e os módulos
+> bare-name (`_brep_weights`, `_producer_agent`, `_upstream`, `orbit_lite`) eram compartilhados via
+> `sys.modules`; com brep × brep_league3 no mesmo processo, o import LAZY de `_brep_weights` no 1º
+> act() resolvia pro cache ERRADO (último `sys.path[0]` vencia) → fix `_TarballIsolation` (overlay
+> privado por tarball, swap em volta do load E de cada act; `tests/test_league_tarball_isolation.py`);
+> (2) **faults medidos** — crash / timeout(>1s, actTimeout Kaggle) / invalid_moves por agente entram
+> no game dict (`faults`, omitido se limpo) e o report imprime seção FAULTS + ⛔ (antes
+> `except Exception` passava o turno sem registro no JSON); (3) **empate** — `tie:true` /
+> `winner=None` (antes argmax dava vitória falsa ao assento 0; 26 casos nos artefatos antigos —
+> o report novo RE-DERIVA o winner de `final_ships`, ignora o campo gravado); (4) **H2H2p puro** —
+> coluna e regra de promoção usam SÓ jogos 2p decisivos (hold vs holdwave: 78-64 puro; o agregado
+> inflava ~141-123 com decomposição 4p); (5) **filename** — `n[:6]` colidia (`pgs_ho`/`pgs_wa`) e
+> SOBRESCREVIA: **round 92 perdeu 8 jogos reais** (holdwave×brep, único déficit em 125 rounds) —
+> fix `match_filename()` com sufixo sha1[:8]. Extras: (6) banner VETO-ONLY no topo do report;
+> (7) `LB_ANCHORS` refrescado via CLI (s100=1138.6, ainda subindo; resubmit 53542884=1157.7
+> segue anotado como ruído ~±60, não âncora).
+
+- [ ] decidir o destino dos jogos brep×brep_league3 PRÉ-FIX (contaminação de pesos: eram
+  mirror-match dos pesos de um tarball só, não brep-real vs league3-real) — mesma decisão (a)/(b)
+  do item pgs_* acima; opcional: re-rodar o matchup perdido do round 92 (holdwave×brep, 8 jogos)
+  - [ ] verificar: report/decisão anota que pares brep×brep_league3 pré-fix não medem dois bots
+    distintos (ou cont/ é re-acumulado)
 
 - [~] **Liga v1 implementada e RODANDO**: `scripts/league_agents.py` (pool de 8: producer, oep, brep
   [tarball da worktree B], pgs_hold, pgs_holdwave, pgs_allscripts, ext_lb1050, ext_hellburner; instância
