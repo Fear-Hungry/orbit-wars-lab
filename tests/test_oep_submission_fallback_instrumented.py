@@ -64,6 +64,13 @@ def test_min_advantage_is_baked_into_env_setdefault(monkeypatch):
     assert 'os.environ.setdefault("OEP_MIN_ADVANTAGE", "15")' in src
 
 
+def test_wrapper_pins_torch_threads_before_importing_oep(monkeypatch):
+    src = MAIN_TEMPLATE.format(min_advantage=15, budget_s=0.6)
+    assert 'os.environ.setdefault("OMP_NUM_THREADS", "1")' in src
+    assert "torch.set_num_threads(1)" in src
+    assert src.index("torch.set_num_threads(1)") < src.index("from bots.oep.agent import agent as _oep")
+
+
 def test_healthy_oep_records_zero_fallbacks(monkeypatch):
     oep_moves = [[1, 0.0, 2]]
     agent, ns = _render_agent(monkeypatch, lambda obs: oep_moves)

@@ -24,6 +24,17 @@ from pathlib import Path
 
 MAIN_TEMPLATE = '''import os
 os.environ.setdefault("OEP_MIN_ADVANTAGE", "{min_advantage}")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+
+try:
+    import torch
+    torch.set_num_threads(1)
+    if hasattr(torch, "set_num_interop_threads"):
+        torch.set_num_interop_threads(1)
+except Exception:
+    pass
+
 import threading
 import time
 from bots.oep.agent import agent as _oep
