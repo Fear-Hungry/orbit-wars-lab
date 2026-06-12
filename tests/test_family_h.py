@@ -3,7 +3,9 @@ from __future__ import annotations
 import pytest
 from bots.oep.candidate_factory import available_families
 from bots.oep.family_h import (
+    defensive_reinforce,
     hammer_multiprong,
+    make_eval_policy,
     production_projected_attack,
     regroup_dominance,
     timeline_risk,
@@ -17,6 +19,8 @@ H_FAMILIES = {
     "timeline_risk": timeline_risk,
     "hammer_multiprong": hammer_multiprong,
     "regroup_dominance": regroup_dominance,
+    "defensive_reinforce": defensive_reinforce,
+    "eval_function": make_eval_policy(None),
 }
 
 

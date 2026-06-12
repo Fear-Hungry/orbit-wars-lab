@@ -90,7 +90,9 @@ def _register_builtin_families() -> None:
     # from candidate_factory (they only depend on geometry/family_h), so the
     # import graph is a DAG and there is no cycle regardless of entry order.
     from bots.oep.family_h import (
+        defensive_reinforce,
         hammer_multiprong,
+        make_eval_policy,
         production_projected_attack,
         regroup_dominance,
         timeline_risk,
@@ -103,6 +105,8 @@ def _register_builtin_families() -> None:
     register_family("timeline_risk", lambda: timeline_risk)
     register_family("hammer_multiprong", lambda: hammer_multiprong)
     register_family("regroup_dominance", lambda: regroup_dominance)
+    register_family("defensive_reinforce", lambda: defensive_reinforce)
+    register_family("eval_function", lambda: make_eval_policy(None))
     register_family("rhea_macro", lambda: rhea_plan)
     register_family("hyperheuristic", lambda: hyperheuristic_plan)
     register_family("best_by_value", lambda: best_by_value)
