@@ -5,6 +5,89 @@
 
 ---
 
+# 🐛 CONFIRMADO (2026-06-11, /diagnose) — seletor pode gastar acima do safe_drain (drenagem dupla)
+
+> Achado do usuário, CONFIRMADO empiricamente. `_greedy_select` (`orbit_lite/planner_core.py:367`)
+> checa financiamento contra `source_budget` = `obs.ships` BRUTO; `used_src` só impede alvo↔fonte,
+> não reuso da fonte. Repro sintético: 2 candidatos da mesma fonte (ships=100, safe_drain=40) →
+> 2 waves, 80 naves (2× o teto seguro). Em jogo REAL é raro mas ocorre: producer 4p+rusher
+> (8 seeds × 500): 1 violação 2.0× (gastou 24, drain 12); OEP vs rusher (2 seeds): 1 violação 1.5×
+> (gastou 108, drain 72 = frações 1.0+0.5 da mesma fonte). Zero em producer-vs-producer 2p (1000
+> chamadas): em posição calma drain≈ships e 2·drain>ships não financia — o bug só dispara com a
+> fonte AMEAÇADA (drain≪ships), exatamente o regime de derrota (rushers/4p). Probes (tag
+> DEBUG-sd01): `/tmp/repro_safe_drain.py` (sintético) e `/tmp/probe_drain_live2.py` (ao vivo).
+> PGS não é afetado (não chama `_greedy_select`); artifacts/ são cópias congeladas.
+
+- [ ] **Fix de dois orçamentos em `_greedy_select`** (`orbit_lite/planner_core.py:367-440`): novo
+  param opcional `source_spend_budget` (default `None` → clone do `source_budget`, preserva
+  callers antigos); `can_fund` passa a checar o spend budget; ao selecionar, debitar OS DOIS;
+  continuar retornando `source_budget` como leftover real (contrato do `_plan_regroup` intacto).
+  **Atenção de shape**: `drain` é `[S]` (shortlist) e o budget é `[P]` (por slot de planeta) —
+  construir `spend = zeros(P); spend[source_idx] = drain.floor()` e passar isso, NÃO
+  `drain.floor()` direto como o parecer original sugeria.
+  - [ ] verificar: `pytest tests/test_planner_core_source_budget.py` passa (teste abaixo)
+- [ ] **Call sites**: producer `bots/producer/_upstream.py:256-273` (spend = scatter de
+  `drain.floor()`); OEP `bots/oep/planner.py:1028-1044` (chave `source_spend_budget` no built),
+  `:1080-1107` (repassar ao `_greedy_select`), `:1138-1209` (`_masked_score_after_prefix` mantém
+  e debita os dois orçamentos; o can-fund da linha ~1174 checa o spend) e `:1258` (segunda
+  chamada recebe os dois pós-prefixo).
+  - [ ] verificar: re-rodar `/tmp/probe_drain_live2.py` (producer 4p+rusher 8 seeds E oep vs
+    rusher) → 0 violações; suítes producer/oep existentes passam
+- [ ] **Teste de regressão** `tests/test_planner_core_source_budget.py`: 2 candidatos de alta
+  pontuação da mesma fonte, send=40 cada, `source_budget=100`, `source_spend_budget=40` → no
+  máximo 1 selecionado, total da fonte ≤ 40, leftover real = 60. Caso 2 (estilo OEP): sends
+  40 (frac 1.0) e 20 (frac 0.5) com spend 40 → só o de 40 dispara. Caso 3: spend default
+  (None) reproduz comportamento atual (2 waves) — trava o contrato de compat.
+  - [ ] verificar: teste falha no código atual (40→80) e passa com o fix
+- [ ] **Gate antes de promover**: o fix MUDA o producer (que é a submissão viva, LB 1228) — no
+  producer todo candidato envia o drain inteiro, então o fix ⇒ no máx. 1 wave/fonte/turno.
+  Violações são raras (~1/6647 turnos-assento), efeito esperado pequeno, mas medir mesmo assim:
+  H2H fixado vs incumbente a 500 steps, ambos assentos, 96 seeds frozen + liga como VETO.
+  - [ ] verificar: margem ≥ 0 vs incumbente nos 96 seeds E sem rebaixamento no veto da liga
+    antes de embarcar em tarball
+
+# 📋 PARECER (2026-06-11, tarde) — review do pacote de 14 commits (régua v4 + hardening)
+
+> Review tech-lead dos commits f2ecf48..cef5d97. Veredito: hardening de validade INTERNA é
+> sólido e bem testado; o risco remanescente é de validade EXTERNA — a pool de referências da
+> régua (`DEFAULT_REFERENCES`: 6/8 linhagem própria + 2 ext) reproduz a estrutura de viés de
+> população que falsificou a liga como gate (Spearman LB = 0.0; Balduzzi 2018). Detalhe na conversa.
+
+- [ ] **Encodar veto-only na régua v4** (mesmo tratamento que o report.json ganhou com
+  `bt_predictive`/`lb_inversions`): o report da régua deve marcar explicitamente que o ranking
+  PASS>INCONCLUSIVE>REJECT é veto/sanidade, não ordem de promoção; decisão de submeter deve citar
+  evidência voltada ao LB (estilo elite big-wave/hoard, desempenho 4p), não posição na régua.
+  - [ ] verificar: report da régua contém campo/aviso explícito de veto-only E a próxima decisão
+    de submissão registrada no DB cita critério externo à régua
+- [x] **Resetar runtime PGS/OEP após fallback** ✅ 2026-06-11 (validado no review): implementação
+  MELHOR que a sugerida — `notify_fallback_applied()` troca o `_RUNTIME` de módulo imediatamente
+  (o thread zumbi segue mutando a instância VELHA que ele referencia; a nova nasce limpa), em
+  TODO fallback, não só pós-overrun. Já embarcado nos tarballs submetidos (53582859/53582886).
+  - [x] verificar: `test_fallback_notifies_oep_runtime_reset` + `reset_count==5` no teste de
+    bloqueio-e-retomada; suíte das 9 áreas afetadas = 70 passed
+- [x] **Monitorabilidade dos runs em background** ✅ resolvida na v11 (validado no review): runs
+  v4–v10 morreram TODOS sem output (run.log 0B, sem task_results) — o checkpoint por chunk
+  (eac4c6b/ac6ad0c/42c9d4c) + `--task-results-out` corrigiu: v11 (PID 249495, ~3h) tem 8 tasks
+  2p gravadas incrementalmente.
+  - [ ] (residual) investigar POR QUE v4–v10 morreram silenciosamente (OOM? WSL? wedge pré-SIGALRM)
+    — se foi wedge de agente, o hard timeout cbb4ab7 já cobre; confirmar se v11 fecha inteiro
+- [ ] **Instrumentar o floor-por-budget do planner PGS** (gap achado no review de 9ee1a7c): o
+  `budget_low() → producer_floor_payload()` é um fallback SILENCIOSO um nível abaixo do wrapper —
+  em hardware lento, `SUBMISSION_STATS` mostraria `fallbacks=0` com o PGS jogando Producer puro o
+  jogo todo (a classe exata de degradação invisível desta campanha). Contar só os retornos por
+  budget_low (floor_in_4p/deviation_max_step são comportamento desenhado, não contam).
+  - [ ] verificar: contador (ex.: `budget_floor_returns`) exposto ao wrapper/`SUBMISSION_STATS`,
+    reportado pelo `validate_pgs_tarball` e ≈0 na validação local
+- [ ] **Commitar os 14 arquivos modificados** (reset pós-fallback, semântica de fault no
+  benchmark/objective_validation, half2p league-only): os tarballs VIVOS no Kaggle foram gerados
+  deste working tree — sem commit, a evidência hash-bound (bf3dca8) aponta para fonte
+  irreproduzível.
+  - [ ] verificar: `git status` limpo e sha1 dos tarballs submetidos reproduzível do HEAD
+- [ ] **(menor) lineup 4p pode variar com o painel** quando o candidato pertence ao template
+  (`_complete_4p_lineup` completa com `ref_order`, que inclui os outros candidatos do comando) —
+  documentar ou fixar o preenchimento só com referências para manter o claim de estabilidade.
+  - [ ] verificar: mesmo candidato + mesmo template ⇒ mesmo lineup, com qualquer painel
+
 # ✅ RESOLVIDO (2026-06-11) — entrypoint duplicado do PGS: "pgs" podia significar OUTRO bot
 
 > Achado (auditoria do usuário, confirmado): `bots/pgs/planner.py` ainda expunha `agent()` sobre

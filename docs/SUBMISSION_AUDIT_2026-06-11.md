@@ -112,6 +112,10 @@ A regua forte foi corrigida e esta rodando em
 - a partir do experimento `191`, `--skip-run` valida modo, agentes, seed slice,
   numero exato de jogos, seat orders/rotacoes, `faults` e `agent_status`; JSON
   antigo/parcial/stale falha em vez de entrar no ranking.
+- apos a auditoria final, `benchmark_submission.py` e
+  `objective_validation.py` tambem passaram a aplicar semantica Kaggle para
+  crash/timeout: o assento afetado para de agir pelo resto do episodio, e o
+  benchmark rebaixa seu score para impedir vitoria tecnica apos ERROR/TIMEOUT.
 
 O smoke de 36 tarefas com `seeds=4`, `steps=20` fechou e provou que o report
 final e gerado, mas e curto demais para decisao competitiva. A regua v5 longa
@@ -170,10 +174,13 @@ nao deve ser submetido.
 Auditoria posterior dos demais anchors de maior score:
 
 - `submission_oep.tar.gz` foi reempacotado com pinning de threads OMP/MKL/Torch
-  antes de importar o agente; sha256
-  `38bcf175bbf4d604154e9dc3e61f2b1fb7961ccb9a352dd8c52587d886c6c861`.
+  antes de importar o agente. Nova auditoria posterior corrigiu o reset da
+  runtime global apos fallback/timeout, evitando retomada com estado OEP sujo;
+  sha256 final
+  `edb3abf33a5e7883d2fe5c6ebab129357109b39d0ea3f70fd76d9b692b743574`.
   Passou validacao 2p/4p all seats com `fallbacks=0`, `timeouts=0`,
-  `timeout_thread_blocks=0`, `fallback_errors=0`.
+  `timeout_thread_blocks=0`, `fallback_errors=0`, p95 `59.47ms` e max
+  `211.38ms`.
 - `/home/marcux777/projects/Kaggle/orbit-wars-lab-B/artifacts/submission_brep.tar.gz`
   sha256 `ea04edf5a114f13ea0cca8dd1b28d613db6a64b1b094e3d171e3f3b7b4178de4`
   passou validacao 2p/4p all seats com `fallbacks=0`, `illegal_moves=0`,
@@ -188,6 +195,11 @@ nao apenas o caminho mutavel do arquivo.
 Nao ha uma nova variante comprovadamente melhor que o recorde `pgs_holdwave`
 `53537753` apenas por esta auditoria; a regua longa precisa ser reiniciada do
 zero porque a semantica 4p foi corrigida.
+
+Hipotese nova implementada apenas para medicao local: `pgs_holdwave_half2p`
+ativa o script `HALF` somente em 2p sobre a base holdwave. Ela nao altera
+`bots/pgs/agent.py`, nao foi empacotada para submissao e permanece pendente de
+regua competitiva contra `pgs_holdwave` antes de qualquer promocao.
 
 Decisao operacional:
 

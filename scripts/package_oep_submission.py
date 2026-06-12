@@ -37,7 +37,7 @@ except Exception:
 
 import threading
 import time
-from bots.oep.agent import agent as _oep
+import bots.oep.agent as _oep_agent
 from bots.producer.agent import agent as _producer
 
 # Total OEP wrapper budget. A dedicated Producer shadow is called every turn
@@ -71,6 +71,13 @@ def _timeout_thread_still_alive():
     return False
 
 
+def _notify_fallback_applied():
+    try:
+        _oep_agent.notify_fallback_applied()
+    except Exception:
+        pass
+
+
 def agent(obs):
     _submission_stats_increment("calls")
     fallback_error = False
@@ -85,12 +92,13 @@ def agent(obs):
         _submission_stats_increment("timeout_thread_blocks")
         if fallback_error:
             _submission_stats_increment("fallback_errors")
+        _notify_fallback_applied()
         return fallback
     box = {{}}
 
     def _run():
         try:
-            box["r"] = _oep(obs)
+            box["r"] = _oep_agent.agent(obs)
         except Exception:
             box["err"] = True
 
@@ -107,6 +115,7 @@ def agent(obs):
         _submission_stats_increment("fallback_errors")
     if fallback_error:
         _submission_stats_increment("fallback_errors")
+    _notify_fallback_applied()
     return fallback
 '''
 

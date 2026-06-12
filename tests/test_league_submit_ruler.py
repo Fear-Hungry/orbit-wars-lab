@@ -179,6 +179,36 @@ def test_submit_ruler_rejects_missing_required_opponents(tmp_path):
     assert failed["clears_rejected_floor"]["details"] == {"missing_required_opponent": "pgs_allscripts"}
 
 
+def test_submit_ruler_rejects_required_2p_reference_loss(tmp_path):
+    results = _passing_results(tmp_path)
+    results.append(_write(tmp_path, "brep_loss", "2p", [
+        _game(["cand", "brep"], "brep"),
+        _game(["brep", "cand"], "brep"),
+        _game(["cand", "brep"], "cand"),
+        _game(["brep", "cand"], "brep"),
+    ]))
+
+    summary = summarize_candidate(
+        "cand",
+        results,
+        incumbent="inc",
+        min_decisive_2p=4,
+        min_producer_winrate=0.5,
+        min_incumbent_winrate=0.5,
+        min_floor_winrate=0.6,
+        max_annihilation_rate_4p=0.35,
+        required_2p_winrates={"brep": 0.5},
+        weight_2p=0.5,
+    )
+
+    assert summary["verdict"] == "REJECT_LOCAL"
+    failed = {c["name"]: c for c in summary["checks"] if not c["passed"]}
+    assert failed["required_2p_vs_brep"]["details"] == {
+        "decisive_win_rate": 0.25,
+        "required": 0.5,
+    }
+
+
 def test_submit_ruler_2p_score_counts_ties_as_non_wins(tmp_path):
     result = _write(tmp_path, "producer_ties", "2p", [
         _game(["cand", "producer"], "cand"),

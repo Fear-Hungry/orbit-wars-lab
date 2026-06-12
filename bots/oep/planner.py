@@ -3023,5 +3023,11 @@ def make_runtime() -> OEPLiteRuntime:
 _RUNTIME = make_runtime()
 
 
+def reset_runtime() -> None:
+    """Replace the module-global runtime after an external fallback move."""
+    global _RUNTIME
+    _RUNTIME = make_runtime()
+
+
 def agent(obs):
     return _RUNTIME.act(obs)

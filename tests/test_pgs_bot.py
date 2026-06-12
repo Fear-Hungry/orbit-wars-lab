@@ -105,6 +105,52 @@ def test_pgs_tiny_deadline_returns_legal_producer_floor() -> None:
     )
 
 
+def test_half_in_2p_only_adds_half_for_two_player_games(monkeypatch) -> None:
+    from bots.pgs.planner import PGSConfig, PGSRuntime, make_runtime
+
+    calls: list[int] = []
+
+    def spy_half(self, movement, base_entries):
+        calls.append(int(self._player_count or -1))
+        return None
+
+    monkeypatch.setattr(PGSRuntime, "_script_half", spy_half)
+
+    state_2p = _states_along_game(2, capture=[0])[0]
+    runtime_2p = make_runtime(PGSConfig(scripts="hold", half_in_2p=True, max_deviations=0))
+    runtime_2p.act(to_official_observation(state_2p, 0))
+
+    assert calls
+    assert set(calls) == {2}
+
+    calls.clear()
+    state_4p = _states_along_game(4, capture=[0])[0]
+    runtime_4p = make_runtime(PGSConfig(scripts="hold", half_in_2p=True, max_deviations=0))
+    runtime_4p.act(to_official_observation(state_4p, 0))
+
+    assert calls == []
+
+
+def test_league_registers_holdwave_half2p_config(monkeypatch) -> None:
+    from scripts import league_agents
+
+    captured = {}
+
+    def fake_pgs(**cfg):
+        captured.update(cfg)
+        return "agent"
+
+    monkeypatch.setattr(league_agents, "_pgs", fake_pgs)
+
+    assert league_agents.FACTORIES["pgs_holdwave_half2p"]() == "agent"
+    assert captured == {
+        "scripts": "hold",
+        "wave_min_ships": 60.0,
+        "wave_start_step": 150,
+        "half_in_2p": True,
+    }
+
+
 def test_registry_pgs_routes_to_operational_entrypoint(monkeypatch) -> None:
     """O 'pgs' das heurísticas do registry deve rotear pro entrypoint
     operacional (SUBMISSION_CONFIG), o mesmo bot dos isolados."""

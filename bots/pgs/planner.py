@@ -96,6 +96,9 @@ class PGSConfig:
     # as deviations (ablation knob). "half" = keep Producer's launch/target but
     # send 50% of the ships (re-aimed for the new fleet speed) — the partial veto.
     scripts: str = "hold,snipe,capture,reinforce,evac"
+    # League-only experiment: enable HALF on top of a hold-only script set, but
+    # only in 2p so the 4p floor/league behavior stays comparable.
+    half_in_2p: bool = False
     # WAVE discipline v1 (H-P5, DB ids 138/139): conditional ATTACK-wave merging.
     # Floor launches aimed at ENEMY-owned planets are grouped by target; a group
     # whose total is under wave_min_ships is withheld (garrisons accumulate and
@@ -647,6 +650,8 @@ class PGSRuntime:
         fixed_base = _select_entries(my_base, other_mask)  # base moves outside search set
 
         enabled = {t.strip().lower() for t in str(cfg.scripts).split(",") if t.strip()}
+        if player_count == 2 and bool(cfg.half_in_2p):
+            enabled.add("half")
         if player_count != 2 and bool(cfg.defend_in_4p):
             enabled |= {"reinforce", "evac"}  # mode-gated 4p survival defense (H-118)
         portfolio: dict[int, list[tuple[str, LaunchEntries]]] = {}

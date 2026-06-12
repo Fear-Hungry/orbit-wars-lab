@@ -13,6 +13,8 @@ Datasets produced (``--datasets``):
   - ``hard_states``       Producer vs OEP; at states where the two experts'
                           projected actions disagree, emit one example per expert
                           (both labels) so contested decisions are oversampled.
+  - ``league_strong_mix`` fixed local ruler pool rotated across seats/seeds.
+  - ``league_elite_mix``  stronger teacher-only subset for PPO warm starts.
 
 Splits are assigned by seed (``seed % 5`` -> train/val/test), never by row, to
 avoid leaking states from the same game across splits.
@@ -28,17 +30,24 @@ with the same arguments reproduces byte-identical arrays (asserted by
 """
 
 from __future__ import annotations
+# ruff: noqa: E402,I001
 
 import argparse
 import hashlib
 import json
 import math
+import sys
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 from python.agents.registry import get_heuristic_policies
 from python.orbit_wars_gym.action_decoder import DEFAULT_DECODER_CONFIG, DecoderConfig
 from python.orbit_wars_gym.action_inverse import (
@@ -48,25 +57,49 @@ from python.orbit_wars_gym.action_inverse import (
 )
 from python.orbit_wars_gym.backend import RustBatchBackend, RustConfig
 from python.orbit_wars_gym.encoding import DEFAULT_ENCODER_CONFIG, encode_state
+from python.orbit_wars_gym.observation import to_official_observation
 from python.orbit_wars_gym.rules import moves_are_legal
 from python.orbit_wars_gym.symmetry import reflect_state_x, rotate_state_180
 
 Policy = Callable[[dict[str, Any], int], list[list[float]]]
-
-_ROOT = Path(__file__).resolve().parents[1]
 _EXPERT_FILES = {
     "producer": ["bots/producer/agent.py", "bots/producer/_upstream.py"],
     "oep": ["bots/oep/agent.py", "bots/oep/planner.py"],
+    "pgs_holdwave": ["scripts/league_agents.py", "bots/pgs/planner.py"],
+    "pgs_bigwave": ["scripts/league_agents.py", "bots/pgs/planner.py"],
+    "greedy": ["python/agents/heuristics.py"],
+    "rush": ["python/agents/heuristics.py"],
 }
-_EXPERT_IDS = {"producer": 0, "oep": 1}
+_EXTERNAL_EXPERT_FILES = {
+    "brep": Path.home() / "projects/Kaggle/orbit-wars-lab-B/artifacts/submission_brep.tar.gz",
+}
+_EXPERT_NAMES = ("producer", "oep", "pgs_holdwave", "pgs_bigwave", "brep", "greedy", "rush")
+_EXPERT_IDS = {name: idx for idx, name in enumerate(_EXPERT_NAMES)}
 _SPLIT_IDS = {"train": 0, "val": 1, "test": 2}
-DATASETS = ("producer_only", "oep_only", "producer_oep_mix", "hard_states")
+STRONG_EXPERT_POOL = ("producer", "pgs_holdwave", "brep", "pgs_bigwave", "oep", "rush", "greedy")
+ELITE_EXPERT_POOL = ("producer", "pgs_holdwave", "brep", "pgs_bigwave", "oep")
+DATASETS = (
+    "producer_only",
+    "oep_only",
+    "producer_oep_mix",
+    "hard_states",
+    "league_strong_mix",
+    "league_elite_mix",
+)
 
 
 def expert_content_hash(name: str) -> str:
     digest = hashlib.sha256()
-    for rel in _EXPERT_FILES[name]:
-        digest.update((_ROOT / rel).read_bytes())
+    if name in _EXPERT_FILES:
+        for rel in _EXPERT_FILES[name]:
+            digest.update((_ROOT / rel).read_bytes())
+    elif name in _EXTERNAL_EXPERT_FILES:
+        path = _EXTERNAL_EXPERT_FILES[name]
+        if not path.exists():
+            raise FileNotFoundError(f"expert artifact for {name!r} is missing: {path}")
+        digest.update(path.read_bytes())
+    else:
+        raise KeyError(name)
     return digest.hexdigest()
 
 
@@ -79,13 +112,42 @@ def split_for_seed(seed: int) -> str:
     return "test"
 
 
-def _player_experts(dataset: str, num_players: int) -> dict[int, str]:
+def _player_experts(dataset: str, num_players: int, *, seed: int = 0) -> dict[int, str]:
     """Map each player index to the expert that drives it for a dataset."""
     if dataset in ("producer_only", "oep_only"):
         name = "producer" if dataset == "producer_only" else "oep"
         return {p: name for p in range(num_players)}
+    if dataset in ("league_strong_mix", "league_elite_mix"):
+        pool = STRONG_EXPERT_POOL if dataset == "league_strong_mix" else ELITE_EXPERT_POOL
+        offset = int(seed) % len(pool)
+        return {
+            p: pool[(offset + p) % len(pool)]
+            for p in range(num_players)
+        }
     # mix + hard_states: alternate Producer (even players) / OEP (odd players).
     return {p: ("producer" if p % 2 == 0 else "oep") for p in range(num_players)}
+
+
+def _expert_policies() -> dict[str, Policy]:
+    policies = dict(get_heuristic_policies())
+
+    def league_policy(name: str) -> Policy:
+        bot = None
+
+        def policy(state: dict[str, Any], player: int) -> list[list[float]]:
+            nonlocal bot
+            if bot is None:
+                from scripts.league_agents import make
+
+                bot = make(name)
+            moves = bot(to_official_observation(state, player=player))
+            return list(moves) if isinstance(moves, list) else []
+
+        return policy
+
+    for name in ("pgs_holdwave", "pgs_bigwave", "brep"):
+        policies[name] = league_policy(name)
+    return policies
 
 
 def _flat_rows(player: int, moves: list[list[float]]) -> list[list[float]]:
@@ -164,12 +226,13 @@ def collect_dataset(
     decoder_cfg: DecoderConfig,
     inverse_cfg: InverseConfig,
     augment: bool = False,
+    launch_oversample: int = 1,
 ) -> list[dict[str, Any]]:
-    policies = get_heuristic_policies()
-    player_experts = _player_experts(dataset, num_players)
+    policies = _expert_policies()
     examples: list[dict[str, Any]] = []
 
     for seed in seeds:
+        player_experts = _player_experts(dataset, num_players, seed=int(seed))
         backend = RustBatchBackend(
             num_envs=1,
             num_players=num_players,
@@ -191,13 +254,15 @@ def collect_dataset(
                 flat_rows.extend(_flat_rows(player, moves))
 
                 if dataset != "hard_states":
-                    examples.extend(
-                        _example(
-                            state=state, player=player, step=step, expert=expert,
-                            moves=moves, seed=int(seed), is_hard=False,
-                            decoder_cfg=decoder_cfg, inverse_cfg=inverse_cfg, augment=augment,
-                        )
+                    rows = _example(
+                        state=state, player=player, step=step, expert=expert,
+                        moves=moves, seed=int(seed), is_hard=False,
+                        decoder_cfg=decoder_cfg, inverse_cfg=inverse_cfg, augment=augment,
                     )
+                    train_split = split_for_seed(int(seed)) == "train"
+                    repeats = max(1, int(launch_oversample)) if moves and train_split else 1
+                    for _ in range(repeats):
+                        examples.extend(rows)
 
             if dataset == "hard_states":
                 # For every player perspective, ask BOTH experts; record where the
@@ -321,6 +386,7 @@ def _dataset_report(name: str, packed: dict[str, np.ndarray]) -> dict[str, Any]:
         "by_expert": {
             ename: int((packed["expert_id"] == eid).sum())
             for ename, eid in _EXPERT_IDS.items()
+            if n and int((packed["expert_id"] == eid).sum()) > 0
         },
         "by_split": {
             sname: int((packed["split_id"] == sid).sum())
@@ -370,15 +436,28 @@ def run(
     decoder_cfg: DecoderConfig,
     inverse_cfg: InverseConfig,
     augment: bool = False,
+    launch_oversample: int = 1,
 ) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    expert_hashes = {name: expert_content_hash(name) for name in _EXPERT_FILES}
+    used_experts = set()
+    for dataset in datasets:
+        if dataset == "league_strong_mix":
+            used_experts.update(STRONG_EXPERT_POOL)
+        elif dataset == "league_elite_mix":
+            used_experts.update(ELITE_EXPERT_POOL)
+        else:
+            used_experts.update(_player_experts(dataset, num_players).values())
+    used_experts = sorted(used_experts)
+    if "hard_states" in datasets:
+        used_experts = sorted(set(used_experts) | {"producer", "oep"})
+    expert_hashes = {name: expert_content_hash(name) for name in used_experts}
     report: dict[str, Any] = {
         "seeds": seeds,
         "num_players": num_players,
         "episode_steps": episode_steps,
         "enable_comets": enable_comets,
         "augment": bool(augment),
+        "launch_oversample": int(launch_oversample),
         "expert_hashes": expert_hashes,
         "decoder_config": asdict(decoder_cfg),
         "inverse_config": asdict(inverse_cfg),
@@ -396,6 +475,7 @@ def run(
             decoder_cfg=decoder_cfg,
             inverse_cfg=inverse_cfg,
             augment=augment,
+            launch_oversample=launch_oversample,
         )
         packed = _pack(examples)
         np.savez(out_dir / f"{name}.npz", **packed)
@@ -433,10 +513,19 @@ def main() -> None:
     parser.add_argument("--enable-comets", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--act-timeout", type=float, default=1.0)
     parser.add_argument("--out-dir", default="artifacts/imitation")
+    parser.add_argument("--decoder-max-moves-per-turn", type=int, default=DEFAULT_DECODER_CONFIG.max_moves_per_turn)
+    parser.add_argument("--decoder-min-ships-to-launch", type=int, default=DEFAULT_DECODER_CONFIG.min_ships_to_launch)
+    parser.add_argument("--decoder-reserve-home-ships", type=int, default=DEFAULT_DECODER_CONFIG.reserve_home_ships)
     parser.add_argument(
         "--augment",
         action="store_true",
         help="add 180°-rotation/reflection symmetry copies to the train split (same action label).",
+    )
+    parser.add_argument(
+        "--launch-oversample",
+        type=int,
+        default=1,
+        help="repeat non-empty train-split expert decisions this many times to counter pass-heavy datasets",
     )
     parser.add_argument(
         "--self-check",
@@ -451,6 +540,13 @@ def main() -> None:
         raise ValueError(f"unknown datasets: {unknown}; valid: {DATASETS}")
     seeds = _parse_seeds(args.seeds)
     out_dir = Path(args.out_dir)
+    decoder_cfg = DecoderConfig(
+        fractions=DEFAULT_DECODER_CONFIG.fractions,
+        angle_offsets=DEFAULT_DECODER_CONFIG.angle_offsets,
+        max_moves_per_turn=int(args.decoder_max_moves_per_turn),
+        min_ships_to_launch=int(args.decoder_min_ships_to_launch),
+        reserve_home_ships=int(args.decoder_reserve_home_ships),
+    )
 
     report = run(
         datasets=datasets,
@@ -460,9 +556,10 @@ def main() -> None:
         enable_comets=args.enable_comets,
         act_timeout=args.act_timeout,
         out_dir=out_dir,
-        decoder_cfg=DEFAULT_DECODER_CONFIG,
+        decoder_cfg=decoder_cfg,
         inverse_cfg=DEFAULT_INVERSE_CONFIG,
         augment=args.augment,
+        launch_oversample=max(1, int(args.launch_oversample)),
     )
 
     if args.self_check:
@@ -474,9 +571,10 @@ def main() -> None:
             enable_comets=args.enable_comets,
             act_timeout=args.act_timeout,
             out_dir=out_dir / "_selfcheck",
-            decoder_cfg=DEFAULT_DECODER_CONFIG,
+            decoder_cfg=decoder_cfg,
             inverse_cfg=DEFAULT_INVERSE_CONFIG,
             augment=args.augment,
+            launch_oversample=max(1, int(args.launch_oversample)),
         )
         for name in datasets:
             h1 = report["datasets"][name]["content_hash"]

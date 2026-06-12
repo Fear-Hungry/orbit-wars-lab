@@ -3,14 +3,21 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
+from python.agents.policy import FlatActorCritic
+from python.orbit_wars_gym.encoding import observation_dim
+from python.orbit_wars_gym.rules import normalized_margin
 from python.train.train_ppo import (
     Phase0TrainingConfig,
+    _batched_rollout_supported,
+    _evaluate_margin,
     _parse_opponents,
     build_phase0_env,
     build_phase5_4p_config,
     four_player_shaping_scales,
+    normalized_margin_scale,
     shaping_scales,
     train_phase0,
     train_phase5_4p,
@@ -25,7 +32,7 @@ def test_phase0_env_is_two_player_and_uses_requested_opponent():
     assert env.num_players == 2
     assert env.backend.num_players == 2
     assert obs.shape[0] > 0
-    assert env.opponent_policy.__name__ == "defensive_agent"
+    assert env.opponent_policy.__name__ == "defensive"
 
 
 def test_phase0_env_can_be_built_for_four_players():
@@ -129,6 +136,46 @@ def test_phase0_env_ship_margin_reward_tracks_score_delta():
     assert env._ship_margin_reward(previous_state, worse_state, player=0) < 0.0
 
 
+def test_phase0_env_normalized_margin_reward_tracks_league_margin():
+    env = build_phase0_env(
+        seed=0,
+        num_players=4,
+        opponent_name="greedy",
+        enable_comets=False,
+        normalized_margin_scale=0.2,
+    )
+    previous_state = {
+        "planets": [
+            {"id": 0, "owner": 0, "x": 20.0, "y": 20.0, "radius": 2.0, "ships": 20, "production": 2},
+            {"id": 1, "owner": 1, "x": 80.0, "y": 80.0, "radius": 2.0, "ships": 20, "production": 2},
+            {"id": 2, "owner": 2, "x": 80.0, "y": 20.0, "radius": 2.0, "ships": 20, "production": 2},
+            {"id": 3, "owner": 3, "x": 20.0, "y": 80.0, "radius": 2.0, "ships": 20, "production": 2},
+        ],
+        "fleets": [],
+    }
+    improved_state = {
+        "planets": [
+            {"id": 0, "owner": 0, "x": 20.0, "y": 20.0, "radius": 2.0, "ships": 30, "production": 2},
+            {"id": 1, "owner": 1, "x": 80.0, "y": 80.0, "radius": 2.0, "ships": 15, "production": 2},
+            {"id": 2, "owner": 2, "x": 80.0, "y": 20.0, "radius": 2.0, "ships": 15, "production": 2},
+            {"id": 3, "owner": 3, "x": 20.0, "y": 80.0, "radius": 2.0, "ships": 15, "production": 2},
+        ],
+        "fleets": [],
+    }
+    worse_state = {
+        "planets": [
+            {"id": 0, "owner": 0, "x": 20.0, "y": 20.0, "radius": 2.0, "ships": 12, "production": 2},
+            {"id": 1, "owner": 1, "x": 80.0, "y": 80.0, "radius": 2.0, "ships": 24, "production": 2},
+            {"id": 2, "owner": 2, "x": 80.0, "y": 20.0, "radius": 2.0, "ships": 24, "production": 2},
+            {"id": 3, "owner": 3, "x": 20.0, "y": 80.0, "radius": 2.0, "ships": 24, "production": 2},
+        ],
+        "fleets": [],
+    }
+
+    assert env._normalized_margin_reward(previous_state, improved_state, player=0) > 0.0
+    assert env._normalized_margin_reward(previous_state, worse_state, player=0) < 0.0
+
+
 def test_phase0_training_anneals_base_and_comet_shaping():
     cfg = Phase0TrainingConfig(
         enable_comets=True,
@@ -165,19 +212,98 @@ def test_phase0_training_anneals_four_player_strategic_shaping():
     assert start_third_player > end_third_player
 
 
+def test_phase5_4p_config_enables_normalized_margin_curriculum():
+    cfg = build_phase5_4p_config()
+
+    assert normalized_margin_scale(cfg, 0.0) > normalized_margin_scale(cfg, 1.0)
+    assert normalized_margin_scale(cfg, 1.0) > 0.0
+
+
+def test_eval_margin_uses_all_scores_in_four_player(monkeypatch):
+    class FakeEnv:
+        state = {"planets": [], "fleets": []}
+
+        def reset(self, *, seed=None):
+            return np.zeros(observation_dim(), dtype=np.float32), {}
+
+        def step(self, _action):
+            return (
+                np.zeros(observation_dim(), dtype=np.float32),
+                0.0,
+                True,
+                False,
+                {"scores": [10.0, 0.0, 100.0, 100.0]},
+            )
+
+    monkeypatch.setattr("python.train.train_ppo.build_phase0_env", lambda **_kwargs: FakeEnv())
+    model = FlatActorCritic(observation_dim())
+    cfg = build_phase5_4p_config(eval_max_steps=1)
+
+    margin = _evaluate_margin(model, cfg, opponent_name="greedy", seeds=1, device=torch.device("cpu"))
+
+    assert margin == pytest.approx(normalized_margin([10.0, 0.0, 100.0, 100.0], 0))
+    assert margin < 0.0
+
+
 def test_phase0_training_rejects_single_bot_regime():
     with pytest.raises(ValueError, match="at least two distinct opponents"):
         _parse_opponents(["greedy"])
 
 
 def test_phase0_training_accepts_gate_opponent_pool():
-    assert _parse_opponents(["greedy", "defensive", "rush", "anti_meta", "weak_random"]) == (
+    assert _parse_opponents(["greedy", "defensive", "rush", "pgs_holdwave", "pgs_bigwave"]) == (
         "greedy",
         "defensive",
         "rush",
-        "anti_meta",
-        "weak_random",
+        "pgs_holdwave",
+        "pgs_bigwave",
     )
+
+
+def test_phase0_training_accepts_composite_four_player_lineups():
+    assert _parse_opponents(["producer+oep+pgs_holdwave", "producer+brep+pgs_bigwave"]) == (
+        "producer+oep+pgs_holdwave",
+        "producer+brep+pgs_bigwave",
+    )
+
+
+def test_phase0_training_disables_batched_rollout_for_composite_lineups():
+    cfg = Phase0TrainingConfig(num_players=2, rollout_num_envs=8)
+
+    assert not _batched_rollout_supported(cfg, "producer+oep+pgs_holdwave")
+
+
+def test_phase0_training_disables_batched_rollout_for_league_opponents():
+    cfg = Phase0TrainingConfig(num_players=2, rollout_num_envs=8)
+
+    assert _batched_rollout_supported(cfg, "producer")
+    assert not _batched_rollout_supported(cfg, "pgs_holdwave")
+    assert not _batched_rollout_supported(cfg, "pgs_bigwave")
+    assert not _batched_rollout_supported(cfg, "brep")
+
+
+def test_phase0_env_can_use_pgs_holdwave_training_opponent():
+    env = build_phase0_env(seed=0, num_players=2, opponent_name="pgs_holdwave", enable_comets=True)
+    env.reset(seed=123)
+
+    _obs, _reward, _terminated, _truncated, info = env.step([0, 0, 0, 0, 0])
+
+    assert "scores" in info
+
+
+def test_phase0_env_can_use_composite_four_player_training_lineup():
+    env = build_phase0_env(
+        seed=0,
+        num_players=4,
+        opponent_name="producer+brep+pgs_bigwave",
+        enable_comets=True,
+    )
+    env.reset(seed=123)
+
+    _obs, _reward, _terminated, _truncated, info = env.step([0, 0, 0, 0, 0])
+
+    assert env.opponent_policy.__name__ == "producer+brep+pgs_bigwave"
+    assert len(info["scores"]) == 4
 
 
 def test_phase0_env_four_player_strategic_reward_improves_when_exposure_and_pressure_gaps_drop():
@@ -232,8 +358,9 @@ def test_phase0_training_runs_real_ppo_loop_and_emits_metrics(tmp_path: Path):
     assert set(summary["opponents"]) == {"greedy", "defensive", "rush", "anti_meta", "weak_random"}
     assert all(summary["opponent_segments"][name] >= 1 for name in summary["opponents"])
     assert summary["enable_comets"] is True
-    assert summary["reward_shaping"] == "annealed_base_plus_temporal_comet_auxiliary"
+    assert summary["reward_shaping"] == "annealed_base_plus_normalized_margin_plus_temporal_comet_auxiliary"
     assert summary["ship_margin_scale"] == 0.0
+    assert summary["normalized_margin_scale_start"] == 0.0
     assert summary["decoder"]["max_moves_per_turn"] == 8
     assert summary["decoder"]["min_ships_to_launch"] == 2
     assert summary["decoder"]["reserve_home_ships"] == 8
@@ -307,6 +434,41 @@ def test_phase0_training_can_resume_from_checkpoint(tmp_path: Path):
     assert resumed_payload["summary"]["decoder"]["max_moves_per_turn"] == 8
 
 
+def test_phase0_training_inherits_checkpoint_decoder(tmp_path: Path):
+    initial_checkpoint = tmp_path / "phase0_single_action_initial.pt"
+    resumed_checkpoint = tmp_path / "phase0_single_action_resumed.pt"
+    train_phase0(
+        Phase0TrainingConfig(
+            seed=17,
+            total_timesteps=16,
+            rollout_steps=8,
+            update_epochs=1,
+            minibatch_size=8,
+            decoder_max_moves_per_turn=1,
+            checkpoint_out=str(initial_checkpoint),
+            enable_comets=False,
+        )
+    )
+
+    summary = train_phase0(
+        Phase0TrainingConfig(
+            seed=18,
+            total_timesteps=16,
+            rollout_steps=8,
+            update_epochs=1,
+            minibatch_size=8,
+            checkpoint_in=str(initial_checkpoint),
+            checkpoint_out=str(resumed_checkpoint),
+            enable_comets=False,
+        )
+    )
+
+    assert summary["decoder"]["max_moves_per_turn"] == 1
+    resumed_payload = torch.load(resumed_checkpoint, map_location="cpu", weights_only=False)
+    assert resumed_payload["config"]["decoder_max_moves_per_turn"] == 1
+    assert resumed_payload["summary"]["decoder"]["max_moves_per_turn"] == 1
+
+
 def test_phase0_training_runs_real_ppo_loop_for_four_players(tmp_path: Path):
     checkpoint = tmp_path / "phase5_4p.pt"
     summary = train_phase5_4p(
@@ -327,4 +489,6 @@ def test_phase0_training_runs_real_ppo_loop_for_four_players(tmp_path: Path):
     assert summary["four_player_vulnerability_scale_end"] < summary["four_player_vulnerability_scale_start"]
     assert summary["four_player_leader_scale_end"] < summary["four_player_leader_scale_start"]
     assert summary["four_player_third_player_scale_end"] < summary["four_player_third_player_scale_start"]
+    assert summary["normalized_margin_scale_end"] < summary["normalized_margin_scale_start"]
+    assert summary["normalized_margin_scale_end"] > 0.0
     assert checkpoint.exists()

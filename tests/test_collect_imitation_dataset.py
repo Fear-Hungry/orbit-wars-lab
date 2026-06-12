@@ -5,15 +5,18 @@ from python.orbit_wars_gym.action_decoder import DEFAULT_DECODER_CONFIG, decode_
 from python.orbit_wars_gym.action_inverse import invert_moves, move_set_distance
 from python.orbit_wars_gym.backend import RustBatchBackend, RustConfig
 from scripts.collect_imitation_dataset import (
-    DEFAULT_DECODER_CONFIG as COLLECT_DECODER_CFG,
-)
-from scripts.collect_imitation_dataset import (
+    _EXPERT_IDS,
     DEFAULT_INVERSE_CONFIG,
+    ELITE_EXPERT_POOL,
+    STRONG_EXPERT_POOL,
     _content_hash,
     _dataset_report,
     _pack,
     collect_dataset,
     split_for_seed,
+)
+from scripts.collect_imitation_dataset import (
+    DEFAULT_DECODER_CONFIG as COLLECT_DECODER_CFG,
 )
 
 _KW = dict(
@@ -79,3 +82,78 @@ def test_hard_states_only_records_disagreements() -> None:
     packed = _pack(examples)
     if packed["is_hard"].size:
         assert bool(packed["is_hard"].all())
+
+
+def test_league_strong_mix_collects_pgs_and_brep_examples() -> None:
+    kw = {**_KW, "num_players": 4, "episode_steps": 2}
+    examples = collect_dataset("league_strong_mix", seeds=[0], **kw)
+    packed = _pack(examples)
+    report = _dataset_report("league_strong_mix", packed)
+
+    assert _content_hash(packed) == _content_hash(_pack(collect_dataset("league_strong_mix", seeds=[0], **kw)))
+    assert packed["legal"].all()
+    assert {"producer", "pgs_holdwave", "brep", "pgs_bigwave"}.issubset(report["by_expert"])
+    assert {
+        _EXPERT_IDS["producer"],
+        _EXPERT_IDS["pgs_holdwave"],
+        _EXPERT_IDS["brep"],
+        _EXPERT_IDS["pgs_bigwave"],
+    }.issubset(set(packed["expert_id"].tolist()))
+
+
+def test_league_strong_mix_rotates_all_declared_experts_across_seeds() -> None:
+    kw = {**_KW, "num_players": 4, "episode_steps": 1}
+    examples = collect_dataset("league_strong_mix", seeds=list(range(len(STRONG_EXPERT_POOL))), **kw)
+    expert_ids = set(_pack(examples)["expert_id"].tolist())
+
+    assert {_EXPERT_IDS[name] for name in STRONG_EXPERT_POOL}.issubset(expert_ids)
+
+
+def test_league_elite_mix_uses_teacher_pool_without_greedy_rush() -> None:
+    kw = {**_KW, "num_players": 4, "episode_steps": 1}
+    examples = collect_dataset("league_elite_mix", seeds=list(range(len(ELITE_EXPERT_POOL))), **kw)
+    expert_ids = set(_pack(examples)["expert_id"].tolist())
+
+    assert {_EXPERT_IDS[name] for name in ELITE_EXPERT_POOL}.issubset(expert_ids)
+    assert _EXPERT_IDS["greedy"] not in expert_ids
+    assert _EXPERT_IDS["rush"] not in expert_ids
+
+
+def test_launch_oversample_repeats_non_empty_decisions() -> None:
+    base = _pack(collect_dataset("league_strong_mix", seeds=[0], num_players=4, episode_steps=2, launch_oversample=1, **{
+        k: v for k, v in _KW.items() if k not in {"num_players", "episode_steps"}
+    }))
+    over = _pack(collect_dataset("league_strong_mix", seeds=[0], num_players=4, episode_steps=2, launch_oversample=3, **{
+        k: v for k, v in _KW.items() if k not in {"num_players", "episode_steps"}
+    }))
+
+    assert over["obs"].shape[0] >= base["obs"].shape[0]
+    assert int((over["action"][:, 0] == 1).sum()) >= int((base["action"][:, 0] == 1).sum())
+
+
+def test_launch_oversample_does_not_repeat_validation_or_test_decisions() -> None:
+    common = {
+        k: v for k, v in _KW.items() if k not in {"num_players", "episode_steps"}
+    }
+    base = _pack(
+        collect_dataset(
+            "league_strong_mix",
+            seeds=[3, 4],
+            num_players=4,
+            episode_steps=3,
+            launch_oversample=1,
+            **common,
+        )
+    )
+    over = _pack(
+        collect_dataset(
+            "league_strong_mix",
+            seeds=[3, 4],
+            num_players=4,
+            episode_steps=3,
+            launch_oversample=4,
+            **common,
+        )
+    )
+
+    assert _content_hash(over) == _content_hash(base)

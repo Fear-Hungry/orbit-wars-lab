@@ -118,6 +118,19 @@ def _rusher(**kw):
     return make_agent(**kw)
 
 
+def _heuristic(name: str):
+    from python.agents.registry import get_heuristic_policies
+
+    policy = get_heuristic_policies()[name]
+
+    def act(obs):
+        player = int(obs.get("player", 0))
+        moves = policy(obs, player)
+        return list(moves) if isinstance(moves, list) else []
+
+    return act
+
+
 class _TarballIsolation:
     """Per-tarball import context. Tarballs bundle bare-named modules
     (_brep_weights, _producer_agent, _upstream, orbit_lite, ...); with the
@@ -210,12 +223,27 @@ def _brep():
     return _tarball_agent(_BREP_TAR, "brep")
 
 
+def register_submission_file(name: str, path: str | Path) -> None:
+    """Register a Kaggle-format ``agent(obs)`` file as a league bot."""
+
+    p = Path(path)
+    if not p.is_absolute():
+        p = ROOT / p
+    if not p.exists():
+        raise FileNotFoundError(p)
+    FACTORIES[str(name)] = (lambda f=p, n=str(name): _fresh_module(f, n).agent)
+
+
 FACTORIES = {
     "producer": lambda: _producer(),
     "oep": lambda: _oep(),
     "brep": lambda: _brep(),
+    "greedy": lambda: _heuristic("greedy"),
+    "rush": lambda: _heuristic("rush"),
     "pgs_hold": lambda: _pgs(scripts="hold"),
     "pgs_holdwave": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150),
+    "pgs_holdwave_half2p": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                        half_in_2p=True),
     "pgs_allscripts": lambda: _pgs(),
     "ext_lb1050": _external("artifacts/opponents/top5_proxy/lb-1050-heuristic-simulation-agent-test-3/agent.py"),
     "ext_hellburner": _external("artifacts/opponents/top5_proxy/hellburner/agent.py"),
@@ -243,6 +271,9 @@ FACTORIES = {
 for _tar in sorted((ROOT / "artifacts" / "league" / "tarballs").glob("*.tar.gz")):
     _name = _tar.stem.replace(".tar", "")
     FACTORIES[_name] = (lambda t=_tar, n=_name: _tarball_agent(t, n))
+
+for _py in sorted((ROOT / "artifacts" / "league" / "submissions").glob("*.py")):
+    register_submission_file(_py.stem, _py)
 
 
 def make(name: str):

@@ -35,6 +35,8 @@ from orbit_wars_gym.action_masks import build_action_masks, split_masks
 from orbit_wars_gym.backend import RustBatchBackend, RustConfig
 from orbit_wars_gym.encoding import observation_dim
 from orbit_wars_gym.entities import fleet_owner, planet_id, planet_owner
+from orbit_wars_gym.observation import to_official_observation
+from orbit_wars_gym.rules import normalized_margin
 
 _POLICY_ARCHS = {"flat": FlatActorCritic, "entity": EntityActorCritic}
 
@@ -50,6 +52,73 @@ PHASE0_OPPONENTS = {
     name: _HEURISTIC_POLICIES[name]
     for name in ("producer", "oep", "greedy", "defensive", "rush", "anti_meta", "weak_random")
 }
+
+LEAGUE_TRAINING_OPPONENTS = frozenset({"pgs_holdwave", "pgs_bigwave", "brep"})
+
+
+def _league_training_policy(name: str):
+    bot = None
+
+    def policy(state: dict[str, Any], player: int) -> list[list[float]]:
+        nonlocal bot
+        if bot is None:
+            from scripts.league_agents import make
+
+            bot = make(name)
+        moves = bot(to_official_observation(state, player=player))
+        return list(moves) if isinstance(moves, list) else []
+
+    return policy
+
+
+for _name in sorted(LEAGUE_TRAINING_OPPONENTS):
+    PHASE0_OPPONENTS[_name] = _league_training_policy(_name)
+
+
+def _opponent_parts(name: str) -> tuple[str, ...]:
+    return tuple(part.strip() for part in str(name).split("+") if part.strip())
+
+
+def _unknown_opponent_parts(names: Sequence[str]) -> list[str]:
+    unknown: set[str] = set()
+    for name in names:
+        parts = _opponent_parts(name)
+        if not parts:
+            unknown.add(str(name))
+            continue
+        unknown.update(part for part in parts if part not in PHASE0_OPPONENTS)
+    return sorted(unknown)
+
+
+def _seat_policy(name: str, seat_index: int):
+    if name in STATEFUL_SINGLETON_OPPONENTS:
+        return get_isolated_opponents(name, seat_index + 1)[seat_index]
+    if name in LEAGUE_TRAINING_OPPONENTS:
+        return _league_training_policy(name)
+    return PHASE0_OPPONENTS[name]
+
+
+def _training_opponent_policy(name: str, num_players: int):
+    parts = _opponent_parts(name)
+    unknown = _unknown_opponent_parts([name])
+    if unknown:
+        raise ValueError(f"unknown phase-0 opponent parts: {', '.join(unknown)}")
+    if not parts:
+        raise ValueError("opponent name cannot be empty")
+
+    seat_policies = [
+        _seat_policy(parts[(seat - 1) % len(parts)], seat - 1)
+        for seat in range(1, max(2, int(num_players)))
+    ]
+
+    def policy(state: dict[str, Any], player: int) -> list[list[float]]:
+        if player <= 0:
+            return []
+        seat = (int(player) - 1) % len(seat_policies)
+        return seat_policies[seat](state, player)
+
+    policy.__name__ = "+".join(parts)
+    return policy
 
 
 @dataclass(frozen=True)
@@ -83,6 +152,8 @@ class Phase0TrainingConfig:
     sun_loss_penalty: float = 0.02
     border_loss_penalty: float = 0.02
     ship_margin_scale: float = 0.0
+    normalized_margin_scale_start: float = 0.0
+    normalized_margin_scale_end: float = 0.0
     base_shaping_scale_start: float = 1.0
     base_shaping_scale_end: float = 0.15
     comet_shaping_scale_start: float = 0.08
@@ -98,6 +169,7 @@ class Phase0TrainingConfig:
     decoder_reserve_home_ships: int = 8
     decoder_fractions: tuple[float, ...] = (0.10, 0.25, 0.50, 0.75)
     decoder_angle_offsets: tuple[float, ...] = (-0.261799, -0.130899, 0.0, 0.130899, 0.261799)
+    inherit_checkpoint_decoder: bool = True
     # --- Movement 2 (de-anchor the reward + anti-drift on scaling) ---
     # De-anchor: "none" forces the production/territory base shaping to 0 (the
     # potential that equals the Producer's greedy objective). "producer" keeps it.
@@ -179,9 +251,9 @@ def _parse_opponents(raw: str | Sequence[str]) -> tuple[str, ...]:
         raise ValueError("at least one opponent is required")
     if len(set(items)) < 2:
         raise ValueError("training requires at least two distinct opponents")
-    unknown = [name for name in items if name not in PHASE0_OPPONENTS]
+    unknown = _unknown_opponent_parts(items)
     if unknown:
-        raise ValueError(f"unknown phase-0 opponents: {', '.join(sorted(unknown))}")
+        raise ValueError(f"unknown phase-0 opponent parts: {', '.join(unknown)}")
     return items
 
 
@@ -293,6 +365,14 @@ def four_player_shaping_scales(training_cfg: Phase0TrainingConfig, progress: flo
     )
 
 
+def normalized_margin_scale(training_cfg: Phase0TrainingConfig, progress: float) -> float:
+    return _linear_schedule(
+        training_cfg.normalized_margin_scale_start,
+        training_cfg.normalized_margin_scale_end,
+        progress,
+    )
+
+
 def decoder_config(training_cfg: Phase0TrainingConfig) -> DecoderConfig:
     return DecoderConfig(
         fractions=tuple(float(value) for value in training_cfg.decoder_fractions),
@@ -314,11 +394,56 @@ def decoder_payload(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
     }
 
 
+def _checkpoint_decoder_payload(checkpoint: dict[str, Any]) -> dict[str, Any]:
+    summary = checkpoint.get("summary") if isinstance(checkpoint.get("summary"), dict) else {}
+    if isinstance(summary.get("decoder"), dict):
+        return dict(summary["decoder"])
+    config = checkpoint.get("config") if isinstance(checkpoint.get("config"), dict) else {}
+    payload: dict[str, Any] = {}
+    for source, target in (
+        ("decoder_fractions", "fractions"),
+        ("decoder_angle_offsets", "angle_offsets"),
+        ("decoder_max_moves_per_turn", "max_moves_per_turn"),
+        ("decoder_min_ships_to_launch", "min_ships_to_launch"),
+        ("decoder_reserve_home_ships", "reserve_home_ships"),
+    ):
+        if source in config:
+            payload[target] = config[source]
+    return payload
+
+
+def _inherit_checkpoint_decoder(
+    training_cfg: Phase0TrainingConfig,
+    checkpoint: dict[str, Any] | None,
+) -> Phase0TrainingConfig:
+    if checkpoint is None or not training_cfg.inherit_checkpoint_decoder:
+        return training_cfg
+    decoder = _checkpoint_decoder_payload(checkpoint)
+    if not decoder:
+        return training_cfg
+    return replace(
+        training_cfg,
+        decoder_fractions=tuple(float(value) for value in decoder.get("fractions", training_cfg.decoder_fractions)),
+        decoder_angle_offsets=tuple(
+            float(value) for value in decoder.get("angle_offsets", training_cfg.decoder_angle_offsets)
+        ),
+        decoder_max_moves_per_turn=int(decoder.get("max_moves_per_turn", training_cfg.decoder_max_moves_per_turn)),
+        decoder_min_ships_to_launch=int(
+            decoder.get("min_ships_to_launch", training_cfg.decoder_min_ships_to_launch)
+        ),
+        decoder_reserve_home_ships=int(
+            decoder.get("reserve_home_ships", training_cfg.decoder_reserve_home_ships)
+        ),
+    )
+
+
 def build_phase5_4p_config(**overrides: Any) -> Phase0TrainingConfig:
     cfg = Phase0TrainingConfig(
         policy_track="phase5_4p",
         num_players=4,
         enable_comets=True,
+        normalized_margin_scale_start=0.15,
+        normalized_margin_scale_end=0.04,
         four_player_vulnerability_scale_start=0.08,
         four_player_vulnerability_scale_end=0.03,
         four_player_leader_scale_start=0.06,
@@ -349,6 +474,7 @@ def _collect_single_env_rollout_segment(
     progress: float,
 ) -> RolloutSegment:
     base_shaping_scale, comet_shaping_scale = shaping_scales(training_cfg, progress)
+    margin_scale = normalized_margin_scale(training_cfg, progress)
     (
         four_player_vulnerability_scale,
         four_player_leader_scale,
@@ -363,6 +489,7 @@ def _collect_single_env_rollout_segment(
         sun_loss_penalty=training_cfg.sun_loss_penalty,
         border_loss_penalty=training_cfg.border_loss_penalty,
         ship_margin_scale=training_cfg.ship_margin_scale,
+        normalized_margin_scale=margin_scale,
         base_shaping_scale=base_shaping_scale,
         comet_shaping_scale=comet_shaping_scale,
         shaping_gamma=training_cfg.gamma,
@@ -470,8 +597,17 @@ def _moves_to_flat_rows(env_index: int, player_index: int, moves: Sequence[Seque
     return rows
 
 
-def _batched_rollout_supported(training_cfg: Phase0TrainingConfig) -> bool:
-    return int(training_cfg.rollout_num_envs) > 1 and training_cfg.num_players == 2
+def _batched_rollout_supported(
+    training_cfg: Phase0TrainingConfig,
+    opponent_name: str | None = None,
+) -> bool:
+    if int(training_cfg.rollout_num_envs) <= 1 or training_cfg.num_players != 2:
+        return False
+    if opponent_name is not None and len(_opponent_parts(opponent_name)) != 1:
+        return False
+    if opponent_name in LEAGUE_TRAINING_OPPONENTS:
+        return False
+    return True
 
 
 def _collect_batched_rollout_segment(
@@ -519,6 +655,7 @@ def _collect_batched_rollout_segment(
             else None
         )
     base_shaping_scale, comet_shaping_scale = shaping_scales(training_cfg, progress)
+    margin_scale = normalized_margin_scale(training_cfg, progress)
     reward_env = build_phase0_env(
         seed=base_seed,
         num_players=training_cfg.num_players,
@@ -528,6 +665,7 @@ def _collect_batched_rollout_segment(
         sun_loss_penalty=training_cfg.sun_loss_penalty,
         border_loss_penalty=training_cfg.border_loss_penalty,
         ship_margin_scale=training_cfg.ship_margin_scale,
+        normalized_margin_scale=margin_scale,
         base_shaping_scale=base_shaping_scale,
         comet_shaping_scale=comet_shaping_scale,
         shaping_gamma=training_cfg.gamma,
@@ -616,10 +754,17 @@ def _collect_batched_rollout_segment(
                 done=done,
             )
             ship_margin_reward = reward_env._ship_margin_reward(previous_state, next_state, player=0)
+            normalized_margin_reward = reward_env._normalized_margin_reward(
+                previous_state,
+                next_state,
+                player=0,
+                done=done,
+            )
             comet_reward = reward_env._comet_auxiliary_reward(previous_state, next_state, player=0)
             reward = (
                 base_shaping_scale * base_reward
                 + ship_margin_reward
+                + normalized_margin_reward
                 + comet_shaping_scale * comet_reward
             )
             if done:
@@ -722,7 +867,7 @@ def _collect_rollout_segment(
     sample_limit: int | None = None,
 ) -> RolloutSegment:
     limit = rollout_steps if sample_limit is None else max(1, int(sample_limit))
-    if _batched_rollout_supported(training_cfg):
+    if _batched_rollout_supported(training_cfg, opponent_name):
         per_env_steps = max(1, min(int(rollout_steps), math.ceil(limit / max(1, int(training_cfg.rollout_num_envs)))))
         return _collect_batched_rollout_segment(
             model,
@@ -936,10 +1081,7 @@ def _evaluate_margin(
                 last_scores = list(scores)
             if done:
                 break
-        s0 = float(last_scores[0]) if len(last_scores) > 0 else 0.0
-        s1 = float(last_scores[1]) if len(last_scores) > 1 else 0.0
-        denom = max(abs(s0) + abs(s1), 1.0)
-        margins.append((s0 - s1) / denom)
+        margins.append(normalized_margin(last_scores, 0) if last_scores else 0.0)
     if was_training:
         model.train()
     return float(np.mean(margins)) if margins else 0.0
@@ -959,6 +1101,7 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
     # When warm-starting, adopt the checkpoint's architecture (e.g. an entity-BC
     # init) so the state_dict loads cleanly; otherwise use the configured arch.
     checkpoint = _load_checkpoint(training_cfg.checkpoint_in, device) if training_cfg.checkpoint_in else None
+    training_cfg = _inherit_checkpoint_decoder(training_cfg, checkpoint)
     if checkpoint is not None:
         ckpt_summary = checkpoint.get("summary") if isinstance(checkpoint.get("summary"), dict) else {}
         policy_arch = str(ckpt_summary.get("arch", training_cfg.policy_arch))
@@ -1018,7 +1161,7 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
                 device=device,
                 training_cfg=training_cfg,
                 progress=progress,
-                sample_limit=remaining if _batched_rollout_supported(training_cfg) else segment_steps,
+                sample_limit=remaining if _batched_rollout_supported(training_cfg, opponent_name) else segment_steps,
             )
             segments.append(segment)
             opponent_segments[opponent_name] += 1
@@ -1064,14 +1207,20 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
         "timesteps": total_timesteps,
         "updates": update_idx,
         "rollout_num_envs": int(training_cfg.rollout_num_envs),
-        "rollout_backend": "rust_batch" if _batched_rollout_supported(training_cfg) else "gym_single_env",
+        "rollout_backend": (
+            "rust_batch"
+            if any(_batched_rollout_supported(training_cfg, name) for name in opponents)
+            else "gym_single_env"
+        ),
         "training_wall_seconds": elapsed_seconds,
         "env_steps_per_second": total_timesteps / elapsed_seconds,
         "opponents": list(opponents),
         "opponent_segments": opponent_segments,
         "enable_comets": training_cfg.enable_comets,
-        "reward_shaping": "annealed_base_plus_temporal_comet_auxiliary",
+        "reward_shaping": "annealed_base_plus_normalized_margin_plus_temporal_comet_auxiliary",
         "ship_margin_scale": training_cfg.ship_margin_scale,
+        "normalized_margin_scale_start": training_cfg.normalized_margin_scale_start,
+        "normalized_margin_scale_end": training_cfg.normalized_margin_scale_end,
         "base_shaping_scale_start": training_cfg.base_shaping_scale_start,
         "base_shaping_scale_end": training_cfg.base_shaping_scale_end,
         "shaping_potential": training_cfg.shaping_potential,
@@ -1129,6 +1278,7 @@ def build_phase0_env(
     sun_loss_penalty: float = 0.02,
     border_loss_penalty: float = 0.02,
     ship_margin_scale: float = 0.0,
+    normalized_margin_scale: float = 0.0,
     base_shaping_scale: float = 1.0,
     comet_shaping_scale: float = 0.0,
     shaping_gamma: float = 0.99,
@@ -1137,10 +1287,7 @@ def build_phase0_env(
     four_player_third_player_scale: float = 0.0,
     decoder_cfg: DecoderConfig | None = None,
 ) -> OrbitWarsGymEnv:
-    try:
-        opponent_policy = PHASE0_OPPONENTS[opponent_name]
-    except KeyError as exc:
-        raise ValueError(f"unknown phase-0 opponent: {opponent_name}") from exc
+    opponent_policy = _training_opponent_policy(opponent_name, num_players)
     rust_cfg = RustConfig(enable_comets=enable_comets)
     return OrbitWarsGymEnv(
         num_players=num_players,
@@ -1151,6 +1298,7 @@ def build_phase0_env(
         sun_loss_penalty=sun_loss_penalty,
         border_loss_penalty=border_loss_penalty,
         ship_margin_scale=ship_margin_scale,
+        normalized_margin_scale=normalized_margin_scale,
         base_shaping_scale=base_shaping_scale,
         comet_shaping_scale=comet_shaping_scale,
         shaping_gamma=shaping_gamma,
@@ -1192,6 +1340,8 @@ def main():
     parser.add_argument("--sun-loss-penalty", type=float, default=0.02)
     parser.add_argument("--border-loss-penalty", type=float, default=0.02)
     parser.add_argument("--ship-margin-scale", type=float, default=0.0)
+    parser.add_argument("--normalized-margin-scale-start", type=float, default=0.0)
+    parser.add_argument("--normalized-margin-scale-end", type=float, default=0.0)
     parser.add_argument("--base-shaping-scale-start", type=float, default=1.0)
     parser.add_argument("--base-shaping-scale-end", type=float, default=0.15)
     parser.add_argument("--comet-shaping-scale-start", type=float, default=0.08)
@@ -1205,6 +1355,12 @@ def main():
     parser.add_argument("--decoder-max-moves-per-turn", type=int, default=8)
     parser.add_argument("--decoder-min-ships-to-launch", type=int, default=2)
     parser.add_argument("--decoder-reserve-home-ships", type=int, default=8)
+    parser.add_argument(
+        "--inherit-checkpoint-decoder",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="when warm-starting, use the decoder payload embedded in --checkpoint-in",
+    )
     # --- Movement 2 ---
     parser.add_argument("--shaping-potential", choices=("producer", "none"), default="producer",
                         help="Mov.2 de-anchor: 'none' drops the production/territory base shaping (= Producer objective)")
@@ -1229,6 +1385,7 @@ def main():
         sun_loss_penalty=args.sun_loss_penalty,
         border_loss_penalty=args.border_loss_penalty,
         ship_margin_scale=args.ship_margin_scale,
+        normalized_margin_scale=args.normalized_margin_scale_start,
         base_shaping_scale=args.base_shaping_scale_start,
         comet_shaping_scale=args.comet_shaping_scale_start,
         four_player_vulnerability_scale=args.four_player_vulnerability_scale_start,
@@ -1268,6 +1425,8 @@ def main():
         sun_loss_penalty=args.sun_loss_penalty,
         border_loss_penalty=args.border_loss_penalty,
         ship_margin_scale=args.ship_margin_scale,
+        normalized_margin_scale_start=args.normalized_margin_scale_start,
+        normalized_margin_scale_end=args.normalized_margin_scale_end,
         base_shaping_scale_start=args.base_shaping_scale_start,
         base_shaping_scale_end=args.base_shaping_scale_end,
         comet_shaping_scale_start=args.comet_shaping_scale_start,
@@ -1281,6 +1440,7 @@ def main():
         decoder_max_moves_per_turn=args.decoder_max_moves_per_turn,
         decoder_min_ships_to_launch=args.decoder_min_ships_to_launch,
         decoder_reserve_home_ships=args.decoder_reserve_home_ships,
+        inherit_checkpoint_decoder=bool(args.inherit_checkpoint_decoder),
         shaping_potential=args.shaping_potential,
         kl_to_ref_coef=args.kl_to_ref_coef,
         ref_checkpoint=args.ref_checkpoint,
