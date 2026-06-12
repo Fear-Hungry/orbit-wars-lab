@@ -31,6 +31,12 @@ def _render_agent(monkeypatch, oep_fn, budget_s=0.05, min_advantage=15):
         monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
     oep_mod = types.ModuleType("bots.oep.agent")
     oep_mod.agent = oep_fn
+    oep_mod.reset_count = 0
+
+    def notify_fallback_applied():
+        oep_mod.reset_count += 1
+
+    oep_mod.notify_fallback_applied = notify_fallback_applied
     prod_mod = types.ModuleType("bots.producer.agent")
     prod_mod.agent = lambda obs: PRODUCER_SENTINEL
     monkeypatch.setitem(sys.modules, "bots.oep.agent", oep_mod)
@@ -68,7 +74,7 @@ def test_wrapper_pins_torch_threads_before_importing_oep(monkeypatch):
     src = MAIN_TEMPLATE.format(min_advantage=15, budget_s=0.6)
     assert 'os.environ.setdefault("OMP_NUM_THREADS", "1")' in src
     assert "torch.set_num_threads(1)" in src
-    assert src.index("torch.set_num_threads(1)") < src.index("from bots.oep.agent import agent as _oep")
+    assert src.index("torch.set_num_threads(1)") < src.index("import bots.oep.agent as _oep_agent")
 
 
 def test_healthy_oep_records_zero_fallbacks(monkeypatch):
@@ -108,6 +114,16 @@ def test_benchmark_delta_logic_sees_the_fallback(monkeypatch):
     assert delta["fallback_errors"] == 1.0
 
 
+def test_fallback_notifies_oep_runtime_reset(monkeypatch):
+    def dead(obs):
+        raise RuntimeError("OEP dies every step")
+
+    agent, ns = _render_agent(monkeypatch, dead)
+    assert agent({"player": 0}) is PRODUCER_SENTINEL
+    assert sys.modules["bots.oep.agent"].reset_count == 1
+    assert ns["SUBMISSION_STATS"]["fallbacks"] == 1
+
+
 def test_timeout_blocks_until_thread_finishes_then_resumes_oep(monkeypatch):
     launches = []
     release = threading.Event()
@@ -125,6 +141,7 @@ def test_timeout_blocks_until_thread_finishes_then_resumes_oep(monkeypatch):
         "calls": 5, "fallbacks": 5, "timeouts": 1,
         "timeout_thread_blocks": 4, "fallback_errors": 0,
     }
+    assert sys.modules["bots.oep.agent"].reset_count == 5
 
     release.set()
     ns["_active_timeout_thread"][0].join(timeout=1.0)
