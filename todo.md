@@ -419,6 +419,22 @@ flat -1.0 = action-space grande demais (causa #2), não bug. PBRS batched está 
   - [ ] verificar: `margin > 0` a 500 steps ambos assentos; se ainda travar em 0.0, o teto é mais fundo (primitivas de edit).
 - [x] **NÃO fazer:** mais compute no raw-action do zero (causa #2 = caminho lento) e re-tunar pesos de heurística (teto provado).
 
+## 🧠 IL — trocar a âncora Producer pela âncora ELITE (sugestão tech-lead 2026-06-10)
+Decorrente da pergunta "RL é o caminho?": a receita com respaldo (AlphaStar/Nature 2019; Metamon
+arXiv:2504.04395) é prior de IMITAÇÃO de replays fortes → RL refina → liga diversa. Vocês já têm
+2/3 (BReP residual = prior forte; liga = robustez); a âncora ainda é o Producer (teto provado).
+BC é supervisionado: GPU acelera de verdade, sem o gargalo de 20 steps/s do simulador.
+
+- [ ] **DECISÃO (usuário): abrir a linha IL-elite?** Se sim, escalar o T1 da principal: baixar
+  ≥100 episódios de agentes ≥1500 via API de episódios (ladder-walk já existe, DB id=138)
+  - [ ] verificar: ≥100 episódios parseados em pares (obs, ação) por step, por assento
+- [ ] BC no encoder entity/BReP sobre o dataset elite (sem simulador no loop)
+  - [ ] verificar: action-agreement top-1 em held-out medido E perfil de lançamento do BC
+    reproduz a taxonomia elite (%lançamentos ≥50 navios entre 60–80%, hoard 2–5×)
+- [ ] fine-tune RL com KL-âncora ao checkpoint BC (infra do Mov.2 já existe:
+  `--kl-to-ref-coef`/`--ref-checkpoint`) ou BReP residual sobre o plano do BC
+  - [ ] verificar: gate da liga P(cand ≥ GATE_REFERENCE) ≥ 0.6 antes de qualquer slot de submissão
+
 ## 📄 DOC — model cards de implementação (pedido 2026-06-07)
 Motivo: `EXPERIMENTS.md` é audit trail (hipótese→margem→decisão), **não** descreve COMO os
 modelos são construídos nem consolida "o que deu certo neles". A implementação mora no fonte
