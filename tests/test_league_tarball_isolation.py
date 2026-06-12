@@ -107,6 +107,19 @@ def test_reexported_tarball_invalidates_cache(fake_root, tmp_path):
     assert agent_v1({}) == "V1"
 
 
+def test_partial_tarball_cache_without_complete_marker_is_rebuilt(fake_root, tmp_path):
+    tar = _make_tarball(tmp_path, "race", "FRESH")
+    digest = hashlib.sha1(tar.read_bytes()).hexdigest()[:12]
+    cache = fake_root / "artifacts" / "league" / "cache" / f"race-{digest}"
+    cache.mkdir(parents=True)
+    (cache / "main.py").write_text('def agent(obs):\n    return "PARTIAL\n')
+
+    agent = league_agents._tarball_agent(tar, "race")
+
+    assert agent({}) == "FRESH"
+    assert (cache / ".complete").exists()
+
+
 def test_missing_tarball_fails_loud_even_with_warm_cache(fake_root, tmp_path):
     """No-silent-fallback: without the source tarball there is no way to know
     WHICH cached version would run — fail loud instead of guessing."""
@@ -138,3 +151,18 @@ def test_tarball_submission_stats_fallbacks_fail_loud(fake_root, tmp_path):
 
     with pytest.raises(RuntimeError, match="degradation counters"):
         agent({})
+
+
+def test_autoload_prefers_tarball_over_same_named_submission_py(fake_root, tmp_path, monkeypatch):
+    tarballs = fake_root / "artifacts" / "league" / "tarballs"
+    submissions = fake_root / "artifacts" / "league" / "submissions"
+    tarballs.mkdir(parents=True)
+    submissions.mkdir(parents=True)
+    tar = _make_tarball(tmp_path, "champ", "TARBALL")
+    (tarballs / "champ.tar.gz").write_bytes(tar.read_bytes())
+    (submissions / "champ.py").write_text("def agent(obs):\n    return 'PY'\n")
+    monkeypatch.setattr(league_agents, "FACTORIES", {})
+
+    league_agents._register_league_artifacts()
+
+    assert league_agents.make("champ")({}) == "TARBALL"

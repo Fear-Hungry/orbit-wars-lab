@@ -10,8 +10,12 @@ the hard requirement that pgs_allscripts lands clearly below producer/oep/brep).
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import hashlib
 import importlib.util
+import os
+import py_compile
+import shutil
 import sys
 import tarfile
 from pathlib import Path
@@ -118,6 +122,19 @@ def _rusher(**kw):
     return make_agent(**kw)
 
 
+def _heuristic(name: str):
+    from python.agents.registry import get_heuristic_policies
+
+    policy = get_heuristic_policies()[name]
+
+    def act(obs):
+        player = int(obs.get("player", 0))
+        moves = policy(obs, player)
+        return list(moves) if isinstance(moves, list) else []
+
+    return act
+
+
 class _TarballIsolation:
     """Per-tarball import context. Tarballs bundle bare-named modules
     (_brep_weights, _producer_agent, _upstream, orbit_lite, ...); with the
@@ -164,6 +181,49 @@ class _TarballIsolation:
             sys.modules.update(saved)
 
 
+def _ensure_tarball_cache(tar_path: Path, cache_name: str) -> Path:
+    digest = hashlib.sha1(tar_path.read_bytes()).hexdigest()[:12]
+    key = f"{cache_name}-{digest}"
+    cache = ROOT / "artifacts" / "league" / "cache" / key
+    complete = cache / ".complete"
+    if complete.exists() and (cache / "main.py").exists():
+        return cache
+
+    cache_parent = cache.parent
+    cache_parent.mkdir(parents=True, exist_ok=True)
+    locks = cache_parent / ".locks"
+    locks.mkdir(parents=True, exist_ok=True)
+    lock_path = locks / f"{key}.lock"
+    with lock_path.open("w", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            if complete.exists() and (cache / "main.py").exists():
+                return cache
+            if cache.exists():
+                shutil.rmtree(cache)
+            tmp = cache_parent / f".{key}.{os.getpid()}.tmp"
+            shutil.rmtree(tmp, ignore_errors=True)
+            tmp.mkdir(parents=True, exist_ok=True)
+            try:
+                with tarfile.open(tar_path) as tf:
+                    # filter="data" blocks path traversal / symlink escapes from
+                    # a hostile tarball (and is the post-3.14 mandatory default
+                    # anyway).
+                    tf.extractall(tmp, filter="data")
+                main_py = tmp / "main.py"
+                if not main_py.exists():
+                    raise ValueError(f"tarball missing main.py: {tar_path}")
+                py_compile.compile(str(main_py), doraise=True)
+                (tmp / ".complete").write_text("ok\n", encoding="utf-8")
+                os.replace(tmp, cache)
+            except Exception:
+                shutil.rmtree(tmp, ignore_errors=True)
+                raise
+            return cache
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
 def _tarball_agent(tar_path: Path, cache_name: str):
     """Load a self-contained submission tarball as a league agent (fresh main
     module and fresh bundled-module overlay per instance; bare-named deps stay
@@ -177,15 +237,7 @@ def _tarball_agent(tar_path: Path, cache_name: str):
     two games using the same tarball still need isolated package state. Old hash
     dirs become orphans — never reused, safe to leave. A missing tarball fails
     LOUD even when a stale cache exists (no-silent-fallback rule)."""
-    digest = hashlib.sha1(tar_path.read_bytes()).hexdigest()[:12]
-    key = f"{cache_name}-{digest}"
-    cache = ROOT / "artifacts" / "league" / "cache" / key
-    if not (cache / "main.py").exists():
-        cache.mkdir(parents=True, exist_ok=True)
-        with tarfile.open(tar_path) as tf:
-            # filter="data" blocks path traversal / symlink escapes from a
-            # hostile tarball (and is the post-3.14 mandatory default anyway)
-            tf.extractall(cache, filter="data")
+    cache = _ensure_tarball_cache(tar_path, cache_name)
     iso = _TarballIsolation(cache)
     with iso.active():
         mod = _fresh_module(cache / "main.py", cache_name)
@@ -210,12 +262,38 @@ def _brep():
     return _tarball_agent(_BREP_TAR, "brep")
 
 
+def register_submission_file(name: str, path: str | Path) -> None:
+    """Register a Kaggle-format ``agent(obs)`` file as a league bot."""
+
+    p = Path(path)
+    if not p.is_absolute():
+        p = ROOT / p
+    if not p.exists():
+        raise FileNotFoundError(p)
+    FACTORIES[str(name)] = (lambda f=p, n=str(name): _fresh_module(f, n).agent)
+
+
+def register_submission_tarball(name: str, path: str | Path) -> None:
+    """Register a Kaggle-format tarball as a league bot."""
+
+    p = Path(path)
+    if not p.is_absolute():
+        p = ROOT / p
+    if not p.exists():
+        raise FileNotFoundError(p)
+    FACTORIES[str(name)] = (lambda f=p, n=str(name): _tarball_agent(f, n))
+
+
 FACTORIES = {
     "producer": lambda: _producer(),
     "oep": lambda: _oep(),
     "brep": lambda: _brep(),
+    "greedy": lambda: _heuristic("greedy"),
+    "rush": lambda: _heuristic("rush"),
     "pgs_hold": lambda: _pgs(scripts="hold"),
     "pgs_holdwave": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150),
+    "pgs_holdwave_half2p": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                        half_in_2p=True),
     "pgs_allscripts": lambda: _pgs(),
     "ext_lb1050": _external("artifacts/opponents/top5_proxy/lb-1050-heuristic-simulation-agent-test-3/agent.py"),
     "ext_hellburner": _external("artifacts/opponents/top5_proxy/hellburner/agent.py"),
@@ -240,9 +318,17 @@ FACTORIES = {
 # Any tarball dropped in artifacts/league/tarballs/<name>.tar.gz auto-registers
 # as a league bot "<name>" — the cross-worktree contract (worktree B exports its
 # champions here; self-contained, no shared code needed).
-for _tar in sorted((ROOT / "artifacts" / "league" / "tarballs").glob("*.tar.gz")):
-    _name = _tar.stem.replace(".tar", "")
-    FACTORIES[_name] = (lambda t=_tar, n=_name: _tarball_agent(t, n))
+def _register_league_artifacts() -> None:
+    for tar in sorted((ROOT / "artifacts" / "league" / "tarballs").glob("*.tar.gz")):
+        name = tar.stem.replace(".tar", "")
+        FACTORIES[name] = (lambda t=tar, n=name: _tarball_agent(t, n))
+
+    for py in sorted((ROOT / "artifacts" / "league" / "submissions").glob("*.py")):
+        if py.stem not in FACTORIES:
+            register_submission_file(py.stem, py)
+
+
+_register_league_artifacts()
 
 
 def make(name: str):
