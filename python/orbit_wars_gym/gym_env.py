@@ -30,6 +30,7 @@ from .entities import (
     planet_x,
     planet_y,
 )
+from .rules import normalized_margin
 
 BOARD_SIZE = 100.0
 CENTER = 50.0
@@ -40,8 +41,8 @@ SHIP_SPEED = 6.0
 class OrbitWarsGymEnv(gym.Env):
     """Single-learning-agent wrapper.
 
-    Player 0 is controlled by the learner. Other players use a configurable
-    opponent callable. This is the fastest route to a first PPO baseline.
+    One configured player is controlled by the learner. Other players use a
+    configurable opponent callable.
     """
 
     metadata = {"render_modes": []}
@@ -53,19 +54,25 @@ class OrbitWarsGymEnv(gym.Env):
         encoder_cfg: EncoderConfig | None = None,
         rust_cfg: RustConfig | None = None,
         opponent_policy=None,
+        learner_player: int = 0,
         decoder_cfg: DecoderConfig | None = None,
         sun_loss_penalty: float = 0.02,
         border_loss_penalty: float = 0.02,
         ship_margin_scale: float = 0.0,
+        normalized_margin_scale: float = 0.0,
         base_shaping_scale: float = 1.0,
         comet_shaping_scale: float = 0.0,
         shaping_gamma: float = 0.99,
         four_player_vulnerability_scale: float = 0.0,
         four_player_leader_scale: float = 0.0,
         four_player_third_player_scale: float = 0.0,
+        elimination_penalty: float = 0.0,
     ):
         super().__init__()
         self.num_players = num_players
+        self.learner_player = int(learner_player)
+        if self.learner_player < 0 or self.learner_player >= int(num_players):
+            raise ValueError("learner_player must be in [0, num_players)")
         self.encoder_cfg = encoder_cfg or EncoderConfig()
         self.backend = RustBatchBackend(num_envs=1, num_players=num_players, seed=seed, config=rust_cfg)
         self.opponent_policy = opponent_policy or greedy_moves
@@ -73,6 +80,7 @@ class OrbitWarsGymEnv(gym.Env):
         self.sun_loss_penalty = float(sun_loss_penalty)
         self.border_loss_penalty = float(border_loss_penalty)
         self.ship_margin_scale = float(ship_margin_scale)
+        self.normalized_margin_scale = float(normalized_margin_scale)
         self.base_shaping_scale = float(base_shaping_scale)
         self.comet_shaping_scale = float(comet_shaping_scale)
         # Discount for potential-based shaping F = γ·Φ(s') − Φ(s). Must match the
@@ -82,6 +90,7 @@ class OrbitWarsGymEnv(gym.Env):
         self.four_player_vulnerability_scale = float(four_player_vulnerability_scale)
         self.four_player_leader_scale = float(four_player_leader_scale)
         self.four_player_third_player_scale = float(four_player_third_player_scale)
+        self.elimination_penalty = float(elimination_penalty)
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(observation_dim(self.encoder_cfg),), dtype=np.float32)
         # [launch, source_rank, target_rank, fraction_idx, offset_idx]; launch==0 passes.
         self.action_space = spaces.MultiDiscrete([2, 16, 32, 4, 5])
@@ -90,56 +99,99 @@ class OrbitWarsGymEnv(gym.Env):
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
         states = self.backend.reset(0 if seed is None else seed)
         self.state = states[0]
-        obs = encode_state(self.state, player=0, cfg=self.encoder_cfg)
+        obs = encode_state(self.state, player=self.learner_player, cfg=self.encoder_cfg)
         return obs, {}
 
     def step(self, action):
         assert self.state is not None
         previous_state = self.state
         actions = [[[] for _ in range(self.num_players)]]
-        actions[0][0] = decode_discrete_action(self.state, 0, action, self.decoder_cfg)
-        for pid in range(1, self.num_players):
+        learner = self.learner_player
+        actions[0][learner] = decode_discrete_action(self.state, learner, action, self.decoder_cfg)
+        for pid in range(self.num_players):
+            if pid == learner:
+                continue
             actions[0][pid] = self.opponent_policy(self.state, pid)
         outcomes, states = self.backend.step_with_states(actions)
         next_state = states[0]
         self.state = next_state
         done = bool(outcomes[0]["done"])
-        obs = encode_state(self.state, player=0, cfg=self.encoder_cfg)
-        base_shaping_reward = self._base_shaping_reward(
-            previous_state, next_state, player=0, player_moves=actions[0][0], done=done
-        )
-        ship_margin_reward = self._ship_margin_reward(previous_state, next_state, player=0)
-        comet_shaping_reward = self._comet_auxiliary_reward(previous_state, next_state, player=0)
-        vulnerability_reward, leader_reward, third_player_reward = self._four_player_strategic_reward(
+        obs = encode_state(self.state, player=learner, cfg=self.encoder_cfg)
+        reward, reward_info = self.transition_reward(
             previous_state,
             next_state,
-            player=0,
-        )
-        reward = (
-            self.base_shaping_scale * base_shaping_reward
-            + ship_margin_reward
-            + self.comet_shaping_scale * comet_shaping_reward
-            + self.four_player_vulnerability_scale * vulnerability_reward
-            + self.four_player_leader_scale * leader_reward
-            + self.four_player_third_player_scale * third_player_reward
+            player=learner,
+            player_moves=actions[0][learner],
+            done=done,
         )
         if done:
-            reward += float(outcomes[0]["rewards"][0])
+            reward += float(outcomes[0]["rewards"][learner])
         terminated = done
         truncated = False
-        sun_losses, border_losses = self._loss_counts(previous_state, next_state, player=0, player_moves=actions[0][0])
+        sun_losses, border_losses = self._loss_counts(
+            previous_state,
+            next_state,
+            player=learner,
+            player_moves=actions[0][learner],
+        )
         info = {
             "scores": outcomes[0].get("scores", []),
             "sun_losses": sun_losses,
             "border_losses": border_losses,
+            **reward_info,
+        }
+        return obs, reward, terminated, truncated, info
+
+    def transition_reward(
+        self,
+        previous_state: dict[str, Any],
+        state: dict[str, Any],
+        *,
+        player: int,
+        player_moves: list[list[float]],
+        done: bool = False,
+    ) -> tuple[float, dict[str, float]]:
+        base_shaping_reward = self._base_shaping_reward(
+            previous_state,
+            state,
+            player=player,
+            player_moves=player_moves,
+            done=done,
+        )
+        ship_margin_reward = self._ship_margin_reward(previous_state, state, player=player)
+        normalized_margin_reward = self._normalized_margin_reward(
+            previous_state,
+            state,
+            player=player,
+            done=done,
+        )
+        comet_shaping_reward = self._comet_auxiliary_reward(previous_state, state, player=player)
+        vulnerability_reward, leader_reward, third_player_reward = self._four_player_strategic_reward(
+            previous_state,
+            state,
+            player=player,
+        )
+        elimination_reward = self._elimination_reward(previous_state, state, player=player)
+        reward = (
+            self.base_shaping_scale * base_shaping_reward
+            + ship_margin_reward
+            + normalized_margin_reward
+            + self.comet_shaping_scale * comet_shaping_reward
+            + self.four_player_vulnerability_scale * vulnerability_reward
+            + self.four_player_leader_scale * leader_reward
+            + self.four_player_third_player_scale * third_player_reward
+            + elimination_reward
+        )
+        return reward, {
             "base_shaping_reward": base_shaping_reward,
             "ship_margin_reward": ship_margin_reward,
+            "normalized_margin_reward": normalized_margin_reward,
             "comet_shaping_reward": comet_shaping_reward,
             "four_player_vulnerability_reward": vulnerability_reward,
             "four_player_leader_reward": leader_reward,
             "four_player_third_player_reward": third_player_reward,
+            "elimination_reward": elimination_reward,
         }
-        return obs, reward, terminated, truncated, info
 
     def _state_potential(self, state: dict[str, Any], *, player: int) -> float:
         """Shaping potential Φ(s): opponent-relative production/territory advantage.
@@ -186,6 +238,33 @@ class OrbitWarsGymEnv(gym.Env):
         previous_margin = self._ship_margin(previous_state, player)
         current_margin = self._ship_margin(state, player)
         return self.ship_margin_scale * (current_margin - previous_margin)
+
+    def _normalized_margin_reward(
+        self,
+        previous_state: dict[str, Any],
+        state: dict[str, Any],
+        *,
+        player: int,
+        done: bool = False,
+    ) -> float:
+        if self.normalized_margin_scale == 0.0:
+            return 0.0
+        previous_margin = self._normalized_margin_potential(previous_state, player)
+        current_margin = 0.0 if done else self._normalized_margin_potential(state, player)
+        return self.normalized_margin_scale * (self.shaping_gamma * current_margin - previous_margin)
+
+    def _normalized_margin_potential(self, state: dict[str, Any], player: int) -> float:
+        scores = [self._player_total_ships(state, pid) for pid in range(self.num_players)]
+        if player >= len(scores):
+            return 0.0
+        return normalized_margin(scores, player)
+
+    def _elimination_reward(self, previous_state: dict[str, Any], state: dict[str, Any], *, player: int) -> float:
+        if self.elimination_penalty == 0.0:
+            return 0.0
+        if self._player_alive(previous_state, player) and not self._player_alive(state, player):
+            return -abs(self.elimination_penalty)
+        return 0.0
 
     def _ship_margin(self, state: dict[str, Any], player: int) -> float:
         own = self._player_total_ships(state, player)
@@ -290,6 +369,9 @@ class OrbitWarsGymEnv(gym.Env):
             if fleet_owner(fleet) == player:
                 total += float(fleet_ships(fleet))
         return total
+
+    def _player_alive(self, state: dict[str, Any], player: int) -> bool:
+        return self._player_total_ships(state, player) > 0.0
 
     def _loss_counts(
         self,

@@ -31,10 +31,13 @@ from python.train.opponent_pool import get_process_opponent_pool
 
 from orbit_wars_gym import OrbitWarsGymEnv
 from orbit_wars_gym.action_decoder import DecoderConfig, decode_discrete_action
+from orbit_wars_gym.action_inverse import DEFAULT_INVERSE_CONFIG, invert_moves
 from orbit_wars_gym.action_masks import build_action_masks, split_masks
 from orbit_wars_gym.backend import RustBatchBackend, RustConfig
 from orbit_wars_gym.encoding import observation_dim
 from orbit_wars_gym.entities import fleet_owner, planet_id, planet_owner
+from orbit_wars_gym.observation import to_official_observation
+from orbit_wars_gym.rules import moves_are_legal, normalized_margin
 
 _POLICY_ARCHS = {"flat": FlatActorCritic, "entity": EntityActorCritic}
 
@@ -51,6 +54,95 @@ PHASE0_OPPONENTS = {
     for name in ("producer", "oep", "greedy", "defensive", "rush", "anti_meta", "weak_random")
 }
 
+LEAGUE_TRAINING_OPPONENTS = frozenset({"pgs_holdwave", "pgs_bigwave", "brep"})
+
+
+def _league_training_policy(name: str):
+    bot = None
+
+    def policy(state: dict[str, Any], player: int) -> list[list[float]]:
+        nonlocal bot
+        if bot is None:
+            from scripts.league_agents import make
+
+            bot = make(name)
+        moves = bot(to_official_observation(state, player=player))
+        return list(moves) if isinstance(moves, list) else []
+
+    return policy
+
+
+for _name in sorted(LEAGUE_TRAINING_OPPONENTS):
+    PHASE0_OPPONENTS[_name] = _league_training_policy(_name)
+
+
+def _opponent_parts(name: str) -> tuple[str, ...]:
+    return tuple(part.strip() for part in str(name).split("+") if part.strip())
+
+
+def _unknown_opponent_parts(names: Sequence[str]) -> list[str]:
+    unknown: set[str] = set()
+    for name in names:
+        parts = _opponent_parts(name)
+        if not parts:
+            unknown.add(str(name))
+            continue
+        unknown.update(part for part in parts if part not in PHASE0_OPPONENTS)
+    return sorted(unknown)
+
+
+def _seat_policy(name: str, seat_index: int):
+    if name in STATEFUL_SINGLETON_OPPONENTS:
+        return get_isolated_opponents(name, seat_index + 1)[seat_index]
+    if name in LEAGUE_TRAINING_OPPONENTS:
+        return _league_training_policy(name)
+    return PHASE0_OPPONENTS[name]
+
+
+def _bc_anchor_policies(name: str | None, count: int):
+    if not name:
+        return []
+    parts = _opponent_parts(name)
+    if len(parts) != 1:
+        raise ValueError("bc_anchor_teacher must be a single known expert, not a composite lineup")
+    teacher = parts[0]
+    unknown = _unknown_opponent_parts([teacher])
+    if unknown:
+        raise ValueError(f"unknown bc_anchor_teacher: {', '.join(unknown)}")
+    if teacher in STATEFUL_SINGLETON_OPPONENTS:
+        return get_isolated_opponents(teacher, count)
+    if teacher in LEAGUE_TRAINING_OPPONENTS:
+        return [_league_training_policy(teacher) for _ in range(count)]
+    return [PHASE0_OPPONENTS[teacher] for _ in range(count)]
+
+
+def _training_opponent_policy(name: str, num_players: int, learner_player: int = 0):
+    parts = _opponent_parts(name)
+    unknown = _unknown_opponent_parts([name])
+    if unknown:
+        raise ValueError(f"unknown phase-0 opponent parts: {', '.join(unknown)}")
+    if not parts:
+        raise ValueError("opponent name cannot be empty")
+    learner_player = int(learner_player)
+    num_players = int(num_players)
+    if learner_player < 0 or learner_player >= num_players:
+        raise ValueError("learner_player must be in [0, num_players)")
+
+    opponent_players = [player for player in range(num_players) if player != learner_player]
+    seat_policies = {
+        player: _seat_policy(parts[idx % len(parts)], idx)
+        for idx, player in enumerate(opponent_players)
+    }
+
+    def policy(state: dict[str, Any], player: int) -> list[list[float]]:
+        player = int(player)
+        if player == learner_player:
+            return []
+        return seat_policies[player](state, player)
+
+    policy.__name__ = "+".join(parts)
+    return policy
+
 
 @dataclass(frozen=True)
 class Phase0TrainingConfig:
@@ -59,6 +151,7 @@ class Phase0TrainingConfig:
     policy_arch: str = "flat"
     num_players: int = 2
     total_timesteps: int = 200_000
+    episode_steps: int = 500
     rollout_steps: int = 256
     rollout_num_envs: int = 1
     # Opponent-call parallelism. Default 1 (sequential) — both threads (GIL-bound
@@ -83,6 +176,8 @@ class Phase0TrainingConfig:
     sun_loss_penalty: float = 0.02
     border_loss_penalty: float = 0.02
     ship_margin_scale: float = 0.0
+    normalized_margin_scale_start: float = 0.0
+    normalized_margin_scale_end: float = 0.0
     base_shaping_scale_start: float = 1.0
     base_shaping_scale_end: float = 0.15
     comet_shaping_scale_start: float = 0.08
@@ -93,11 +188,13 @@ class Phase0TrainingConfig:
     four_player_leader_scale_end: float = 0.02
     four_player_third_player_scale_start: float = 0.04
     four_player_third_player_scale_end: float = 0.015
+    elimination_penalty: float = 0.0
     decoder_max_moves_per_turn: int = 8
     decoder_min_ships_to_launch: int = 2
     decoder_reserve_home_ships: int = 8
     decoder_fractions: tuple[float, ...] = (0.10, 0.25, 0.50, 0.75)
     decoder_angle_offsets: tuple[float, ...] = (-0.261799, -0.130899, 0.0, 0.130899, 0.261799)
+    inherit_checkpoint_decoder: bool = True
     # --- Movement 2 (de-anchor the reward + anti-drift on scaling) ---
     # De-anchor: "none" forces the production/territory base shaping to 0 (the
     # potential that equals the Producer's greedy objective). "producer" keeps it.
@@ -115,6 +212,17 @@ class Phase0TrainingConfig:
     eval_opponent: str = "producer"
     eval_max_steps: int = 600
     early_stop_patience: int = 0  # consecutive evals without improvement before stopping; 0 = off
+    # Optional residual-style teacher anchor: label rollout states with a strong
+    # heuristic/BReP action through the same inverse projection used by BC, then
+    # add a small launch-gated CE term to PPO. 0 keeps the original PPO behavior.
+    bc_anchor_coef: float = 0.0
+    bc_anchor_coef_end: float | None = None
+    bc_anchor_teacher: str | None = None
+    bc_anchor_max_quant_error: float = float("inf")
+    # Rotate the learner across seats in single-env rollouts. This is especially
+    # important for 4p: the promotion gate evaluates every seat, so training only
+    # as player 0 creates a silent seat-distribution mismatch.
+    learner_seat_rotation: bool = False
 
 
 @dataclass
@@ -160,6 +268,9 @@ class RolloutSegment:
     values: torch.Tensor
     rewards: torch.Tensor
     masks: torch.Tensor
+    teacher_actions: torch.Tensor
+    teacher_action_mask: torch.Tensor
+    teacher_quant_errors: torch.Tensor
     opponent: str
     episode_metrics: list[dict[str, Any]] = field(default_factory=list)
 
@@ -179,9 +290,9 @@ def _parse_opponents(raw: str | Sequence[str]) -> tuple[str, ...]:
         raise ValueError("at least one opponent is required")
     if len(set(items)) < 2:
         raise ValueError("training requires at least two distinct opponents")
-    unknown = [name for name in items if name not in PHASE0_OPPONENTS]
+    unknown = _unknown_opponent_parts(items)
     if unknown:
-        raise ValueError(f"unknown phase-0 opponents: {', '.join(sorted(unknown))}")
+        raise ValueError(f"unknown phase-0 opponent parts: {', '.join(unknown)}")
     return items
 
 
@@ -293,6 +404,24 @@ def four_player_shaping_scales(training_cfg: Phase0TrainingConfig, progress: flo
     )
 
 
+def normalized_margin_scale(training_cfg: Phase0TrainingConfig, progress: float) -> float:
+    return _linear_schedule(
+        training_cfg.normalized_margin_scale_start,
+        training_cfg.normalized_margin_scale_end,
+        progress,
+    )
+
+
+def bc_anchor_coef(training_cfg: Phase0TrainingConfig, progress: float) -> float:
+    end = training_cfg.bc_anchor_coef if training_cfg.bc_anchor_coef_end is None else training_cfg.bc_anchor_coef_end
+    return _linear_schedule(float(training_cfg.bc_anchor_coef), float(end), progress)
+
+
+def bc_anchor_enabled(training_cfg: Phase0TrainingConfig) -> bool:
+    end = training_cfg.bc_anchor_coef if training_cfg.bc_anchor_coef_end is None else training_cfg.bc_anchor_coef_end
+    return max(float(training_cfg.bc_anchor_coef), float(end)) > 0.0
+
+
 def decoder_config(training_cfg: Phase0TrainingConfig) -> DecoderConfig:
     return DecoderConfig(
         fractions=tuple(float(value) for value in training_cfg.decoder_fractions),
@@ -314,17 +443,85 @@ def decoder_payload(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
     }
 
 
+def _bc_anchor_action(
+    state: dict[str, Any],
+    player: int,
+    policy,
+    decoder_cfg: DecoderConfig,
+    max_quant_error: float,
+) -> tuple[list[int], bool, float]:
+    moves = list(policy(state, player))
+    if moves and not moves_are_legal(state, player, moves):
+        return [0, 0, 0, 0, 0], False, float("inf")
+    result = invert_moves(
+        state,
+        player,
+        moves,
+        decoder_cfg=decoder_cfg,
+        cfg=DEFAULT_INVERSE_CONFIG,
+    )
+    use_label = bool(result.is_no_op or float(result.quant_error) <= float(max_quant_error))
+    return [int(value) for value in result.action5], use_label, float(result.quant_error)
+
+
+def _checkpoint_decoder_payload(checkpoint: dict[str, Any]) -> dict[str, Any]:
+    summary = checkpoint.get("summary") if isinstance(checkpoint.get("summary"), dict) else {}
+    if isinstance(summary.get("decoder"), dict):
+        return dict(summary["decoder"])
+    config = checkpoint.get("config") if isinstance(checkpoint.get("config"), dict) else {}
+    payload: dict[str, Any] = {}
+    for source, target in (
+        ("decoder_fractions", "fractions"),
+        ("decoder_angle_offsets", "angle_offsets"),
+        ("decoder_max_moves_per_turn", "max_moves_per_turn"),
+        ("decoder_min_ships_to_launch", "min_ships_to_launch"),
+        ("decoder_reserve_home_ships", "reserve_home_ships"),
+    ):
+        if source in config:
+            payload[target] = config[source]
+    return payload
+
+
+def _inherit_checkpoint_decoder(
+    training_cfg: Phase0TrainingConfig,
+    checkpoint: dict[str, Any] | None,
+) -> Phase0TrainingConfig:
+    if checkpoint is None or not training_cfg.inherit_checkpoint_decoder:
+        return training_cfg
+    decoder = _checkpoint_decoder_payload(checkpoint)
+    if not decoder:
+        return training_cfg
+    return replace(
+        training_cfg,
+        decoder_fractions=tuple(float(value) for value in decoder.get("fractions", training_cfg.decoder_fractions)),
+        decoder_angle_offsets=tuple(
+            float(value) for value in decoder.get("angle_offsets", training_cfg.decoder_angle_offsets)
+        ),
+        decoder_max_moves_per_turn=int(decoder.get("max_moves_per_turn", training_cfg.decoder_max_moves_per_turn)),
+        decoder_min_ships_to_launch=int(
+            decoder.get("min_ships_to_launch", training_cfg.decoder_min_ships_to_launch)
+        ),
+        decoder_reserve_home_ships=int(
+            decoder.get("reserve_home_ships", training_cfg.decoder_reserve_home_ships)
+        ),
+    )
+
+
 def build_phase5_4p_config(**overrides: Any) -> Phase0TrainingConfig:
     cfg = Phase0TrainingConfig(
         policy_track="phase5_4p",
         num_players=4,
         enable_comets=True,
+        normalized_margin_scale_start=0.15,
+        normalized_margin_scale_end=0.04,
         four_player_vulnerability_scale_start=0.08,
         four_player_vulnerability_scale_end=0.03,
         four_player_leader_scale_start=0.06,
         four_player_leader_scale_end=0.025,
         four_player_third_player_scale_start=0.05,
         four_player_third_player_scale_end=0.02,
+        elimination_penalty=0.35,
+        learner_seat_rotation=True,
     )
     return replace(cfg, **overrides)
 
@@ -343,12 +540,15 @@ def _collect_single_env_rollout_segment(
     *,
     opponent_name: str,
     base_seed: int,
+    learner_player: int,
     rollout_steps: int,
     device: torch.device,
     training_cfg: Phase0TrainingConfig,
     progress: float,
 ) -> RolloutSegment:
+    learner_player = int(learner_player)
     base_shaping_scale, comet_shaping_scale = shaping_scales(training_cfg, progress)
+    margin_scale = normalized_margin_scale(training_cfg, progress)
     (
         four_player_vulnerability_scale,
         four_player_leader_scale,
@@ -357,35 +557,52 @@ def _collect_single_env_rollout_segment(
     env = build_phase0_env(
         seed=base_seed,
         num_players=training_cfg.num_players,
+        learner_player=learner_player,
         opponent_name=opponent_name,
         enable_comets=training_cfg.enable_comets,
+        episode_steps=training_cfg.episode_steps,
         decoder_cfg=decoder_config(training_cfg),
         sun_loss_penalty=training_cfg.sun_loss_penalty,
         border_loss_penalty=training_cfg.border_loss_penalty,
         ship_margin_scale=training_cfg.ship_margin_scale,
+        normalized_margin_scale=margin_scale,
         base_shaping_scale=base_shaping_scale,
         comet_shaping_scale=comet_shaping_scale,
         shaping_gamma=training_cfg.gamma,
         four_player_vulnerability_scale=four_player_vulnerability_scale,
         four_player_leader_scale=four_player_leader_scale,
         four_player_third_player_scale=four_player_third_player_scale,
+        elimination_penalty=training_cfg.elimination_penalty,
     )
     obs_np, _ = env.reset(seed=base_seed)
     episode = EpisodeMetrics(opponent=opponent_name)
     episode_metrics: list[dict[str, Any]] = []
+    anchor_policy = (
+        _bc_anchor_policies(training_cfg.bc_anchor_teacher, 1)[0]
+        if bc_anchor_enabled(training_cfg) and training_cfg.bc_anchor_teacher
+        else None
+    )
+    decoder_cfg = decoder_config(training_cfg)
 
     obs_buf = []
     action_buf = []
     logprob_buf = []
     value_buf = []
     mask_buf = []
+    teacher_action_buf = []
+    teacher_mask_buf = []
+    teacher_quant_error_buf = []
     rewards_np = np.empty(rollout_steps, dtype=np.float32)
     dones_np = np.empty(rollout_steps, dtype=np.float32)
 
     for reset_idx in range(rollout_steps):
         obs_tensor = torch.as_tensor(obs_np, dtype=torch.float32, device=device).unsqueeze(0)
         mask_tensor = torch.as_tensor(
-            build_action_masks(env.state, 0, min_ships_to_launch=training_cfg.decoder_min_ships_to_launch),
+            build_action_masks(
+                env.state,
+                learner_player,
+                min_ships_to_launch=training_cfg.decoder_min_ships_to_launch,
+            ),
             dtype=torch.bool,
             device=device,
         ).unsqueeze(0)
@@ -395,11 +612,23 @@ def _collect_single_env_rollout_segment(
             )
         action = action_tensor.squeeze(0).cpu().numpy()
         previous_state = env.state
+        if anchor_policy is None:
+            teacher_action = [0, 0, 0, 0, 0]
+            teacher_mask = False
+            teacher_quant_error = float("inf")
+        else:
+            teacher_action, teacher_mask, teacher_quant_error = _bc_anchor_action(
+                previous_state,
+                learner_player,
+                anchor_policy,
+                decoder_cfg,
+                training_cfg.bc_anchor_max_quant_error,
+            )
         next_obs_np, reward, done, _, _ = env.step(action)
         next_state = env.state
 
-        neutral_captures = _neutral_capture_count(previous_state, next_state, player=0)
-        alive = _player_alive(next_state, player=0)
+        neutral_captures = _neutral_capture_count(previous_state, next_state, player=learner_player)
+        alive = _player_alive(next_state, player=learner_player)
         episode.record_step(
             reward=reward,
             neutral_captures=neutral_captures,
@@ -412,6 +641,9 @@ def _collect_single_env_rollout_segment(
         logprob_buf.append(logprob_tensor.squeeze(0))
         value_buf.append(value_tensor.squeeze(0))
         mask_buf.append(mask_tensor.squeeze(0))
+        teacher_action_buf.append(torch.as_tensor(teacher_action, dtype=torch.long, device=device))
+        teacher_mask_buf.append(torch.as_tensor(teacher_mask, dtype=torch.bool, device=device))
+        teacher_quant_error_buf.append(torch.as_tensor(teacher_quant_error, dtype=torch.float32, device=device))
         rewards_np[reset_idx] = float(reward)
         dones_np[reset_idx] = float(done)
 
@@ -456,6 +688,9 @@ def _collect_single_env_rollout_segment(
         values=values,
         rewards=rewards,
         masks=torch.stack(mask_buf),
+        teacher_actions=torch.stack(teacher_action_buf),
+        teacher_action_mask=torch.stack(teacher_mask_buf),
+        teacher_quant_errors=torch.stack(teacher_quant_error_buf),
         opponent=opponent_name,
         episode_metrics=episode_metrics,
     )
@@ -470,8 +705,19 @@ def _moves_to_flat_rows(env_index: int, player_index: int, moves: Sequence[Seque
     return rows
 
 
-def _batched_rollout_supported(training_cfg: Phase0TrainingConfig) -> bool:
-    return int(training_cfg.rollout_num_envs) > 1 and training_cfg.num_players == 2
+def _batched_rollout_supported(
+    training_cfg: Phase0TrainingConfig,
+    opponent_name: str | None = None,
+) -> bool:
+    if training_cfg.learner_seat_rotation:
+        return False
+    if int(training_cfg.rollout_num_envs) <= 1 or training_cfg.num_players != 2:
+        return False
+    if opponent_name is not None and len(_opponent_parts(opponent_name)) != 1:
+        return False
+    if opponent_name in LEAGUE_TRAINING_OPPONENTS:
+        return False
+    return True
 
 
 def _collect_batched_rollout_segment(
@@ -496,6 +742,12 @@ def _collect_batched_rollout_segment(
     # so reusing the cached pool across segments is safe. Stateless heuristics
     # reuse one shared callable.
     opponent_policies = get_isolated_opponents(opponent_name, num_envs)
+    anchor_policies = (
+        _bc_anchor_policies(training_cfg.bc_anchor_teacher, num_envs)
+        if bc_anchor_enabled(training_cfg) and training_cfg.bc_anchor_teacher
+        else []
+    )
+    decoder_cfg = decoder_config(training_cfg)
     # Opponent planners (producer/oep) are the per-step bottleneck and are
     # independent per env (isolation makes concurrent calls safe). Threads do NOT
     # help — the planners are GIL-bound pure Python, so a ThreadPoolExecutor was
@@ -519,24 +771,39 @@ def _collect_batched_rollout_segment(
             else None
         )
     base_shaping_scale, comet_shaping_scale = shaping_scales(training_cfg, progress)
+    margin_scale = normalized_margin_scale(training_cfg, progress)
+    (
+        four_player_vulnerability_scale,
+        four_player_leader_scale,
+        four_player_third_player_scale,
+    ) = four_player_shaping_scales(training_cfg, progress)
     reward_env = build_phase0_env(
         seed=base_seed,
         num_players=training_cfg.num_players,
         opponent_name=opponent_name,
         enable_comets=training_cfg.enable_comets,
+        episode_steps=training_cfg.episode_steps,
         decoder_cfg=decoder_config(training_cfg),
         sun_loss_penalty=training_cfg.sun_loss_penalty,
         border_loss_penalty=training_cfg.border_loss_penalty,
         ship_margin_scale=training_cfg.ship_margin_scale,
+        normalized_margin_scale=margin_scale,
         base_shaping_scale=base_shaping_scale,
         comet_shaping_scale=comet_shaping_scale,
         shaping_gamma=training_cfg.gamma,
+        four_player_vulnerability_scale=four_player_vulnerability_scale,
+        four_player_leader_scale=four_player_leader_scale,
+        four_player_third_player_scale=four_player_third_player_scale,
+        elimination_penalty=training_cfg.elimination_penalty,
     )
     backend = RustBatchBackend(
         num_envs=num_envs,
         num_players=training_cfg.num_players,
         seed=base_seed,
-        config=RustConfig(enable_comets=training_cfg.enable_comets),
+        config=RustConfig(
+            episode_steps=training_cfg.episode_steps,
+            enable_comets=training_cfg.enable_comets,
+        ),
     )
     current_states = backend.reset(base_seed)
     obs_np = backend.encoded_states(0)
@@ -549,6 +816,9 @@ def _collect_batched_rollout_segment(
     logprob_buf = []
     value_buf = []
     mask_buf = []
+    teacher_action_buf = []
+    teacher_mask_buf = []
+    teacher_quant_error_buf = []
     rewards_np = np.empty((rollout_steps, num_envs), dtype=np.float32)
     dones_np = np.empty((rollout_steps, num_envs), dtype=np.float32)
 
@@ -570,6 +840,9 @@ def _collect_batched_rollout_segment(
 
         action_rows: list[list[float]] = []
         player_moves_by_env: list[list[list[float]]] = [[] for _ in range(num_envs)]
+        teacher_actions_row = np.zeros((num_envs, 5), dtype=np.int64)
+        teacher_masks_row = np.zeros(num_envs, dtype=np.bool_)
+        teacher_quant_errors_row = np.full(num_envs, np.inf, dtype=np.float32)
         active_indices = [i for i in range(num_envs) if active[i]]
 
         # Opponent moves (the expensive part); via a process pool when enabled,
@@ -583,10 +856,21 @@ def _collect_batched_rollout_segment(
 
         for env_index in active_indices:
             state = current_states[env_index]
-            player_moves = decode_discrete_action(state, 0, actions_np[env_index], decoder_config(training_cfg))
+            player_moves = decode_discrete_action(state, 0, actions_np[env_index], decoder_cfg)
             player_moves_by_env[env_index] = player_moves
             action_rows.extend(_moves_to_flat_rows(env_index, 0, player_moves))
             action_rows.extend(_moves_to_flat_rows(env_index, 1, opponent_moves_by_env[env_index]))
+            if anchor_policies:
+                teacher_action, teacher_mask, teacher_quant_error = _bc_anchor_action(
+                    state,
+                    0,
+                    anchor_policies[env_index],
+                    decoder_cfg,
+                    training_cfg.bc_anchor_max_quant_error,
+                )
+                teacher_actions_row[env_index] = np.asarray(teacher_action, dtype=np.int64)
+                teacher_masks_row[env_index] = bool(teacher_mask)
+                teacher_quant_errors_row[env_index] = float(teacher_quant_error)
 
         flat_actions = (
             np.asarray(action_rows, dtype=np.float64)
@@ -608,19 +892,12 @@ def _collect_batched_rollout_segment(
                 dones_row[env_index] = 1.0
                 continue
             done = bool(outcome.get("done", False))
-            base_reward = reward_env._base_shaping_reward(
+            reward, _reward_info = reward_env.transition_reward(
                 previous_state,
                 next_state,
                 player=0,
                 player_moves=player_moves_by_env[env_index],
                 done=done,
-            )
-            ship_margin_reward = reward_env._ship_margin_reward(previous_state, next_state, player=0)
-            comet_reward = reward_env._comet_auxiliary_reward(previous_state, next_state, player=0)
-            reward = (
-                base_shaping_scale * base_reward
-                + ship_margin_reward
-                + comet_shaping_scale * comet_reward
             )
             if done:
                 rewards = outcome.get("rewards", [])
@@ -646,6 +923,9 @@ def _collect_batched_rollout_segment(
         logprob_buf.append(logprob_tensor)
         value_buf.append(value_tensor)
         mask_buf.append(mask_tensor)
+        teacher_action_buf.append(torch.as_tensor(teacher_actions_row, dtype=torch.long, device=device))
+        teacher_mask_buf.append(torch.as_tensor(teacher_masks_row, dtype=torch.bool, device=device))
+        teacher_quant_error_buf.append(torch.as_tensor(teacher_quant_errors_row, dtype=torch.float32, device=device))
 
         current_states = next_states
         obs_np = next_obs_np
@@ -678,6 +958,9 @@ def _collect_batched_rollout_segment(
     )
 
     masks = torch.stack(mask_buf)
+    teacher_actions = torch.stack(teacher_action_buf)
+    teacher_action_mask = torch.stack(teacher_mask_buf)
+    teacher_quant_errors = torch.stack(teacher_quant_error_buf)
     flat_observations = observations.reshape(-1, observations.shape[-1])
     flat_actions = actions.reshape(-1, actions.shape[-1])
     flat_logprobs = logprobs.reshape(-1)
@@ -686,6 +969,9 @@ def _collect_batched_rollout_segment(
     flat_values = values.reshape(-1)
     flat_rewards = rewards.reshape(-1)
     flat_masks = masks.reshape(-1, masks.shape[-1])
+    flat_teacher_actions = teacher_actions.reshape(-1, teacher_actions.shape[-1])
+    flat_teacher_action_mask = teacher_action_mask.reshape(-1)
+    flat_teacher_quant_errors = teacher_quant_errors.reshape(-1)
     if sample_limit > 0:
         flat_observations = flat_observations[:sample_limit]
         flat_actions = flat_actions[:sample_limit]
@@ -695,6 +981,9 @@ def _collect_batched_rollout_segment(
         flat_values = flat_values[:sample_limit]
         flat_rewards = flat_rewards[:sample_limit]
         flat_masks = flat_masks[:sample_limit]
+        flat_teacher_actions = flat_teacher_actions[:sample_limit]
+        flat_teacher_action_mask = flat_teacher_action_mask[:sample_limit]
+        flat_teacher_quant_errors = flat_teacher_quant_errors[:sample_limit]
 
     return RolloutSegment(
         observations=flat_observations,
@@ -705,6 +994,9 @@ def _collect_batched_rollout_segment(
         values=flat_values,
         rewards=flat_rewards,
         masks=flat_masks,
+        teacher_actions=flat_teacher_actions,
+        teacher_action_mask=flat_teacher_action_mask,
+        teacher_quant_errors=flat_teacher_quant_errors,
         opponent=opponent_name,
         episode_metrics=episode_metrics,
     )
@@ -715,6 +1007,7 @@ def _collect_rollout_segment(
     *,
     opponent_name: str,
     base_seed: int,
+    learner_player: int,
     rollout_steps: int,
     device: torch.device,
     training_cfg: Phase0TrainingConfig,
@@ -722,7 +1015,7 @@ def _collect_rollout_segment(
     sample_limit: int | None = None,
 ) -> RolloutSegment:
     limit = rollout_steps if sample_limit is None else max(1, int(sample_limit))
-    if _batched_rollout_supported(training_cfg):
+    if _batched_rollout_supported(training_cfg, opponent_name):
         per_env_steps = max(1, min(int(rollout_steps), math.ceil(limit / max(1, int(training_cfg.rollout_num_envs)))))
         return _collect_batched_rollout_segment(
             model,
@@ -738,6 +1031,7 @@ def _collect_rollout_segment(
         model,
         opponent_name=opponent_name,
         base_seed=base_seed,
+        learner_player=learner_player,
         rollout_steps=limit,
         device=device,
         training_cfg=training_cfg,
@@ -754,7 +1048,41 @@ def _concat_segments(segments: Sequence[RolloutSegment]) -> dict[str, torch.Tens
         "returns": torch.cat([segment.returns for segment in segments], dim=0),
         "values": torch.cat([segment.values for segment in segments], dim=0),
         "masks": torch.cat([segment.masks for segment in segments], dim=0),
+        "teacher_actions": torch.cat([segment.teacher_actions for segment in segments], dim=0),
+        "teacher_action_mask": torch.cat([segment.teacher_action_mask for segment in segments], dim=0),
+        "teacher_quant_errors": torch.cat([segment.teacher_quant_errors for segment in segments], dim=0),
     }
+
+
+def _masked_head_logits(
+    out: dict[str, torch.Tensor],
+    key: str,
+    masks: dict[str, torch.Tensor] | None,
+) -> torch.Tensor:
+    logits = out[key]
+    if masks is not None and key in masks:
+        logits = logits.masked_fill(~masks[key].bool(), float("-inf"))
+    return logits
+
+
+def _teacher_anchor_loss(
+    out: dict[str, torch.Tensor],
+    teacher_actions: torch.Tensor,
+    masks: dict[str, torch.Tensor] | None,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    launch_label = teacher_actions[:, 0]
+    loss = F.cross_entropy(_masked_head_logits(out, "launch", masks), launch_label)
+    parts = {"launch": float(loss.detach())}
+    active = launch_label == 1
+    if bool(active.any()):
+        for idx, key in enumerate(("source", "target", "frac", "offset"), start=1):
+            head_loss = F.cross_entropy(
+                _masked_head_logits(out, key, masks)[active],
+                teacher_actions[active, idx],
+            )
+            loss = loss + head_loss
+            parts[key] = float(head_loss.detach())
+    return loss, parts
 
 
 def _ppo_update(
@@ -774,6 +1102,10 @@ def _ppo_update(
         "approx_kl": 0.0,
         "clipfrac": 0.0,
         "kl_to_ref": 0.0,
+        "bc_anchor_loss": 0.0,
+        "bc_anchor_examples": 0.0,
+        "bc_anchor_launch_rate": 0.0,
+        "bc_anchor_mean_quant_error": 0.0,
     }
     update_steps = 0
 
@@ -787,6 +1119,9 @@ def _ppo_update(
             advantage_mb = batch["advantages"][indices]
             return_mb = batch["returns"][indices]
             mask_mb = split_masks(batch["masks"][indices])
+            teacher_action_mb = batch["teacher_actions"][indices]
+            teacher_mask_mb = batch["teacher_action_mask"][indices].bool()
+            teacher_quant_mb = batch["teacher_quant_errors"][indices]
 
             advantage_mb = (advantage_mb - advantage_mb.mean()) / (advantage_mb.std(unbiased=False) + 1e-8)
 
@@ -805,6 +1140,24 @@ def _ppo_update(
             entropy_loss = entropy.mean()
 
             loss = policy_loss + cfg.vf_coef * value_loss - cfg.ent_coef * entropy_loss
+            bc_anchor_loss_val = 0.0
+            bc_anchor_examples_val = 0.0
+            bc_anchor_launch_rate_val = 0.0
+            bc_anchor_quant_error_val = 0.0
+            if float(cfg.bc_anchor_coef) > 0.0 and bool(teacher_mask_mb.any()):
+                anchor_actions = teacher_action_mb[teacher_mask_mb]
+                anchor_loss, _anchor_parts = _teacher_anchor_loss(
+                    {key: value[teacher_mask_mb] for key, value in cur_out.items()},
+                    anchor_actions,
+                    {key: value[teacher_mask_mb] for key, value in mask_mb.items()},
+                )
+                loss = loss + float(cfg.bc_anchor_coef) * anchor_loss
+                bc_anchor_loss_val = float(anchor_loss.item())
+                bc_anchor_examples_val = float(anchor_actions.shape[0])
+                bc_anchor_launch_rate_val = float((anchor_actions[:, 0] == 1).float().mean().item())
+                finite_quant = teacher_quant_mb[teacher_mask_mb]
+                finite_quant = finite_quant[torch.isfinite(finite_quant)]
+                bc_anchor_quant_error_val = float(finite_quant.mean().item()) if finite_quant.numel() else 0.0
 
             kl_to_ref_val = 0.0
             if use_kl_ref:
@@ -828,6 +1181,10 @@ def _ppo_update(
             stats["approx_kl"] += approx_kl
             stats["clipfrac"] += clipfrac
             stats["kl_to_ref"] += kl_to_ref_val
+            stats["bc_anchor_loss"] += bc_anchor_loss_val
+            stats["bc_anchor_examples"] += bc_anchor_examples_val
+            stats["bc_anchor_launch_rate"] += bc_anchor_launch_rate_val
+            stats["bc_anchor_mean_quant_error"] += bc_anchor_quant_error_val
             update_steps += 1
 
     if update_steps:
@@ -899,47 +1256,53 @@ def _evaluate_margin(
     seeds: int,
     device: torch.device,
 ) -> float:
-    """Seat-0 in-loop margin proxy vs an opponent, for keep-best / early-stop gating.
+    """In-loop margin proxy vs an opponent, for keep-best / early-stop gating.
 
     NOT the promotion gate (that stays the separate both-seat 96-seed benchmark) —
     a cheap, consistent relative signal so the loop keeps the best checkpoint and
-    early-stops on drift. Greedy actions; final normalized score margin in [-1, 1].
+    early-stops on drift. With learner seat rotation enabled, the proxy averages
+    all player seats. Greedy actions; final normalized score margin in [-1, 1].
     """
     was_training = model.training
     model.eval()
     margins: list[float] = []
     for seed in range(int(seeds)):
-        env = build_phase0_env(
-            seed=seed,
-            num_players=training_cfg.num_players,
-            opponent_name=opponent_name,
-            enable_comets=training_cfg.enable_comets,
-            decoder_cfg=decoder_config(training_cfg),
-            base_shaping_scale=0.0,
-        )
-        obs_np, _ = env.reset(seed=seed)
-        last_scores: list[float] = [0.0, 0.0]
-        for _ in range(int(training_cfg.eval_max_steps)):
-            obs_t = torch.as_tensor(obs_np, dtype=torch.float32, device=device).unsqueeze(0)
-            masks = split_masks(
-                torch.as_tensor(
-                    build_action_masks(env.state, 0, min_ships_to_launch=training_cfg.decoder_min_ships_to_launch),
-                    dtype=torch.bool,
-                    device=device,
-                ).unsqueeze(0)
+        seats = range(training_cfg.num_players) if training_cfg.learner_seat_rotation else range(1)
+        for learner_player in seats:
+            env = build_phase0_env(
+                seed=seed,
+                num_players=training_cfg.num_players,
+                learner_player=int(learner_player),
+                opponent_name=opponent_name,
+                enable_comets=training_cfg.enable_comets,
+                episode_steps=training_cfg.episode_steps,
+                decoder_cfg=decoder_config(training_cfg),
+                base_shaping_scale=0.0,
             )
-            with torch.no_grad():
-                out = model(obs_t)
-            obs_np, _, done, _, info = env.step(_greedy_action(out, masks))
-            scores = info.get("scores") or None
-            if scores:
-                last_scores = list(scores)
-            if done:
-                break
-        s0 = float(last_scores[0]) if len(last_scores) > 0 else 0.0
-        s1 = float(last_scores[1]) if len(last_scores) > 1 else 0.0
-        denom = max(abs(s0) + abs(s1), 1.0)
-        margins.append((s0 - s1) / denom)
+            obs_np, _ = env.reset(seed=seed)
+            last_scores: list[float] = [0.0 for _ in range(training_cfg.num_players)]
+            for _ in range(int(training_cfg.eval_max_steps)):
+                obs_t = torch.as_tensor(obs_np, dtype=torch.float32, device=device).unsqueeze(0)
+                masks = split_masks(
+                    torch.as_tensor(
+                        build_action_masks(
+                            env.state,
+                            int(learner_player),
+                            min_ships_to_launch=training_cfg.decoder_min_ships_to_launch,
+                        ),
+                        dtype=torch.bool,
+                        device=device,
+                    ).unsqueeze(0)
+                )
+                with torch.no_grad():
+                    out = model(obs_t)
+                obs_np, _, done, _, info = env.step(_greedy_action(out, masks))
+                scores = info.get("scores") or None
+                if scores:
+                    last_scores = list(scores)
+                if done:
+                    break
+            margins.append(normalized_margin(last_scores, int(learner_player)) if last_scores else 0.0)
     if was_training:
         model.train()
     return float(np.mean(margins)) if margins else 0.0
@@ -950,6 +1313,8 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
     _set_seed(training_cfg.seed)
     device = torch.device(training_cfg.device)
     opponents = _parse_opponents(training_cfg.opponents)
+    if bc_anchor_enabled(training_cfg) and not training_cfg.bc_anchor_teacher:
+        raise ValueError("bc_anchor_teacher is required when bc_anchor_coef > 0")
 
     # Producer/OEP keep per-game memory in a module-level singleton. The batched
     # rollout now gives each env its OWN isolated opponent instance (see
@@ -959,6 +1324,7 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
     # When warm-starting, adopt the checkpoint's architecture (e.g. an entity-BC
     # init) so the state_dict loads cleanly; otherwise use the configured arch.
     checkpoint = _load_checkpoint(training_cfg.checkpoint_in, device) if training_cfg.checkpoint_in else None
+    training_cfg = _inherit_checkpoint_decoder(training_cfg, checkpoint)
     if checkpoint is not None:
         ckpt_summary = checkpoint.get("summary") if isinstance(checkpoint.get("summary"), dict) else {}
         policy_arch = str(ckpt_summary.get("arch", training_cfg.policy_arch))
@@ -977,6 +1343,7 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
     update_idx = 0
     all_episode_metrics: list[dict[str, Any]] = []
     opponent_segments = {name: 0 for name in opponents}
+    learner_seat_segments = {str(player): 0 for player in range(int(training_cfg.num_players))}
     latest_update_stats: dict[str, float] = {}
     update_series: list[dict[str, float]] = []
 
@@ -1009,23 +1376,34 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
             remaining = training_cfg.total_timesteps - total_timesteps
             segment_steps = min(training_cfg.rollout_steps, remaining)
             seed = training_cfg.seed + update_idx * 10_000 + opponent_idx * 1_000
+            learner_player = (
+                (update_idx * len(opponents) + opponent_idx) % int(training_cfg.num_players)
+                if training_cfg.learner_seat_rotation
+                else 0
+            )
             progress = total_timesteps / max(float(training_cfg.total_timesteps), 1.0)
             segment = _collect_rollout_segment(
                 model,
                 opponent_name=opponent_name,
                 base_seed=seed,
+                learner_player=learner_player,
                 rollout_steps=segment_steps,
                 device=device,
                 training_cfg=training_cfg,
                 progress=progress,
-                sample_limit=remaining if _batched_rollout_supported(training_cfg) else segment_steps,
+                sample_limit=remaining if _batched_rollout_supported(training_cfg, opponent_name) else segment_steps,
             )
             segments.append(segment)
             opponent_segments[opponent_name] += 1
+            learner_seat_segments[str(learner_player)] += 1
             total_timesteps += int(segment.observations.shape[0])
             all_episode_metrics.extend(segment.episode_metrics)
         batch = _concat_segments(segments)
-        latest_update_stats = _ppo_update(model, optimizer, batch, training_cfg, ref_model=ref_model)
+        update_progress = total_timesteps / max(float(training_cfg.total_timesteps), 1.0)
+        effective_anchor_coef = bc_anchor_coef(training_cfg, update_progress)
+        update_cfg = replace(training_cfg, bc_anchor_coef=effective_anchor_coef)
+        latest_update_stats = _ppo_update(model, optimizer, batch, update_cfg, ref_model=ref_model)
+        latest_update_stats["bc_anchor_effective_coef"] = float(effective_anchor_coef)
         update_series.append(
             {"update": float(update_idx), "timesteps": float(total_timesteps), **latest_update_stats}
         )
@@ -1062,21 +1440,42 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
         "policy_track": training_cfg.policy_track,
         "num_players": training_cfg.num_players,
         "timesteps": total_timesteps,
+        "episode_steps": training_cfg.episode_steps,
         "updates": update_idx,
         "rollout_num_envs": int(training_cfg.rollout_num_envs),
-        "rollout_backend": "rust_batch" if _batched_rollout_supported(training_cfg) else "gym_single_env",
+        "learner_seat_rotation": bool(training_cfg.learner_seat_rotation),
+        "learner_seat_segments": learner_seat_segments,
+        "rollout_backend": (
+            "rust_batch"
+            if any(_batched_rollout_supported(training_cfg, name) for name in opponents)
+            else "gym_single_env"
+        ),
         "training_wall_seconds": elapsed_seconds,
         "env_steps_per_second": total_timesteps / elapsed_seconds,
         "opponents": list(opponents),
         "opponent_segments": opponent_segments,
         "enable_comets": training_cfg.enable_comets,
-        "reward_shaping": "annealed_base_plus_temporal_comet_auxiliary",
+        "reward_shaping": "annealed_base_plus_normalized_margin_plus_temporal_comet_auxiliary",
         "ship_margin_scale": training_cfg.ship_margin_scale,
+        "normalized_margin_scale_start": training_cfg.normalized_margin_scale_start,
+        "normalized_margin_scale_end": training_cfg.normalized_margin_scale_end,
         "base_shaping_scale_start": training_cfg.base_shaping_scale_start,
         "base_shaping_scale_end": training_cfg.base_shaping_scale_end,
         "shaping_potential": training_cfg.shaping_potential,
         "kl_to_ref_coef": training_cfg.kl_to_ref_coef,
         "ref_checkpoint": ref_path if training_cfg.kl_to_ref_coef > 0.0 else None,
+        "bc_anchor_coef": float(training_cfg.bc_anchor_coef),
+        "bc_anchor_coef_end": (
+            float(training_cfg.bc_anchor_coef_end)
+            if training_cfg.bc_anchor_coef_end is not None
+            else float(training_cfg.bc_anchor_coef)
+        ),
+        "bc_anchor_teacher": training_cfg.bc_anchor_teacher if bc_anchor_enabled(training_cfg) else None,
+        "bc_anchor_max_quant_error": (
+            float(training_cfg.bc_anchor_max_quant_error)
+            if math.isfinite(float(training_cfg.bc_anchor_max_quant_error))
+            else None
+        ),
         "comet_shaping_scale_start": training_cfg.comet_shaping_scale_start,
         "comet_shaping_scale_end": training_cfg.comet_shaping_scale_end,
         "four_player_vulnerability_scale_start": training_cfg.four_player_vulnerability_scale_start,
@@ -1085,6 +1484,7 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
         "four_player_leader_scale_end": training_cfg.four_player_leader_scale_end,
         "four_player_third_player_scale_start": training_cfg.four_player_third_player_scale_start,
         "four_player_third_player_scale_end": training_cfg.four_player_third_player_scale_end,
+        "elimination_penalty": training_cfg.elimination_penalty,
         "decoder": decoder_payload(training_cfg),
         "checkpoint_in": training_cfg.checkpoint_in,
         "checkpoint_out": training_cfg.checkpoint_out,
@@ -1124,39 +1524,43 @@ def build_phase0_env(
     *,
     seed: int,
     num_players: int = 2,
+    learner_player: int = 0,
+    episode_steps: int = 500,
     opponent_name: str = "greedy",
     enable_comets: bool = True,
     sun_loss_penalty: float = 0.02,
     border_loss_penalty: float = 0.02,
     ship_margin_scale: float = 0.0,
+    normalized_margin_scale: float = 0.0,
     base_shaping_scale: float = 1.0,
     comet_shaping_scale: float = 0.0,
     shaping_gamma: float = 0.99,
     four_player_vulnerability_scale: float = 0.0,
     four_player_leader_scale: float = 0.0,
     four_player_third_player_scale: float = 0.0,
+    elimination_penalty: float = 0.0,
     decoder_cfg: DecoderConfig | None = None,
 ) -> OrbitWarsGymEnv:
-    try:
-        opponent_policy = PHASE0_OPPONENTS[opponent_name]
-    except KeyError as exc:
-        raise ValueError(f"unknown phase-0 opponent: {opponent_name}") from exc
-    rust_cfg = RustConfig(enable_comets=enable_comets)
+    opponent_policy = _training_opponent_policy(opponent_name, num_players, learner_player=learner_player)
+    rust_cfg = RustConfig(episode_steps=int(episode_steps), enable_comets=enable_comets)
     return OrbitWarsGymEnv(
         num_players=num_players,
         seed=seed,
         rust_cfg=rust_cfg,
         opponent_policy=opponent_policy,
+        learner_player=learner_player,
         decoder_cfg=decoder_cfg,
         sun_loss_penalty=sun_loss_penalty,
         border_loss_penalty=border_loss_penalty,
         ship_margin_scale=ship_margin_scale,
+        normalized_margin_scale=normalized_margin_scale,
         base_shaping_scale=base_shaping_scale,
         comet_shaping_scale=comet_shaping_scale,
         shaping_gamma=shaping_gamma,
         four_player_vulnerability_scale=four_player_vulnerability_scale,
         four_player_leader_scale=four_player_leader_scale,
         four_player_third_player_scale=four_player_third_player_scale,
+        elimination_penalty=elimination_penalty,
     )
 
 
@@ -1169,8 +1573,27 @@ def main():
     parser.add_argument("--num-players", type=int, default=2)
     parser.add_argument("--opponents", default="greedy,defensive,rush,anti_meta,weak_random")
     parser.add_argument("--total-timesteps", type=int, default=200_000)
+    parser.add_argument(
+        "--episode-steps",
+        type=int,
+        default=500,
+        help="training episode horizon; use shorter horizons for curriculum probes with frequent terminal rewards",
+    )
     parser.add_argument("--rollout-steps", type=int, default=256)
     parser.add_argument("--rollout-num-envs", type=int, default=1)
+    parser.add_argument(
+        "--learner-seat-rotation",
+        dest="learner_seat_rotation",
+        action="store_true",
+        default=None,
+        help="rotate the learner across seats in single-env rollouts",
+    )
+    parser.add_argument(
+        "--no-learner-seat-rotation",
+        dest="learner_seat_rotation",
+        action="store_false",
+        help="force the learner to seat 0 even on tracks whose default rotates seats",
+    )
     parser.add_argument("--opponent-workers", type=int, default=1,
                         help="opponent-call parallelism in batched rollout. 1=sequential (recommended/default). "
                              ">1 = experimental process pool (measured SLOWER: planner is too cheap vs per-step IPC). "
@@ -1192,6 +1615,8 @@ def main():
     parser.add_argument("--sun-loss-penalty", type=float, default=0.02)
     parser.add_argument("--border-loss-penalty", type=float, default=0.02)
     parser.add_argument("--ship-margin-scale", type=float, default=0.0)
+    parser.add_argument("--normalized-margin-scale-start", type=float, default=0.0)
+    parser.add_argument("--normalized-margin-scale-end", type=float, default=0.0)
     parser.add_argument("--base-shaping-scale-start", type=float, default=1.0)
     parser.add_argument("--base-shaping-scale-end", type=float, default=0.15)
     parser.add_argument("--comet-shaping-scale-start", type=float, default=0.08)
@@ -1202,9 +1627,16 @@ def main():
     parser.add_argument("--four-player-leader-scale-end", type=float, default=0.02)
     parser.add_argument("--four-player-third-player-scale-start", type=float, default=0.04)
     parser.add_argument("--four-player-third-player-scale-end", type=float, default=0.015)
+    parser.add_argument("--elimination-penalty", type=float, default=0.0)
     parser.add_argument("--decoder-max-moves-per-turn", type=int, default=8)
     parser.add_argument("--decoder-min-ships-to-launch", type=int, default=2)
     parser.add_argument("--decoder-reserve-home-ships", type=int, default=8)
+    parser.add_argument(
+        "--inherit-checkpoint-decoder",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="when warm-starting, use the decoder payload embedded in --checkpoint-in",
+    )
     # --- Movement 2 ---
     parser.add_argument("--shaping-potential", choices=("producer", "none"), default="producer",
                         help="Mov.2 de-anchor: 'none' drops the production/territory base shaping (= Producer objective)")
@@ -1212,6 +1644,14 @@ def main():
                         help="Mov.2 anti-drift: KL-to-reference penalty coefficient (0=off)")
     parser.add_argument("--ref-checkpoint", default=None,
                         help="Mov.2: reference policy for the KL anchor (default: --checkpoint-in)")
+    parser.add_argument("--bc-anchor-coef", type=float, default=0.0,
+                        help="optional residual-style BC anchor coefficient on teacher actions (0=off)")
+    parser.add_argument("--bc-anchor-coef-end", type=float, default=None,
+                        help="optional final BC anchor coefficient for linear decay/anneal")
+    parser.add_argument("--bc-anchor-teacher", default=None,
+                        help="single teacher for the BC anchor, e.g. brep, pgs_holdwave, producer")
+    parser.add_argument("--bc-anchor-max-quant-error", type=float, default=float("inf"),
+                        help="drop teacher labels whose inverse-projection error exceeds this value")
     parser.add_argument("--eval-every-updates", type=int, default=0,
                         help="Mov.2 eval-gating: in-loop margin eval every N updates (0=off)")
     parser.add_argument("--eval-seeds", type=int, default=8)
@@ -1224,16 +1664,19 @@ def main():
     env: gym.Env = build_phase0_env(
         seed=args.seed,
         num_players=args.num_players,
+        episode_steps=args.episode_steps,
         opponent_name="greedy",
         enable_comets=args.enable_comets,
         sun_loss_penalty=args.sun_loss_penalty,
         border_loss_penalty=args.border_loss_penalty,
         ship_margin_scale=args.ship_margin_scale,
+        normalized_margin_scale=args.normalized_margin_scale_start,
         base_shaping_scale=args.base_shaping_scale_start,
         comet_shaping_scale=args.comet_shaping_scale_start,
         four_player_vulnerability_scale=args.four_player_vulnerability_scale_start,
         four_player_leader_scale=args.four_player_leader_scale_start,
         four_player_third_player_scale=args.four_player_third_player_scale_start,
+        elimination_penalty=args.elimination_penalty,
         decoder_cfg=DecoderConfig(
             max_moves_per_turn=args.decoder_max_moves_per_turn,
             min_ships_to_launch=args.decoder_min_ships_to_launch,
@@ -1241,11 +1684,12 @@ def main():
         ),
     )
     obs, _ = env.reset(seed=args.seed)
-    base_cfg = Phase0TrainingConfig(
+    cfg_kwargs = dict(
         seed=args.seed,
         policy_track=args.training_track,
         policy_arch=args.policy_arch,
         num_players=args.num_players,
+        episode_steps=args.episode_steps,
         total_timesteps=args.total_timesteps,
         rollout_steps=args.rollout_steps,
         rollout_num_envs=args.rollout_num_envs,
@@ -1268,6 +1712,8 @@ def main():
         sun_loss_penalty=args.sun_loss_penalty,
         border_loss_penalty=args.border_loss_penalty,
         ship_margin_scale=args.ship_margin_scale,
+        normalized_margin_scale_start=args.normalized_margin_scale_start,
+        normalized_margin_scale_end=args.normalized_margin_scale_end,
         base_shaping_scale_start=args.base_shaping_scale_start,
         base_shaping_scale_end=args.base_shaping_scale_end,
         comet_shaping_scale_start=args.comet_shaping_scale_start,
@@ -1278,17 +1724,30 @@ def main():
         four_player_leader_scale_end=args.four_player_leader_scale_end,
         four_player_third_player_scale_start=args.four_player_third_player_scale_start,
         four_player_third_player_scale_end=args.four_player_third_player_scale_end,
+        elimination_penalty=args.elimination_penalty,
         decoder_max_moves_per_turn=args.decoder_max_moves_per_turn,
         decoder_min_ships_to_launch=args.decoder_min_ships_to_launch,
         decoder_reserve_home_ships=args.decoder_reserve_home_ships,
+        inherit_checkpoint_decoder=bool(args.inherit_checkpoint_decoder),
         shaping_potential=args.shaping_potential,
         kl_to_ref_coef=args.kl_to_ref_coef,
         ref_checkpoint=args.ref_checkpoint,
+        bc_anchor_coef=args.bc_anchor_coef,
+        bc_anchor_coef_end=args.bc_anchor_coef_end,
+        bc_anchor_teacher=args.bc_anchor_teacher,
+        bc_anchor_max_quant_error=args.bc_anchor_max_quant_error,
         eval_every_updates=args.eval_every_updates,
         eval_seeds=args.eval_seeds,
         eval_opponent=args.eval_opponent,
         eval_max_steps=args.eval_max_steps,
         early_stop_patience=args.early_stop_patience,
+    )
+    if args.learner_seat_rotation is not None:
+        cfg_kwargs["learner_seat_rotation"] = bool(args.learner_seat_rotation)
+    base_cfg = (
+        build_phase5_4p_config(**cfg_kwargs)
+        if args.training_track == "phase5_4p"
+        else Phase0TrainingConfig(**cfg_kwargs)
     )
     summary = (
         train_phase5_4p(base_cfg)
