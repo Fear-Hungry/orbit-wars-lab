@@ -62,6 +62,26 @@ def _load_submission_agent(path: Path) -> Callable[[dict[str, Any]], list[list[f
     return agent
 
 
+def _league_agent_names() -> set[str]:
+    from scripts.league_agents import FACTORIES
+
+    return set(FACTORIES)
+
+
+def _league_policy(name: str) -> tuple[str, Policy] | None:
+    if name not in _league_agent_names():
+        return None
+    from scripts.league_agents import make
+
+    bot = make(name)
+
+    def act(state: dict[str, Any], player: int) -> list[list[float]]:
+        moves = bot(to_official_observation(state, player=player))
+        return list(moves) if isinstance(moves, list) else []
+
+    return name, act
+
+
 def _submission_runtime(agent: Callable[[dict[str, Any]], list[list[float]]]) -> Policy:
     def _stats_snapshot() -> dict[str, float] | None:
         raw = getattr(agent, "__globals__", {}).get("SUBMISSION_STATS", None)
@@ -100,6 +120,9 @@ def _resolve_opponent(spec: str) -> tuple[str, Policy]:
         )
     if spec in HEURISTIC_POLICIES:
         return spec, HEURISTIC_POLICIES[spec]
+    league = _league_policy(spec)
+    if league is not None:
+        return league
     path = Path(spec)
     if path.exists() and path.is_file():
         return _opponent_label(path), _submission_runtime(_load_submission_agent(path))
@@ -114,6 +137,11 @@ def _cached_submission_runtime(path: str) -> Policy:
 
 
 def _cached_opponent_runtime(spec: str) -> tuple[str, Policy]:
+    league = _league_policy(spec)
+    if league is not None:
+        # League agents are factories and may keep per-game state. Do not cache
+        # them across benchmark tasks.
+        return league
     path = Path(spec)
     key = f"opponent:{path.resolve()}" if path.exists() else f"opponent:{spec}"
     if key not in _POLICY_CACHE:
@@ -191,11 +219,14 @@ def _run_match(
     )
     state = backend.reset(seed)[0]
     runtime_stats = [_empty_runtime_stats() for _ in players]
+    terminal_status: list[str | None] = [None for _ in players]
     outcome = {"scores": [0.0 for _ in players], "done": False}
 
     while True:
         actions = [[] for _ in players]
         for idx, policy in enumerate(players):
+            if terminal_status[idx] is not None:
+                continue
             stats = runtime_stats[idx]
             stats["decision_turns"] += 1.0
             try:
@@ -217,12 +248,14 @@ def _run_match(
                 stats["elapsed_seconds"] += elapsed
                 if elapsed > act_timeout:
                     stats["timeouts"] += 1.0
+                    terminal_status[idx] = "TIMEOUT"
                     moves = []
                 if not isinstance(moves, list) or not moves_are_legal(state, idx, moves):
                     stats["invalid_actions"] += 1.0
                     moves = []
             except Exception:
                 stats["crashes"] += 1.0
+                terminal_status[idx] = "ERROR"
                 moves = []
             actions[idx] = moves
 
@@ -232,7 +265,13 @@ def _run_match(
         if outcome["done"]:
             break
 
-    return [float(score) for score in outcome["scores"]], runtime_stats
+    scores = [float(score) for score in outcome["scores"]]
+    if any(status is not None for status in terminal_status):
+        floor = min(scores, default=0.0) - 1.0
+        for idx, status in enumerate(terminal_status):
+            if status is not None:
+                scores[idx] = floor
+    return scores, runtime_stats
 
 
 def _parallel_map(fn, tasks: list[dict[str, Any]], jobs: int) -> list[dict[str, Any]]:
