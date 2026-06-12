@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
 import torch
 from python.orbit_wars_gym.action_decoder import DEFAULT_DECODER_CONFIG
 from python.orbit_wars_gym.action_inverse import DEFAULT_INVERSE_CONFIG
-from python.train.train_bc import bc_loss, train_bc
+from python.train.train_bc import _fit_launch_bias_delta, bc_loss, train_bc
 from scripts.collect_imitation_dataset import _pack, collect_dataset
 from scripts.export_submission import _load_checkpoint_payload
 
@@ -46,6 +48,32 @@ def test_bc_loss_ignores_move_heads_on_pass_turns() -> None:
     assert set(parts_mixed) == {"launch", "source", "target", "frac", "offset"}
 
 
+def test_bc_loss_can_weight_launch_positive_class() -> None:
+    out = {
+        "launch": torch.tensor([[3.0, -3.0], [3.0, -3.0]]),
+        "source": torch.randn(2, 16),
+        "target": torch.randn(2, 32),
+        "frac": torch.randn(2, 4),
+        "offset": torch.randn(2, 5),
+    }
+    action = torch.tensor([[0, 0, 0, 0, 0], [1, 0, 0, 0, 0]])
+
+    unweighted, _ = bc_loss(out, action)
+    weighted, _ = bc_loss(out, action, launch_positive_weight=4.0)
+
+    assert weighted > unweighted
+
+
+def test_launch_bias_calibration_fits_validation_ce() -> None:
+    logits = torch.tensor([[0.0, 2.0], [0.0, 2.0], [0.0, 2.0]])
+    labels = torch.tensor([0, 0, 0])
+
+    result = _fit_launch_bias_delta(logits, labels, max_abs=4.0, steps=81)
+
+    assert result["delta"] < 0.0
+    assert result["loss_after"] < result["loss_before"]
+
+
 def test_train_bc_learns_and_exports(tmp_path: Path) -> None:
     dataset = _tiny_dataset(tmp_path)
     checkpoint = tmp_path / "bc_producer.pt"
@@ -69,3 +97,27 @@ def test_train_bc_learns_and_exports(tmp_path: Path) -> None:
     payload = _load_checkpoint_payload(str(checkpoint))
     assert "launch.weight" in payload["weights"]
     assert "launch.bias" in payload["weights"]
+
+
+def test_train_bc_embeds_dataset_sidecar_decoder(tmp_path: Path) -> None:
+    dataset = _tiny_dataset(tmp_path)
+    decoder_cfg = asdict(DEFAULT_DECODER_CONFIG)
+    decoder_cfg["max_moves_per_turn"] = 1
+    dataset.with_suffix(".meta.json").write_text(
+        json.dumps({"decoder_config": decoder_cfg}),
+        encoding="utf-8",
+    )
+    checkpoint = tmp_path / "bc_single_action.pt"
+
+    summary = train_bc(
+        dataset=dataset,
+        epochs=1,
+        batch_size=128,
+        lr=1e-3,
+        device="cpu",
+        checkpoint_out=checkpoint,
+    )
+
+    assert summary["decoder"]["max_moves_per_turn"] == 1
+    payload = _load_checkpoint_payload(str(checkpoint))
+    assert payload["decoder"]["max_moves_per_turn"] == 1
