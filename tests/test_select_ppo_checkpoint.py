@@ -1,11 +1,28 @@
 from pathlib import Path
 
 import pytest
-from scripts.select_ppo_checkpoint import _expand_checkpoints, checkpoint_id, score_metrics
+from scripts.select_ppo_checkpoint import (
+    _expand_checkpoints,
+    checkpoint_candidate_id,
+    checkpoint_id,
+    score_metrics,
+)
 
 
 def test_checkpoint_id_is_stable_for_paths():
     assert checkpoint_id(Path("artifacts/ppo/phase0-seed1.65536.pt")) == "phase0_seed1_65536"
+
+
+def test_checkpoint_candidate_id_distinguishes_duplicate_stems(tmp_path: Path):
+    left = tmp_path / "a" / "best.pt"
+    right = tmp_path / "b" / "best.pt"
+    left.parent.mkdir()
+    right.parent.mkdir()
+    left.write_bytes(b"left")
+    right.write_bytes(b"right")
+
+    assert checkpoint_candidate_id(left) != checkpoint_candidate_id(right)
+    assert checkpoint_candidate_id(left).startswith("a_best_")
 
 
 def test_score_metrics_rewards_win_rate_and_penalizes_runtime_failures():
@@ -29,3 +46,11 @@ def test_expand_checkpoints_requires_match(tmp_path: Path):
     assert _expand_checkpoints([str(tmp_path / "*.pt")]) == [checkpoint.resolve()]
     with pytest.raises(ValueError, match="no checkpoint files"):
         _expand_checkpoints([str(tmp_path / "*.missing")])
+
+
+def test_expand_checkpoints_supports_recursive_glob(tmp_path: Path):
+    checkpoint = tmp_path / "nested" / "agent.pt"
+    checkpoint.parent.mkdir()
+    checkpoint.write_bytes(b"not-a-real-checkpoint")
+
+    assert _expand_checkpoints([str(tmp_path / "**" / "*.pt")]) == [checkpoint.resolve()]
