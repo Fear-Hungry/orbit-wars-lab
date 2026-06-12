@@ -425,6 +425,7 @@ def summarize_candidate(
     min_incumbent_winrate: float,
     min_floor_winrate: float,
     max_annihilation_rate_4p: float,
+    required_2p_winrates: dict[str, float] | None = None,
     weight_2p: float,
 ) -> dict[str, Any]:
     pairwise: dict[str, dict[str, Any]] = {}
@@ -523,6 +524,25 @@ def summarize_candidate(
             {"decisive_win_rate": wr, "required": min_floor_winrate},
         )
 
+    for opponent, required in sorted((required_2p_winrates or {}).items()):
+        if opponent == candidate:
+            continue
+        summary = pairwise.get(opponent)
+        check_name = f"required_2p_vs_{opponent}"
+        if summary is None:
+            add_check(
+                check_name,
+                False,
+                {"missing_required_opponent": opponent, "required": float(required)},
+            )
+            continue
+        wr = summary["decisive_win_rate"]
+        add_check(
+            check_name,
+            wr is not None and wr >= float(required),
+            {"decisive_win_rate": wr, "required": float(required)},
+        )
+
     add_check(
         "survives_4p",
         four_player["appearances"] == 0 or four_player["annihilation_rate"] <= max_annihilation_rate_4p,
@@ -565,6 +585,7 @@ def build_report(
     min_incumbent_winrate: float,
     min_floor_winrate: float,
     max_annihilation_rate_4p: float,
+    required_2p_winrates: dict[str, float] | None = None,
     weight_2p: float,
 ) -> dict[str, Any]:
     summaries = [
@@ -577,6 +598,7 @@ def build_report(
             min_incumbent_winrate=min_incumbent_winrate,
             min_floor_winrate=min_floor_winrate,
             max_annihilation_rate_4p=max_annihilation_rate_4p,
+            required_2p_winrates=required_2p_winrates,
             weight_2p=weight_2p,
         )
         for candidate in candidates
@@ -620,6 +642,23 @@ def _parse_4p_templates(values: list[str] | None) -> list[tuple[str, ...]]:
     return out
 
 
+def _parse_required_2p_winrates(values: list[str] | None) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for value in values or []:
+        raw = value.strip()
+        if not raw:
+            continue
+        if "=" in raw:
+            name, threshold = raw.split("=", 1)
+        else:
+            name, threshold = raw, "0.50"
+        name = name.strip()
+        if not name:
+            raise ValueError(f"empty required 2p opponent in {value!r}")
+        out[name] = float(threshold)
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--candidates", nargs="+", required=True)
@@ -653,6 +692,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--min-incumbent-winrate", type=float, default=0.50)
     parser.add_argument("--min-floor-winrate", type=float, default=0.60)
     parser.add_argument("--max-annihilation-rate-4p", type=float, default=0.35)
+    parser.add_argument(
+        "--required-2p-winrate",
+        action="append",
+        help="extra required 2p decisive winrate, as opponent=threshold or opponent for 0.50",
+    )
     parser.add_argument("--weight-2p", type=float, default=FIELD_2P_WEIGHT)
     args = parser.parse_args(argv)
     profile = PROFILE_DEFAULTS[args.profile]
@@ -676,6 +720,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.incumbent not in FACTORIES:
         raise SystemExit(f"unknown incumbent: {args.incumbent}")
     templates = _parse_4p_templates(args.four_player_lineup)
+    required_2p_winrates = _parse_required_2p_winrates(args.required_2p_winrate)
+    unknown_required = [name for name in required_2p_winrates if name not in FACTORIES]
+    if unknown_required:
+        raise SystemExit(f"unknown required 2p opponents: {', '.join(unknown_required)}")
     out_dir = args.out_dir
     tasks = build_tasks(
         candidates,
@@ -728,6 +776,7 @@ def main(argv: list[str] | None = None) -> int:
         min_incumbent_winrate=args.min_incumbent_winrate,
         min_floor_winrate=args.min_floor_winrate,
         max_annihilation_rate_4p=args.max_annihilation_rate_4p,
+        required_2p_winrates=required_2p_winrates,
         weight_2p=args.weight_2p,
     )
     report.update({
@@ -744,6 +793,7 @@ def main(argv: list[str] | None = None) -> int:
             "min_incumbent_winrate": args.min_incumbent_winrate,
             "min_floor_winrate": args.min_floor_winrate,
             "max_annihilation_rate_4p": args.max_annihilation_rate_4p,
+            "required_2p_winrates": required_2p_winrates,
             "weight_2p": args.weight_2p,
         },
     })
