@@ -147,6 +147,21 @@ def _make_isolated_policy(name: str) -> Policy:
     return _policy
 
 
+def make_isolated_opponent(name: str) -> Policy:
+    """Build ONE fresh isolated agent (own per-game memory), not from the cache.
+
+    Unlike ``get_isolated_opponents`` (which hands back cached pool slots), every
+    call returns a brand-new instance. The BReP rollout needs this for its BASE
+    planner: a cached pool slot could collide with the player-1 opponent of the
+    same name (e.g. both "producer"), cross-contaminating per-game memory and
+    corrupting the base plan. Stateless heuristics have no state to isolate, so the
+    shared callable is returned.
+    """
+    if name in STATEFUL_SINGLETON_OPPONENTS:
+        return _make_isolated_policy(name)
+    return get_heuristic_policies()[name]
+
+
 _ISOLATED_POOL: dict[str, list[Policy]] = {}
 
 

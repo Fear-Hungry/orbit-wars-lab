@@ -49,6 +49,45 @@ def _margin_for_format(report: dict[str, Any], fmt: str) -> float | None:
     return float(fmean(float(record["normalized_margin"]) for record in records))
 
 
+def _margin_residual_inprocess(
+    checkpoint: Path,
+    *,
+    base_agent: str,
+    opponents: list[str],
+    seeds: list[int],
+    episode_steps: int,
+) -> dict[str, Any]:
+    """Per-chunk gate for the residual arch: evaluate IN-PROCESS (the BReP arch has
+    no render_submission export path). Margin vs the first opponent (the parity-floor
+    base, e.g. pgs_holdwave) is the gate; others are reported for context."""
+    import torch
+
+    from python.agents.policy import ProducerResidualBranchActorCritic
+    from python.train.train_ppo import evaluate_residual_margin
+    from orbit_wars_gym.encoding import observation_dim
+
+    ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    model = ProducerResidualBranchActorCritic(observation_dim())
+    model.load_state_dict(ckpt["model_state_dict"])
+    per_opp = {
+        opp: evaluate_residual_margin(
+            model, base_agent=base_agent, opponent_name=opp,
+            seeds=len(seeds), episode_steps=episode_steps,
+        )
+        for opp in opponents
+    }
+    gate = per_opp[opponents[0]]
+    return {
+        "games": gate["games"],
+        "win_rate": gate["win_rate"],
+        "mean_score_margin": gate["mean_score_margin"],
+        "invalid_action_rate": 0.0,
+        "margin_2p": gate["mean_score_margin"],
+        "margin_4p": None,
+        "per_opponent": {o: per_opp[o]["mean_score_margin"] for o in opponents},
+    }
+
+
 def _margin(
     checkpoint: Path,
     *,
@@ -57,7 +96,14 @@ def _margin(
     episode_steps: int,
     include_4p: bool = False,
     jobs: int = 1,
+    policy_arch: str = "flat",
+    base_agent: str = "producer",
 ) -> dict[str, Any]:
+    if policy_arch == "producer_residual":
+        return _margin_residual_inprocess(
+            checkpoint, base_agent=base_agent, opponents=opponents,
+            seeds=seeds, episode_steps=episode_steps,
+        )
     report = benchmark_exported_checkpoint(
         checkpoint,
         submission_out=checkpoint.with_suffix(".sub.py"),
@@ -93,6 +139,7 @@ def run_campaign(
     rollout_num_envs: int = 1,
     training_track: str = "phase0_2p",
     policy_arch: str = "flat",
+    base_agent: str = "producer",
     eval_jobs: int = 1,
     eval_include_4p: bool = False,
 ) -> dict[str, Any]:
@@ -112,6 +159,7 @@ def run_campaign(
         common = dict(
             seed=seed + chunk,
             policy_arch=policy_arch,
+            base_agent=base_agent,
             opponents=opponents,
             total_timesteps=chunk_timesteps,
             rollout_steps=rollout_steps,
@@ -132,6 +180,8 @@ def run_campaign(
             episode_steps=eval_episode_steps,
             include_4p=eval_include_4p,
             jobs=eval_jobs,
+            policy_arch=policy_arch,
+            base_agent=base_agent,
         )
         # The gate margin must reflect the track's goal: a 4p campaign is judged
         # on the 4p format, not on an aggregate diluted by 2p games.
@@ -191,7 +241,12 @@ def run_campaign(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--init", required=True, help="initial checkpoint (e.g. a BC checkpoint)")
+    parser.add_argument(
+        "--init",
+        default="",
+        help="initial checkpoint (e.g. a BC checkpoint); empty = fresh init "
+        "(producer_residual trains from KEEP-init = parity floor)",
+    )
     parser.add_argument("--out-dir", default="artifacts/ppo/campaign")
     parser.add_argument(
         "--opponents",
@@ -215,7 +270,14 @@ def main() -> None:
         default="phase0_2p",
         help="phase5_4p trains 4-player games (single-env rollout only)",
     )
-    parser.add_argument("--policy-arch", choices=("flat", "entity"), default="flat")
+    parser.add_argument(
+        "--policy-arch", choices=("flat", "entity", "producer_residual"), default="flat"
+    )
+    parser.add_argument(
+        "--base-agent",
+        default="producer",
+        help="base plan for producer_residual: producer or pgs_holdwave (incumbent floor)",
+    )
     parser.add_argument(
         "--eval-jobs",
         type=int,
@@ -246,6 +308,7 @@ def main() -> None:
         rollout_num_envs=args.rollout_num_envs,
         training_track=args.training_track,
         policy_arch=args.policy_arch,
+        base_agent=args.base_agent,
         eval_jobs=max(1, args.eval_jobs),
         eval_include_4p=args.eval_include_4p,
     )

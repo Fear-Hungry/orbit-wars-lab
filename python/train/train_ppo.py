@@ -19,6 +19,7 @@ import torch.nn.functional as F
 from python.agents.policy import (
     EntityActorCritic,
     FlatActorCritic,
+    ProducerResidualBranchActorCritic,
     _action_value_from_heads,
     launch_gated_kl,
 )
@@ -26,6 +27,7 @@ from python.agents.registry import (
     STATEFUL_SINGLETON_OPPONENTS,
     get_heuristic_policies,
     get_isolated_opponents,
+    make_isolated_opponent,
 )
 from python.train.opponent_pool import get_process_opponent_pool
 
@@ -34,9 +36,13 @@ from orbit_wars_gym.action_decoder import DecoderConfig, decode_discrete_action
 from orbit_wars_gym.action_masks import build_action_masks, split_masks
 from orbit_wars_gym.backend import RustBatchBackend, RustConfig
 from orbit_wars_gym.encoding import observation_dim
-from orbit_wars_gym.entities import fleet_owner, planet_id, planet_owner
+from orbit_wars_gym.entities import fleet_owner, planet_id, planet_owner, planet_ships
 
-_POLICY_ARCHS = {"flat": FlatActorCritic, "entity": EntityActorCritic}
+_POLICY_ARCHS = {
+    "flat": FlatActorCritic,
+    "entity": EntityActorCritic,
+    "producer_residual": ProducerResidualBranchActorCritic,
+}
 
 
 def _build_policy(arch: str, obs_dim: int):
@@ -59,6 +65,10 @@ class Phase0TrainingConfig:
     seed: int = 0
     policy_track: str = "phase0_2p"
     policy_arch: str = "flat"
+    # BASE agent for the producer_residual arch (the plan the net edits). Registry
+    # name: "producer" (original BReP) or "pgs"/"pgs_holdwave" (holdwave incumbent —
+    # the parity floor we want to not regress below). Ignored by other archs.
+    base_agent: str = "producer"
     num_players: int = 2
     total_timesteps: int = 200_000
     rollout_steps: int = 256
@@ -476,6 +486,245 @@ def _batched_rollout_supported(training_cfg: Phase0TrainingConfig) -> bool:
     return int(training_cfg.rollout_num_envs) > 1 and training_cfg.num_players == 2
 
 
+# BReP per-slot edit codes over a base move (v2): 0=KEEP, 1=CANCEL, ship-SCALE
+# {2:x0.25, 3:x0.5, 4:x1.5, 5:x2.0}. Down-scales always legal; up-scales capped at
+# the source planet's ships. This table MUST match the exported submission's decode.
+_EDIT_SCALES = {2: 0.25, 3: 0.5, 4: 1.5, 5: 2.0}
+
+# Registry aliases for the residual base; "pgs_holdwave" == "pgs" (holdwave is the
+# pgs.agent SUBMISSION_CONFIG isolated opponent).
+_BASE_AGENT_ALIASES = {"pgs_holdwave": "pgs"}
+
+
+def _make_base_agent(name: str) -> "Policy":
+    """Fresh isolated base agent (own per-game memory) for the BReP rollout."""
+    return make_isolated_opponent(_BASE_AGENT_ALIASES.get(name, name))
+
+
+def _apply_residual_edits(
+    state: dict[str, Any], base_moves: Sequence[Sequence[float]], edits: Sequence[int], k_max: int
+) -> list[list[float]]:
+    """Apply per-slot BReP edits to a base plan. Codes: 0=KEEP, 1=CANCEL (drop),
+    2-5 = ship SCALE (down always legal; up capped at the source planet's ships).
+    Moves past ``k_max`` editable slots are kept as-is, so KEEP-everything reproduces
+    the EXACT base plan (the parity-floor invariant). Base-agnostic: works over any
+    ``[planet, angle, ships]`` move list (Producer or holdwave)."""
+    ships_by_id = {planet_id(p): planet_ships(p) for p in state.get("planets", [])}
+    out: list[list[float]] = []
+    for i, mv in enumerate(base_moves):
+        ships = int(mv[2])
+        if i >= k_max:
+            out.append([mv[0], mv[1], float(ships)])
+            continue
+        e = int(edits[i])
+        if e == 1:  # CANCEL
+            continue
+        scale = _EDIT_SCALES.get(e)
+        if scale is None:  # KEEP (0) or any unknown code -> exact base move
+            out.append([mv[0], mv[1], float(ships)])
+            continue
+        scaled = int(round(ships * scale))
+        if scale > 1.0:  # boost: cap at the source planet's available ships
+            scaled = min(scaled, max(1, int(ships_by_id.get(int(mv[0]), ships)) - 1))
+        out.append([mv[0], mv[1], float(max(1, scaled))])
+    return out
+
+
+def _collect_brep_rollout_segment(
+    model: ProducerResidualBranchActorCritic,
+    *,
+    opponent_name: str,
+    base_seed: int,
+    rollout_steps: int,
+    sample_limit: int,
+    device: torch.device,
+    training_cfg: Phase0TrainingConfig,
+    progress: float,
+) -> RolloutSegment:
+    """BReP batched rollout: the agent action is a per-slot edit over a BASE plan
+    (one extra base-agent call per env) instead of a decoded raw move. Mask = active
+    base-move slots. Mirrors _collect_batched_rollout_segment's reward path; the base
+    agent is configurable (training_cfg.base_agent — producer or pgs/holdwave)."""
+    if training_cfg.num_players != 2:
+        raise ValueError("BReP rollout currently supports only 2-player training")
+    if opponent_name not in PHASE0_OPPONENTS:
+        raise ValueError(f"unknown phase-0 opponent: {opponent_name}")
+    k_max = int(model.k_max)
+    agent_player = 0
+    opp_player = 1
+    num_envs = max(1, min(int(training_cfg.rollout_num_envs), int(sample_limit)))
+    opponent_policies = get_isolated_opponents(opponent_name, num_envs)
+    # FRESH base instances (not the cached pool) so the player-0 base planner never
+    # shares a stateful runtime with the player-1 opponent of the same name.
+    base_policies = [_make_base_agent(training_cfg.base_agent) for _ in range(num_envs)]
+    base_shaping_scale, comet_shaping_scale = shaping_scales(training_cfg, progress)
+    reward_env = build_phase0_env(
+        seed=base_seed,
+        num_players=training_cfg.num_players,
+        opponent_name=opponent_name,
+        enable_comets=training_cfg.enable_comets,
+        decoder_cfg=decoder_config(training_cfg),
+        sun_loss_penalty=training_cfg.sun_loss_penalty,
+        border_loss_penalty=training_cfg.border_loss_penalty,
+        ship_margin_scale=training_cfg.ship_margin_scale,
+        base_shaping_scale=base_shaping_scale,
+        comet_shaping_scale=comet_shaping_scale,
+        shaping_gamma=training_cfg.gamma,
+    )
+    backend = RustBatchBackend(
+        num_envs=num_envs,
+        num_players=training_cfg.num_players,
+        seed=base_seed,
+        config=RustConfig(enable_comets=training_cfg.enable_comets),
+    )
+    current_states = backend.reset(base_seed)
+    obs_np = backend.encoded_states(agent_player)
+    episodes = [EpisodeMetrics(opponent=opponent_name) for _ in range(num_envs)]
+    episode_metrics: list[dict[str, Any]] = []
+    active = np.ones(num_envs, dtype=bool)
+
+    obs_buf, action_buf, logprob_buf, value_buf, mask_buf = [], [], [], [], []
+    rewards_np = np.empty((rollout_steps, num_envs), dtype=np.float32)
+    dones_np = np.empty((rollout_steps, num_envs), dtype=np.float32)
+
+    for step_index in range(rollout_steps):
+        active_indices = [i for i in range(num_envs) if active[i]]
+        # Agent's BASE plan per env (computed BEFORE the net so the mask knows how
+        # many edit slots are live). This is the one extra base-agent call.
+        base_moves_by_env: list[list[list[float]]] = [[] for _ in range(num_envs)]
+        for i in active_indices:
+            base_moves_by_env[i] = [list(m) for m in base_policies[i](current_states[i], agent_player)]
+
+        edit_mask_np = np.zeros((num_envs, k_max), dtype=bool)
+        for i in active_indices:
+            n_slots = min(len(base_moves_by_env[i]), k_max)
+            if n_slots > 0:
+                edit_mask_np[i, :n_slots] = True
+        mask_tensor = torch.as_tensor(edit_mask_np, dtype=torch.bool, device=device)
+
+        obs_tensor = torch.as_tensor(obs_np, dtype=torch.float32, device=device)
+        with torch.no_grad():
+            action_tensor, logprob_tensor, _, value_tensor = model.get_action_and_value(
+                obs_tensor, masks={"edit": mask_tensor}
+            )
+        actions_np = action_tensor.cpu().numpy()
+
+        opponent_moves_by_env = {
+            i: opponent_policies[i](current_states[i], opp_player) for i in active_indices
+        }
+
+        action_rows: list[list[float]] = []
+        player_moves_by_env: list[list[list[float]]] = [[] for _ in range(num_envs)]
+        for env_index in active_indices:
+            state = current_states[env_index]
+            player_moves = _apply_residual_edits(
+                state, base_moves_by_env[env_index], actions_np[env_index], k_max
+            )
+            player_moves_by_env[env_index] = player_moves
+            action_rows.extend(_moves_to_flat_rows(env_index, agent_player, player_moves))
+            action_rows.extend(_moves_to_flat_rows(env_index, opp_player, opponent_moves_by_env[env_index]))
+
+        flat_actions = (
+            np.asarray(action_rows, dtype=np.float64) if action_rows else np.zeros((0, 5), dtype=np.float64)
+        )
+        previous_states = current_states
+        outcomes, next_obs_np = backend.step_flat_with_encoded_states(flat_actions, agent_player)
+        next_states = backend.states()
+
+        rewards_row = rewards_np[step_index]
+        dones_row = dones_np[step_index]
+        rewards_row.fill(0.0)
+        dones_row.fill(0.0)
+        for env_index, (previous_state, next_state, outcome) in enumerate(
+            zip(previous_states, next_states, outcomes, strict=True)
+        ):
+            if not active[env_index]:
+                dones_row[env_index] = 1.0
+                continue
+            done = bool(outcome.get("done", False))
+            base_reward = reward_env._base_shaping_reward(
+                previous_state, next_state, player=agent_player,
+                player_moves=player_moves_by_env[env_index], done=done,
+            )
+            ship_margin_reward = reward_env._ship_margin_reward(previous_state, next_state, player=agent_player)
+            comet_reward = reward_env._comet_auxiliary_reward(previous_state, next_state, player=agent_player)
+            reward = (
+                base_shaping_scale * base_reward + ship_margin_reward + comet_shaping_scale * comet_reward
+            )
+            if done:
+                rewards = outcome.get("rewards", [])
+                reward += float(rewards[agent_player]) if rewards else 0.0
+            rewards_row[env_index] = float(reward)
+            dones_row[env_index] = float(done)
+            episodes[env_index].record_step(
+                reward=reward,
+                neutral_captures=_neutral_capture_count(previous_state, next_state, player=agent_player),
+                alive=_player_alive(next_state, player=agent_player),
+                early_window=training_cfg.early_survival_window,
+            )
+            if done:
+                episodes[env_index].completed = True
+                episode_metrics.append(episodes[env_index].as_summary())
+                active[env_index] = False
+
+        obs_buf.append(obs_tensor)
+        action_buf.append(action_tensor)
+        logprob_buf.append(logprob_tensor)
+        value_buf.append(value_tensor)
+        mask_buf.append(mask_tensor)
+        current_states = next_states
+        obs_np = next_obs_np
+
+    for env_index, episode in enumerate(episodes):
+        if active[env_index] and episode.length > 0:
+            episode_metrics.append(episode.as_summary())
+
+    with torch.no_grad():
+        next_obs_tensor = torch.as_tensor(obs_np, dtype=torch.float32, device=device)
+        _, _, _, next_value = model.get_action_and_value(next_obs_tensor)
+        next_value = next_value.masked_fill(torch.as_tensor(~active, dtype=torch.bool, device=device), 0.0)
+
+    observations = torch.stack(obs_buf)
+    actions = torch.stack(action_buf).to(dtype=torch.long)
+    logprobs = torch.stack(logprob_buf)
+    rewards = torch.as_tensor(rewards_np, dtype=torch.float32, device=device)
+    dones = torch.as_tensor(dones_np, dtype=torch.float32, device=device)
+    values = torch.stack(value_buf)
+    advantages, returns = _compute_gae_batched(
+        rewards, dones, values, next_value, gamma=training_cfg.gamma, gae_lambda=training_cfg.gae_lambda
+    )
+    masks = torch.stack(mask_buf)
+    flat_observations = observations.reshape(-1, observations.shape[-1])
+    flat_actions = actions.reshape(-1, actions.shape[-1])
+    flat_logprobs = logprobs.reshape(-1)
+    flat_advantages = advantages.reshape(-1)
+    flat_returns = returns.reshape(-1)
+    flat_values = values.reshape(-1)
+    flat_rewards = rewards.reshape(-1)
+    flat_masks = masks.reshape(-1, masks.shape[-1])
+    if sample_limit > 0:
+        flat_observations = flat_observations[:sample_limit]
+        flat_actions = flat_actions[:sample_limit]
+        flat_logprobs = flat_logprobs[:sample_limit]
+        flat_advantages = flat_advantages[:sample_limit]
+        flat_returns = flat_returns[:sample_limit]
+        flat_values = flat_values[:sample_limit]
+        flat_rewards = flat_rewards[:sample_limit]
+        flat_masks = flat_masks[:sample_limit]
+    return RolloutSegment(
+        observations=flat_observations,
+        actions=flat_actions,
+        logprobs=flat_logprobs,
+        advantages=flat_advantages,
+        returns=flat_returns,
+        values=flat_values,
+        rewards=flat_rewards,
+        masks=flat_masks,
+        opponent=opponent_name,
+        episode_metrics=episode_metrics,
+    )
+
+
 def _collect_batched_rollout_segment(
     model: FlatActorCritic,
     *,
@@ -724,6 +973,20 @@ def _collect_rollout_segment(
     sample_limit: int | None = None,
 ) -> RolloutSegment:
     limit = rollout_steps if sample_limit is None else max(1, int(sample_limit))
+    # BReP is batchable by design (per-slot edit mask is fixed-shape): route it to
+    # its own batched collector regardless of _batched_rollout_supported.
+    if isinstance(model, ProducerResidualBranchActorCritic):
+        per_env_steps = max(1, min(int(rollout_steps), math.ceil(limit / max(1, int(training_cfg.rollout_num_envs)))))
+        return _collect_brep_rollout_segment(
+            model,
+            opponent_name=opponent_name,
+            base_seed=base_seed,
+            rollout_steps=per_env_steps,
+            sample_limit=limit,
+            device=device,
+            training_cfg=training_cfg,
+            progress=progress,
+        )
     if _batched_rollout_supported(training_cfg):
         per_env_steps = max(1, min(int(rollout_steps), math.ceil(limit / max(1, int(training_cfg.rollout_num_envs)))))
         return _collect_batched_rollout_segment(
@@ -788,15 +1051,26 @@ def _ppo_update(
             old_logprob_mb = batch["logprobs"][indices]
             advantage_mb = batch["advantages"][indices]
             return_mb = batch["returns"][indices]
-            mask_mb = split_masks(batch["masks"][indices])
+            is_residual = isinstance(model, ProducerResidualBranchActorCritic)
+            mask_mb = (
+                {"edit": batch["masks"][indices]}
+                if is_residual
+                else split_masks(batch["masks"][indices])
+            )
 
             advantage_mb = (advantage_mb - advantage_mb.mean()) / (advantage_mb.std(unbiased=False) + 1e-8)
 
             # Same mask as sampling time -> the PPO importance ratio stays correct.
-            # One forward gives both the PPO terms (via _action_value_from_heads)
-            # and the head logits reused for the KL-to-reference anchor below.
-            cur_out = model(obs_mb)
-            _, new_logprob, entropy, new_value = _action_value_from_heads(cur_out, action_mb, mask_mb)
+            # The residual arch has its own edit-branch head (no launch/move heads),
+            # so it computes terms via get_action_and_value; the 5-head archs reuse
+            # one forward for both the PPO terms and the KL-to-reference anchor.
+            if is_residual:
+                _, new_logprob, entropy, new_value = model.get_action_and_value(
+                    obs_mb, action_mb, masks=mask_mb
+                )
+            else:
+                cur_out = model(obs_mb)
+                _, new_logprob, entropy, new_value = _action_value_from_heads(cur_out, action_mb, mask_mb)
             log_ratio = new_logprob - old_logprob_mb
             ratio = log_ratio.exp()
 
@@ -809,7 +1083,9 @@ def _ppo_update(
             loss = policy_loss + cfg.vf_coef * value_loss - cfg.ent_coef * entropy_loss
 
             kl_to_ref_val = 0.0
-            if use_kl_ref:
+            # KL-to-ref anchors the 5-head policy to a reference; the residual's
+            # parity floor (KEEP-init == base) is its own anchor, so skip it there.
+            if use_kl_ref and not is_residual:
                 with torch.no_grad():
                     ref_out = ref_model(obs_mb)
                 kl_ref = launch_gated_kl(cur_out, ref_out, mask_mb).mean()
@@ -945,6 +1221,114 @@ def _evaluate_margin(
     if was_training:
         model.train()
     return float(np.mean(margins)) if margins else 0.0
+
+
+def _scores_margin(scores: Sequence[float], agent_player: int, num_players: int) -> float:
+    """Normalized margin of ``agent_player`` vs the best other score, in [-1, 1]."""
+    s = [float(x) for x in scores] + [0.0] * (num_players - len(scores))
+    mine = s[agent_player]
+    others = [s[p] for p in range(num_players) if p != agent_player]
+    best_other = max(others) if others else 0.0
+    denom = max(abs(mine) + abs(best_other), 1.0)
+    return (mine - best_other) / denom
+
+
+def _play_residual_game(
+    model: ProducerResidualBranchActorCritic,
+    *,
+    base_agent: str,
+    opponent_name: str,
+    agent_player: int,
+    seed: int,
+    episode_steps: int,
+    num_players: int,
+    enable_comets: bool,
+    device: torch.device,
+) -> float:
+    """One game: agent = base plan edited by the net's greedy argmax; others = opponent.
+    Returns the agent's normalized score margin."""
+    k_max = int(model.k_max)
+    backend = RustBatchBackend(
+        num_envs=1, num_players=num_players, seed=seed,
+        config=RustConfig(episode_steps=episode_steps, enable_comets=enable_comets),
+    )
+    state = backend.reset(seed)[0]
+    base = make_isolated_opponent(_BASE_AGENT_ALIASES.get(base_agent, base_agent))
+    opponents = {p: make_isolated_opponent(opponent_name) for p in range(num_players) if p != agent_player}
+    last_scores: list[float] = [0.0] * num_players
+    for _ in range(episode_steps):
+        base_moves = [list(m) for m in base(state, agent_player)]
+        n_slots = min(len(base_moves), k_max)
+        obs_t = torch.as_tensor(backend.encoded_states(agent_player), dtype=torch.float32, device=device)
+        with torch.no_grad():
+            logits = model.forward(obs_t)["edit"]
+        argmax = logits.argmax(-1)[0].cpu().numpy()
+        edits = [int(argmax[i]) if i < n_slots else 0 for i in range(len(base_moves))]
+        agent_moves = _apply_residual_edits(state, base_moves, edits, k_max)
+        rows: list[list[float]] = list(_moves_to_flat_rows(0, agent_player, agent_moves))
+        for p, opp in opponents.items():
+            rows.extend(_moves_to_flat_rows(0, p, opp(state, p)))
+        flat = np.asarray(rows, dtype=np.float64) if rows else np.zeros((0, 5), dtype=np.float64)
+        outcomes, states = backend.step_flat_with_states(flat)
+        state = states[0]
+        sc = outcomes[0].get("scores") or outcomes[0].get("rewards")
+        if sc:
+            last_scores = list(sc)
+        if bool(outcomes[0].get("done", False)):
+            break
+    return _scores_margin(last_scores, agent_player, num_players)
+
+
+def evaluate_residual_margin(
+    model: ProducerResidualBranchActorCritic,
+    *,
+    base_agent: str,
+    opponent_name: str,
+    seeds: int,
+    episode_steps: int,
+    num_players: int = 2,
+    device: torch.device | str = "cpu",
+    enable_comets: bool = True,
+) -> dict[str, float]:
+    """In-process MIRRORED-seat paired margin of a residual policy vs an opponent.
+
+    The BReP submission cannot be exported through ``render_submission`` (5-head
+    only), so the per-chunk gate evaluates the checkpoint DIRECTLY. Self-play of the
+    base agent has a strong seat bias + huge variance (holdwave-vs-holdwave swings
+    to ±1.0 annihilation), so seed-parity seat alternation does NOT cancel it. We
+    instead play EACH seed in BOTH seats of the SAME world and average: for identical
+    self-play the two mirrored margins are exactly opposite → 0 (true parity floor),
+    so any positive residual margin is a genuine learned edge, not seat luck.
+    Returns a summary shaped like benchmark_exported_checkpoint (2-player only)."""
+    if num_players != 2:
+        raise ValueError("mirrored-seat residual eval is 2-player only")
+    dev = torch.device(device)
+    was_training = model.training
+    model.eval()
+    margins: list[float] = []
+    wins: list[float] = []
+    for seed in range(int(seeds)):
+        m0 = _play_residual_game(
+            model, base_agent=base_agent, opponent_name=opponent_name, agent_player=0,
+            seed=seed, episode_steps=episode_steps, num_players=2,
+            enable_comets=enable_comets, device=dev,
+        )
+        m1 = _play_residual_game(
+            model, base_agent=base_agent, opponent_name=opponent_name, agent_player=1,
+            seed=seed, episode_steps=episode_steps, num_players=2,
+            enable_comets=enable_comets, device=dev,
+        )
+        m = 0.5 * (m0 + m1)  # mirrored: seat bias cancels
+        margins.append(m)
+        wins.append(1.0 if m > 0 else (0.5 if m == 0 else 0.0))
+    if was_training:
+        model.train()
+    return {
+        "games": float(2 * len(margins)),
+        "mean_score_margin": float(np.mean(margins)) if margins else 0.0,
+        "win_rate": float(np.mean(wins)) if wins else 0.0,
+        "invalid_action_rate": 0.0,
+    }
 
 
 def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:

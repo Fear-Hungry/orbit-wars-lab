@@ -238,3 +238,112 @@ class EntityActorCritic(nn.Module):
         masks: dict[str, torch.Tensor] | None = None,
     ):
         return _action_value_from_heads(self.forward(obs), action, masks)
+
+
+class ProducerResidualBranchActorCritic(nn.Module):
+    """BReP — batchable per-slot branching edits over a BASE plan (Tavakoli 2017).
+
+    Ported from commit 19f0cf0 (the original BReP over Producer). Reuses the entity
+    encoder but replaces the move heads with ``k_max`` INDEPENDENT ``Discrete(n_edit)``
+    branches, one per BASE-move slot. Edit 0 = KEEP reproduces the base move EXACTLY,
+    so a KEEP-initialised policy == base agent == guaranteed parity FLOOR; PPO can
+    only learn BENEFICIAL deviations (cancel/scale). The base plan is computed once
+    per env in the batched rollout; the net runs ZERO experts.
+
+    This worktree generalises the BASE from Producer to ANY ``(state, player) -> moves``
+    agent (e.g. the holdwave PGS) via ``Phase0TrainingConfig.base_agent`` — the arch
+    here is base-agnostic (it only sizes the per-slot branches), the base choice lives
+    in the rollout decoder ``_apply_residual_edits``.
+
+    State-dict keys (planet_mlp/fleet_mlp/trunk/edit/value) are its OWN — a distinct
+    arch, so it does not collide with EntityActorCritic's exporter keys.
+    """
+
+    # Per-slot edit codes over the base move (v2): 0=KEEP, 1=CANCEL, ship-SCALE
+    # {2:x0.25, 3:x0.5, 4:x1.5, 5:x2.0}. The decoder (_apply_residual_edits) owns it.
+    N_EDIT = 6
+
+    def __init__(
+        self,
+        obs_dim: int,
+        k_max: int = 16,
+        n_edit: int = N_EDIT,
+        entity_hidden: int = 64,
+        hidden: int = 256,
+    ):
+        super().__init__()
+        expected = GLOBAL_F + PLANET_N * PLANET_F + FLEET_N * FLEET_F
+        if obs_dim != expected:
+            raise ValueError(
+                f"ProducerResidualBranchActorCritic expects flat obs_dim {expected}, got {obs_dim}"
+            )
+        self.k_max = int(k_max)
+        self.n_edit = int(n_edit)
+        self.planet_mlp = nn.Sequential(
+            nn.Linear(PLANET_F, entity_hidden), nn.Tanh(),
+            nn.Linear(entity_hidden, entity_hidden), nn.Tanh(),
+        )
+        self.fleet_mlp = nn.Sequential(
+            nn.Linear(FLEET_F, entity_hidden), nn.Tanh(),
+            nn.Linear(entity_hidden, entity_hidden), nn.Tanh(),
+        )
+        self.trunk = nn.Sequential(
+            nn.Linear(GLOBAL_F + 2 * entity_hidden, hidden), nn.Tanh(),
+            nn.Linear(hidden, hidden), nn.Tanh(),
+        )
+        self.edit = nn.Linear(hidden, self.k_max * self.n_edit)
+        self.value = nn.Linear(hidden, 1)
+        # KEEP-init: zero the edit head so the untrained output is dominated by a
+        # high bias on KEEP (index 0) → every slot KEEPs → exact base = parity floor.
+        with torch.no_grad():
+            self.edit.weight.zero_()
+            bias = self.edit.bias.view(self.k_max, self.n_edit)
+            bias.zero_()
+            bias[:, 0] = 5.0
+
+    @staticmethod
+    def _masked_mean(emb: torch.Tensor, present: torch.Tensor) -> torch.Tensor:
+        weight = present.unsqueeze(-1)
+        total = (emb * weight).sum(dim=1)
+        count = weight.sum(dim=1).clamp_min(1.0)
+        return total / count
+
+    def forward(self, obs: torch.Tensor) -> dict[str, torch.Tensor]:
+        b = obs.shape[0]
+        glob = obs[:, :GLOBAL_F]
+        p_end = GLOBAL_F + PLANET_N * PLANET_F
+        planets = obs[:, GLOBAL_F:p_end].reshape(b, PLANET_N, PLANET_F)
+        fleets = obs[:, p_end:].reshape(b, FLEET_N, FLEET_F)
+        planet_pool = self._masked_mean(self.planet_mlp(planets), planets[:, :, 0])
+        fleet_pool = self._masked_mean(self.fleet_mlp(fleets), fleets[:, :, 0])
+        h = self.trunk(torch.cat([glob, planet_pool, fleet_pool], dim=-1))
+        edit_logits = self.edit(h).reshape(b, self.k_max, self.n_edit)
+        return {"edit": edit_logits, "value": self.value(h).squeeze(-1)}
+
+    def get_action_and_value(
+        self,
+        obs: torch.Tensor,
+        action: torch.Tensor | None = None,
+        masks: dict[str, torch.Tensor] | None = None,
+    ):
+        """``k_max`` independent Discrete(n_edit) branches. ``masks['edit']`` is
+        ``(B, k_max)`` boolean marking ACTIVE slots (= real base moves); inactive
+        slots are forced to KEEP(0) and contribute 0 to log-prob/entropy. The SAME
+        mask must be passed at sampling and update so the PPO ratio stays correct.
+        Returns ``(action[B,k_max], logprob[B], entropy[B], value[B])``."""
+        out = self.forward(obs)
+        logits = out["edit"]
+        b, k, _ = logits.shape
+        if masks is not None and "edit" in masks:
+            active = masks["edit"].bool()
+        else:
+            active = torch.ones(b, k, dtype=torch.bool, device=logits.device)
+        dist = Categorical(logits=logits)  # batch_shape (B, k_max)
+        if action is None:
+            sampled = dist.sample()
+            action = torch.where(active, sampled, torch.zeros_like(sampled))
+        a = action.long()
+        active_f = active.to(out["value"].dtype)
+        logprob = (dist.log_prob(a) * active_f).sum(-1)
+        entropy = (dist.entropy() * active_f).sum(-1)
+        return a, logprob, entropy, out["value"]
