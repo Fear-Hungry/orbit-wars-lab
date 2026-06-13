@@ -654,6 +654,76 @@ treinado contra heurísticas fracas.
   estilo fórum (missões safe-capture, rescue, recapture, reinforce, snipe, redistribuição por dominância). Isso é
   build multi-sessão; não é MCTS turno-a-turno sobre os candidatos atuais.
 
+## ⚠️ CORREÇÃO METODOLÓGICA (2026-06-08) — avaliar a 500 steps + ambos assentos
+Usuário perguntou se confirmei vs o que o Kaggle usa. **Eu não tinha.** Corrigido:
+- [x] **Paridade do motor CONFIRMADA:** instalei extra `kaggle`; `parity_probe_actions` (2p/4p/comets/janela tardia)
+  + suíte oficial = **19 passed, exato**. RustBatchBackend é fiel ao Kaggle. Mira do bot transfere.
+- [x] **Comprimento estava ERRADO:** medi H a 96/128 steps; **oficial = 500**. A 500 (ambos assentos, n=12):
+  **OEP vs Producer = 0.0 (EMPATA, não +0.07)**, eval greedy = −1.0. `producer-mirror` seat0 = +0.50 (viés de
+  assento grande → obrigatório mediar 2 assentos). **Conclusão real: Producer é o melhor bot @500** (bate com
+  LB 1228>1100). Anchors a 96 steps eram artefato de jogo curto. Memória [[kaggle_500_step_eval_required]].
+- [ ] **NOVA RÉGUA p/ qualquer claim de força:** `--episode-steps 500` + ambos assentos. 96 steps só p/ smoke.
+
+## 🅗 FAMÍLIA H — B→A: primitiva de DEFESA + tuning metaheurístico da eval-function
+**Trilha heurística/metaheurística deste worktree (`feat/family-h-candidate-factory`).** Reabre a linha H
+NUM QUADRANTE QUE A SATURAÇÃO NÃO COBRIU. A saturação (EXPERIMENTS.md 77-82) esgotou *seleção
+hiper-heurística em runtime sobre primitivas ofensivas fracas*; a causa DOMINANTE diagnosticada é
+**fraqueza estratégica — sem defesa/recapture** (commit c30b5d3). Literatura que sustenta a rota:
+Gaina, Devlin, Lucas, Perez-Liebana 2020 (arXiv:2003.12331) — o ganho de SOTA em jogos em tempo real
+vem de **otimizar OFFLINE os parâmetros** de UM agente rico (N-Tuple Bandit EA), não de selecionar
+heurísticas em runtime (**FORTE**); Martin & Collins 2026 (arXiv:2601.09594, AS-CMA) — CMA-ES com
+amostragem adaptativa para **fitness ruidosa e cara** (**FORTE** para o método). Reenquadramento
+honesto: a eval-function tunada por evolução É a *value function aprendida* que a conclusão PPO pediu
+para "realizar o +0.048" — mesmo alvo, sem RL. Risco principal a vigiar: custo de fitness (N seeds ×
+jogos por avaliação CMA-ES) — multi-sessão; mitigado por amostragem adaptativa/EA amostra-eficiente.
+
+### Lever B — primitiva de DEFESA/recapture/reforço-sob-ameaça (pré-requisito; ataca a causa dominante)
+Toda família H atual é OFENSIVA. `_projected_defense` (family_h.py:94) só é usado para *atacar*
+(quanto preciso para capturar), nunca para *defender o que é meu*. Construir e MEDIR isolada.
+- [x] **B1. Família `defensive_reinforce` em `bots/oep/family_h.py`** ✅ 2026-06-08. 3 missões (reforço-sob-ameaça
+  via proxy de ameaça `_incoming_threat` + frotas in-flight; recapture de inimigos fracos no `RECAPTURE_RANGE`;
+  redistribuição de interior calmo p/ fronteira). Toda mira pelo `Aimer` engine-accurate. Registrada.
+  - [x] verificar: ✅ `pytest tests/test_family_h.py` = 16 passed (legalidade 2p/4p + board vazio).
+- [x] **B2. Benchmark `defensive_reinforce` como BOT COMPLETO** ✅ 2026-06-08. `b2_defensive_reinforce.json`:
+  margin vs producer+oep = **−0.9975** (crash/timeout/invalid=0). Trace: emite moves só sob pressão real
+  (10/128 turnos vs Producer); 0/128 vs oponente passivo.
+  - [x] verificar (CRITÉRIO DURO de B): **NÃO cruzou.** Defesa isolada segue −1.0 → **defesa pura é degenerada**
+    (nunca captura neutros, não expande, é moída). Resultado ESPERADO pelo plano: o valor só aparece COMBINADA →
+    a primitiva de defesa vira TERMO da eval-function (A). Registrar em EXPERIMENTS.md.
+
+### Lever A — UMA eval-function parametrizada, pesos tunados OFFLINE vs Producer (CMA-ES / N-Tuple Bandit)
+Substitui o seletor-de-famílias por UMA política de scoring sobre candidatos, com ~10-20 termos pesados
+(valor de ataque, defesa/reforço, recapture, economia/produção, anti-overcommit, eta/distância). Os PESOS
+são o genoma; o otimizador metaheurístico os ajusta direto contra o Producer. NÃO começar A antes de B.
+- [x] **A1. Eval-function parametrizada `make_eval_policy(weights)` em `bots/oep/family_h.py`** ✅ 2026-06-08.
+  Genoma de 12 pesos (`EVAL_WEIGHT_NAMES`): ofensiva (prod/defense/eta/enemy_denial/comet/overkill/overextend/
+  consolidate) + defesa do B (reinforce) + params (reserve/capture_margin/min_score). Alocador greedy 1-shot.
+  Registrada como `eval_function`. `EVAL_DEFAULT_WEIGHTS` = baseline a mão.
+  - [x] verificar: ✅ legal 2p/4p (19 passed), benchmark crash/timeout/invalid=0. **Baseline default: vs greedy
+    +0.90, vs rush +0.92 (ESMAGA os fracos — muito > H8 best_by_value +0.02/+0.28), vs Producer −0.87** (perde:
+    greedy de 1 turno não tem lookahead do planejador). Bot FUNCIONAL, gargalo = só os fortes.
+- [x] **A2. Harness de tuning offline `scripts/tune_eval_weights.py`** ✅ 2026-06-08. ES separável `(μ/μ_w,λ)`
+  dependency-free (cma não instalado; evitei nova dep — decisão sua); fitness = `normalized_margin` vs Producer
+  (mesma métrica do gate), 2 assentos por simetria; holdout disjunto p/ anti-overfit; `content_hash`. **jobs=1
+  sequencial** (você pediu sem paralelizar — pool causaria contenção).
+  - [x] verificar (smoke 3 gen/3 seeds): ✅ MELHORA o default — train −0.897→−0.830, holdout −1.0→−0.985.
+    ES sobe a cada geração. Deflação train↔holdout 0.154 (3 seeds = ruído; A3 usa mais seeds). crash/timeout/invalid=0.
+  - [~] **Run sério EM ANDAMENTO** (background, 1 core): pop=8, gen=10, train 0-3, holdout 100-103, steps=96
+    → `a2_producer_seq.json`. Estabelece o teto REAL do greedy-1-turno vs Producer (smoke sugere ~−0.83).
+- [x] **A3. Validação OOS dos pesos tunados** ✅ 2026-06-08 — **CRITÉRIO NÃO CRUZADO (teto estrutural).**
+  Holdout disjunto: tuned melhora train (-0.923→-0.818) mas holdout fica -1.0 (deflação +0.182 = overfit).
+  Varredura de configs em 8 holdout seeds vs Producer: default -0.971, tuned -0.983, defensivo -0.993,
+  balanceado -0.992 → TODO o espaço de pesos colapsa em ~-0.97..-0.99. **Não é overfit/tuning, é TETO da
+  classe greedy-1-turno.** Registrado em EXPERIMENTS.md.
+- [x] **A4. Decisão de promoção** ✅ **NÃO promover** — eval_function não bate Producer (teto estrutural).
+  É forte vs fracos (+0.90) mas isso não basta p/ Top-5. Melhor bot heurístico segue OEP (+0.071 vs Producer).
+- [ ] **DECISÃO DE ARQUITETURA (usuário):** o único lever heurístico que bate Producer é LOOKAHEAD/rollout
+  (eval_function como leaf-value de um rollout que modela a resposta do oponente). Isso ≈ reconstruir OEP
+  (que já existe e já bate Producer +0.071). Opções: (a) aceitar OEP como teto heurístico e voltar à linha
+  PPO/critic; (b) investir multi-sessão num rollout-bot novo com a eval_function como leaf. `tune_eval_weights`
+  fica pronto p/ tunar o leaf-value se (b).
+  - [ ] verificar: usuário decide (a) ou (b); não é tuning autônomo.
+
 ## 🧪 EXPERIMENTOS A FAZER — PPO usando Producer/OEP como professores e adversários
 Hipótese: Producer (~1200 LB) e OEP (~1100 LB) são fortes o bastante para servir como **currículo**.
 PPO direto do zero contra eles provavelmente perde tudo; a rota testável é **imitação → PPO contra pool forte
