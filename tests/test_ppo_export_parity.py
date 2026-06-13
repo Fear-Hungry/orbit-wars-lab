@@ -65,3 +65,46 @@ def test_entity_checkpoint_export_matches_local_policy(tmp_path: Path):
     assert report["passed"]
     assert report["checked_observations"] > 0
     assert Path(report["tarball"]).exists()
+
+
+def test_hybrid_template_4p_export_validates_without_ppo_4p_parity(tmp_path: Path):
+    torch.manual_seed(13)
+    checkpoint = tmp_path / "flat_2p.pt"
+    _write_checkpoint(checkpoint, FlatActorCritic(observation_dim()), arch="flat")
+
+    report = check_checkpoint_export_parity(
+        checkpoint,
+        submission_path=tmp_path / "hybrid_template_submission.py",
+        seeds=[0],
+        steps=1,
+        player_counts=(2, 4),
+        four_player_policy="template",
+    )
+
+    assert report["passed"]
+    assert report["four_player_policy"] == "template"
+    assert report["checkpoint_4p"] is None
+    assert report["mismatches"] == []
+
+
+def test_dual_checkpoint_export_matches_2p_and_4p_policies(tmp_path: Path):
+    torch.manual_seed(17)
+    checkpoint_2p = tmp_path / "flat_2p.pt"
+    _write_checkpoint(checkpoint_2p, FlatActorCritic(observation_dim()), arch="flat")
+    torch.manual_seed(19)
+    checkpoint_4p = tmp_path / "flat_4p.pt"
+    _write_checkpoint(checkpoint_4p, FlatActorCritic(observation_dim()), arch="flat")
+
+    report = check_checkpoint_export_parity(
+        checkpoint_2p,
+        submission_path=tmp_path / "dual_submission.py",
+        checkpoint_4p_path=checkpoint_4p,
+        seeds=[0],
+        steps=1,
+        player_counts=(2, 4),
+        four_player_policy="neural",
+    )
+
+    assert report["passed"]
+    assert report["checkpoint_4p"] == str(checkpoint_4p)
+    assert report["four_player_policy"] == "neural"

@@ -404,8 +404,24 @@ def run_campaign(
             gate_verdict = "SKIP_NO_TERMINAL_REWARD"
         elif strict_drl_gate:
             gate_dir = out_dir / "drl_gate" / f"chunk{chunk:02d}"
+            gate_checkpoint_patterns = [str(ckpt)]
+            gate_checkpoint_4p: str | None = None
+            gate_four_player_policy = "neural"
+            if training_track == "phase0_2p":
+                gate_four_player_policy = "template"
+            elif training_track == "phase5_4p":
+                gate_checkpoint_patterns = [str(init_checkpoint)]
+                gate_checkpoint_4p = str(ckpt)
+            elif training_track == "mixed_2p4p":
+                two_player_stage = next(
+                    (stage for stage in stage_records if str(stage["track"]) == "phase0_2p"),
+                    None,
+                )
+                if two_player_stage is not None:
+                    gate_checkpoint_patterns = [str(two_player_stage["checkpoint"])]
+                    gate_checkpoint_4p = str(ckpt)
             gate_report = run_drl_promotion_gate(
-                checkpoint_patterns=[str(ckpt)],
+                checkpoint_patterns=gate_checkpoint_patterns,
                 league_candidates=[],
                 out_dir=gate_dir,
                 profile=drl_profile,
@@ -422,6 +438,8 @@ def run_campaign(
                 min_floor_winrate=0.60,
                 max_annihilation_rate_4p=0.35,
                 weight_2p=0.46,
+                checkpoint_4p=gate_checkpoint_4p,
+                four_player_policy=gate_four_player_policy,
             )
             gate_report_path = gate_dir / "report.json"
             gate_report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -483,6 +501,15 @@ def run_campaign(
             "gate_pairwise": gate_pairwise,
             "gate_verdict": gate_verdict,
             "gate_report": str(gate_report_path) if gate_report_path is not None else None,
+            "gate_four_player_policy": (
+                gate_four_player_policy if strict_drl_gate and train_signal_ok else None
+            ),
+            "gate_checkpoint_2p": (
+                gate_checkpoint_patterns[0] if strict_drl_gate and train_signal_ok else None
+            ),
+            "gate_checkpoint_4p": (
+                gate_checkpoint_4p if strict_drl_gate and train_signal_ok else None
+            ),
             "pfsp_enabled": bool(pfsp),
             "next_training_opponents": list(next_opponents),
             "training_stages": [

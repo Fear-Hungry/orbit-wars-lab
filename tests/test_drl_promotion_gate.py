@@ -120,7 +120,11 @@ def test_export_checkpoint_registers_validated_tarball(monkeypatch, tmp_path: Pa
     tarball.write_bytes(b"tarball")
 
     monkeypatch.setattr(gate, "ROOT", tmp_path)
-    monkeypatch.setattr(gate, "render_submission", lambda template, checkpoint: "def agent(obs):\n    return []\n")
+    monkeypatch.setattr(
+        gate,
+        "render_submission",
+        lambda template, checkpoint, **_kwargs: "def agent(obs):\n    return []\n",
+    )
     monkeypatch.setattr(
         gate,
         "check_checkpoint_export_parity",
@@ -155,3 +159,49 @@ def test_export_checkpoint_registers_validated_tarball(monkeypatch, tmp_path: Pa
     assert "file" not in calls
     assert item.tarball == str(expected_tarball)
     assert expected_tarball.read_bytes() == b"tarball"
+
+
+def test_export_checkpoint_can_register_hybrid_template_4p(monkeypatch, tmp_path: Path):
+    calls = {}
+    checkpoint = tmp_path / "agent.pt"
+    checkpoint.write_bytes(b"placeholder")
+    tarball = tmp_path / "validated.tar.gz"
+    tarball.write_bytes(b"tarball")
+
+    monkeypatch.setattr(gate, "ROOT", tmp_path)
+
+    def fake_render(_template, checkpoint, **kwargs):
+        calls["render"] = {"checkpoint": checkpoint, **kwargs}
+        return "def agent(obs):\n    return []\n"
+
+    def fake_parity(checkpoint_path, **kwargs):
+        calls["parity"] = {"checkpoint": str(checkpoint_path), **kwargs}
+        return {
+            "passed": True,
+            "mismatches": [],
+            "tarball": str(tarball),
+        }
+
+    monkeypatch.setattr(gate, "render_submission", fake_render)
+    monkeypatch.setattr(gate, "check_checkpoint_export_parity", fake_parity)
+    monkeypatch.setattr(
+        gate,
+        "register_submission_tarball",
+        lambda name, path: calls.setdefault("tarball", (name, str(path))),
+    )
+
+    item = gate._export_checkpoint(
+        checkpoint,
+        tmp_path / "submissions",
+        parity_dir=tmp_path / "parity",
+        skip_parity=False,
+        parity_seeds=1,
+        parity_steps=1,
+        four_player_policy="template",
+    )
+
+    assert item.four_player_policy == "template"
+    assert item.checkpoint_4p is None
+    assert item.name.endswith("_4p_template")
+    assert calls["render"]["four_player_policy"] == "template"
+    assert calls["parity"]["four_player_policy"] == "template"

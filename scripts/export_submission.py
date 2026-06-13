@@ -163,9 +163,36 @@ def _neural_action(obs, player):
     ]'''
 
 
-def _neural_runtime_source(payload: dict[str, Any]) -> str:
-    encoded = base64.b64encode(zlib.compress(json.dumps(payload, separators=(",", ":")).encode("utf-8"), level=9)).decode("ascii")
+def _policy_action_source(payload: dict[str, Any], *, function_name: str, policy_name: str) -> str:
     action_src = _ENTITY_ACTION_SRC if payload.get("arch") == "entity" else _FLAT_ACTION_SRC
+    return action_src.replace("def _neural_action(obs, player):", f"def {function_name}(obs, player):").replace(
+        "_NEURAL_POLICY", policy_name
+    )
+
+
+def _neural_runtime_source(
+    payload: dict[str, Any],
+    *,
+    four_player_payload: dict[str, Any] | None = None,
+    four_player_policy: str = "neural",
+) -> str:
+    if four_player_policy not in {"neural", "template"}:
+        raise ValueError("four_player_policy must be 'neural' or 'template'")
+    encoded = base64.b64encode(zlib.compress(json.dumps(payload, separators=(",", ":")).encode("utf-8"), level=9)).decode("ascii")
+    action_src = _policy_action_source(payload, function_name="_neural_action", policy_name="_NEURAL_POLICY")
+    encoded_4p = (
+        base64.b64encode(
+            zlib.compress(json.dumps(four_player_payload, separators=(",", ":")).encode("utf-8"), level=9)
+        ).decode("ascii")
+        if four_player_payload is not None
+        else None
+    )
+    policy_4p_src = (
+        f'_NEURAL_POLICY_4P = json.loads(zlib.decompress(base64.b64decode("{encoded_4p}")).decode("utf-8"))\n'
+        + _policy_action_source(four_player_payload, function_name="_neural_action_4p", policy_name="_NEURAL_POLICY_4P")
+        if four_player_payload is not None
+        else "_NEURAL_POLICY_4P = None\n"
+    )
     return f'''
 
 import base64
@@ -174,6 +201,9 @@ import zlib
 from math import floor, tanh
 
 _NEURAL_POLICY = json.loads(zlib.decompress(base64.b64decode("{encoded}")).decode("utf-8"))
+{policy_4p_src}
+_FOUR_PLAYER_POLICY = "{four_player_policy}"
+_BASE_TEMPLATE_AGENT = agent
 _NEURAL_MAX_PLANETS = 96
 _NEURAL_MAX_FLEETS = 256
 
@@ -287,8 +317,34 @@ def _masked_argmax(values, valid_count):
 {action_src}
 
 
-def _neural_decode(obs, player, action):
-    decoder = _NEURAL_POLICY["decoder"]
+def _observed_player_count(obs):
+    raw = obs.get("num_players", None)
+    try:
+        value = int(raw)
+        if value in (2, 4):
+            return value
+    except Exception:
+        pass
+    max_owner = int(obs.get("player", 0))
+    for row in obs.get("planets", []):
+        try:
+            owner = int(row[1] if not isinstance(row, dict) else row.get("owner", -1))
+        except Exception:
+            continue
+        if owner >= 0:
+            max_owner = max(max_owner, owner)
+    for row in obs.get("fleets", []):
+        try:
+            owner = int(row[1] if not isinstance(row, dict) else row.get("owner", -1))
+        except Exception:
+            continue
+        if owner >= 0:
+            max_owner = max(max_owner, owner)
+    return 4 if max_owner >= 3 else 2
+
+
+def _neural_decode_with_policy(policy, obs, player, action):
+    decoder = policy["decoder"]
     fractions = decoder.get("fractions", [0.10, 0.25, 0.50, 0.75])
     angle_offsets = decoder.get("angle_offsets", [-0.261799, -0.130899, 0.0, 0.130899, 0.261799])
     max_moves = int(decoder.get("max_moves_per_turn", 8))
@@ -349,11 +405,25 @@ def _neural_decode(obs, player, action):
     return moves
 
 
+def _neural_decode(obs, player, action):
+    return _neural_decode_with_policy(_NEURAL_POLICY, obs, player, action)
+
+
+def _neural_decode_4p(obs, player, action):
+    policy = _NEURAL_POLICY_4P if _NEURAL_POLICY_4P is not None else _NEURAL_POLICY
+    return _neural_decode_with_policy(policy, obs, player, action)
+
+
 def agent(obs):
+    if _observed_player_count(obs) >= 4 and _FOUR_PLAYER_POLICY == "template":
+        return list(_BASE_TEMPLATE_AGENT(obs))
     _submission_stats_increment("calls")
     try:
         player = int(obs.get("player", 0))
-        moves = _neural_decode(obs, player, _neural_action(obs, player))
+        if _observed_player_count(obs) >= 4 and _NEURAL_POLICY_4P is not None:
+            moves = _neural_decode_4p(obs, player, _neural_action_4p(obs, player))
+        else:
+            moves = _neural_decode(obs, player, _neural_action(obs, player))
         if not _moves_are_legal(obs, player, moves):
             _submission_stats_increment("illegal_moves")
             raise ValueError("neural policy produced illegal moves")
@@ -364,24 +434,46 @@ def agent(obs):
 '''
 
 
-def render_submission(template: str, checkpoint: str | None = None) -> str:
+def render_submission(
+    template: str,
+    checkpoint: str | None = None,
+    *,
+    checkpoint_4p: str | None = None,
+    four_player_policy: str = "neural",
+) -> str:
     validate_submission_template(template)
     if checkpoint is None:
+        if checkpoint_4p is not None:
+            raise ValueError("checkpoint_4p requires checkpoint")
         return template
-    return template + _neural_runtime_source(_load_checkpoint_payload(checkpoint))
+    four_player_payload = _load_checkpoint_payload(checkpoint_4p) if checkpoint_4p is not None else None
+    return template + _neural_runtime_source(
+        _load_checkpoint_payload(checkpoint),
+        four_player_payload=four_player_payload,
+        four_player_policy=four_player_policy,
+    )
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", default=None)
+    parser.add_argument("--checkpoint-4p", default=None)
+    parser.add_argument("--four-player-policy", choices=("neural", "template"), default="neural")
     parser.add_argument("--out", default="submission.py")
     args = parser.parse_args()
 
     if args.checkpoint is not None and not Path(args.checkpoint).exists():
         raise SystemExit(f"checkpoint not found: {args.checkpoint}")
+    if args.checkpoint_4p is not None and not Path(args.checkpoint_4p).exists():
+        raise SystemExit(f"4p checkpoint not found: {args.checkpoint_4p}")
 
     template = Path("python/submission/submission_template.py").read_text(encoding="utf-8")
-    rendered = render_submission(template, args.checkpoint)
+    rendered = render_submission(
+        template,
+        args.checkpoint,
+        checkpoint_4p=args.checkpoint_4p,
+        four_player_policy=args.four_player_policy,
+    )
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(rendered, encoding="utf-8")

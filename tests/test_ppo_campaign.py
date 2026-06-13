@@ -96,6 +96,81 @@ def test_ppo_campaign_phase5_uses_four_player_training(monkeypatch, tmp_path: Pa
     assert report["best_checkpoint"] == str(tmp_path / "campaign" / "best.pt")
 
 
+def test_ppo_campaign_phase5_gate_uses_separate_2p_and_4p_checkpoints(monkeypatch, tmp_path: Path):
+    gate_kwargs = {}
+
+    def fake_train(cfg):
+        Path(cfg.checkpoint_out).write_bytes(b"checkpoint")
+        return {
+            "last_explained_variance": 0.5,
+            "last_entropy": 1.0,
+            "episodes_observed": 4.0,
+            "completed_episodes": 2.0,
+            "learner_seat_rotation": cfg.learner_seat_rotation,
+        }
+
+    monkeypatch.setattr(ppo_campaign, "train_phase5_4p", fake_train)
+    monkeypatch.setattr(
+        ppo_campaign,
+        "_margin",
+        lambda *_args, **_kwargs: {
+            "games": 2.0,
+            "mean_score_margin": 0.2,
+            "win_rate": 0.5,
+            "invalid_action_rate": 0.0,
+        },
+    )
+
+    def fake_gate(**kwargs):
+        gate_kwargs.update(kwargs)
+        candidate = "ppo_hybrid"
+        return {
+            "ranking": [
+                {
+                    "candidate": candidate,
+                    "verdict": "PASS_LOCAL",
+                    "overall_score": 0.8,
+                    "score_2p": 0.7,
+                    "score_4p": 0.9,
+                }
+            ],
+            "prepared_candidates": {candidate: {}},
+            "candidates": {},
+        }
+
+    monkeypatch.setattr(ppo_campaign, "run_drl_promotion_gate", fake_gate)
+
+    init = tmp_path / "campaign_drl" / "best.pt"
+    init.parent.mkdir()
+    init.write_bytes(b"2p")
+    report = ppo_campaign.run_campaign(
+        init_checkpoint=str(init),
+        out_dir=tmp_path / "campaign_4p",
+        opponents=("producer+oep+pgs_holdwave", "producer+brep+pgs_bigwave"),
+        eval_opponents=["producer"],
+        chunks=1,
+        chunk_timesteps=8,
+        rollout_steps=4,
+        eval_seeds=[0],
+        eval_episode_steps=8,
+        ent_coef=0.01,
+        patience=1,
+        seed=0,
+        strict_drl_gate=True,
+        training_track="phase5_4p",
+    )
+
+    chunk = tmp_path / "campaign_4p" / "chunk00.pt"
+    assert gate_kwargs["checkpoint_patterns"] == [str(init)]
+    assert gate_kwargs["checkpoint_4p"] == str(chunk)
+    assert gate_kwargs["four_player_policy"] == "neural"
+    row = report["history"][0]
+    assert row["gate_checkpoint_2p"] == str(init)
+    assert row["gate_checkpoint_4p"] == str(chunk)
+    assert row["gate_four_player_policy"] == "neural"
+    assert report["best_checkpoint"] == str(tmp_path / "campaign_4p" / "best.pt")
+
+
 def test_ppo_campaign_mixed_track_runs_2p_then_4p_substages(monkeypatch, tmp_path: Path):
     calls = []
     margin_include_4p = []
@@ -379,6 +454,8 @@ def test_ppo_campaign_decoder_capacity_guard_blocks_selection(monkeypatch, tmp_p
 
 
 def test_ppo_campaign_strict_gate_without_pass_has_no_best_margin(monkeypatch, tmp_path: Path):
+    gate_kwargs = {}
+
     def fake_train(cfg):
         Path(cfg.checkpoint_out).write_bytes(b"checkpoint")
         return {"last_explained_variance": 0.5, "last_entropy": 1.0}
@@ -393,10 +470,9 @@ def test_ppo_campaign_strict_gate_without_pass_has_no_best_margin(monkeypatch, t
             "invalid_action_rate": 0.0,
         },
     )
-    monkeypatch.setattr(
-        ppo_campaign,
-        "run_drl_promotion_gate",
-        lambda **_kwargs: {
+    def fake_gate(**kwargs):
+        gate_kwargs.update(kwargs)
+        return {
             "ranking": [
                 {
                     "candidate": "ppo_chunk",
@@ -419,8 +495,9 @@ def test_ppo_campaign_strict_gate_without_pass_has_no_best_margin(monkeypatch, t
                     }
                 }
             },
-        },
-    )
+        }
+
+    monkeypatch.setattr(ppo_campaign, "run_drl_promotion_gate", fake_gate)
 
     report = ppo_campaign.run_campaign(
         init_checkpoint=str(tmp_path / "init.pt"),
@@ -443,6 +520,11 @@ def test_ppo_campaign_strict_gate_without_pass_has_no_best_margin(monkeypatch, t
     assert report["best_observed_score"] == 0.1
     assert report["history"][0]["gate_score_2p"] == 0.2
     assert report["history"][0]["gate_score_4p"] == 0.05
+    assert report["history"][0]["gate_four_player_policy"] == "template"
+    assert report["history"][0]["gate_checkpoint_2p"] == str(tmp_path / "campaign" / "chunk00.pt")
+    assert report["history"][0]["gate_checkpoint_4p"] is None
+    assert gate_kwargs["four_player_policy"] == "template"
+    assert gate_kwargs["checkpoint_4p"] is None
     assert report["history"][0]["gate_pairwise"]["producer"]["decisive_win_rate"] == 0.75
     assert report["history"][0]["gate_pairwise"]["producer"]["faults"]["crashes"] == 0
     assert "Infinity" not in (tmp_path / "campaign" / "campaign_report.json").read_text()
