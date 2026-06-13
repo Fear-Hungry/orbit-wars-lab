@@ -78,6 +78,11 @@ class Phase0TrainingConfig:
     # name: "producer" (original BReP) or "pgs"/"pgs_holdwave" (holdwave incumbent —
     # the parity floor we want to not regress below). Ignored by other archs.
     base_agent: str = "producer"
+    # GridNet league/PFSP: path to a FROZEN snapshot checkpoint that plays the
+    # "self" opponent seat (instead of the live policy). The campaign points this at
+    # a growing pool of past chunks so the opponent's strength tracks the agent's —
+    # the AlphaStar device for crossing strength gaps the live-self-play empate can't.
+    self_opponent_checkpoint: str | None = None
     num_players: int = 2
     total_timesteps: int = 200_000
     rollout_steps: int = 256
@@ -1705,6 +1710,16 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
         for param in ref_model.parameters():
             param.requires_grad_(False)
 
+    # GridNet league: frozen snapshot that plays the "self" opponent seat.
+    self_opponent_model: GridNetActorCritic | None = None
+    if training_cfg.self_opponent_checkpoint:
+        snap = _load_checkpoint(training_cfg.self_opponent_checkpoint, device)
+        self_opponent_model = _build_policy("gridnet", observation_dim()).to(device)
+        self_opponent_model.load_state_dict(snap["model_state_dict"])
+        self_opponent_model.eval()
+        for param in self_opponent_model.parameters():
+            param.requires_grad_(False)
+
     # Movement 2: eval-gating state (keep-best by margin + early-stop on drift).
     eval_series: list[dict[str, float]] = []
     best_eval_margin = float("-inf")
@@ -1731,6 +1746,7 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
                 training_cfg=training_cfg,
                 progress=progress,
                 sample_limit=remaining if _batched_rollout_supported(training_cfg) else segment_steps,
+                opponent_model=self_opponent_model,
             )
             segments.append(segment)
             opponent_segments[opponent_name] += 1

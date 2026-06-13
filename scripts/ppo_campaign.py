@@ -178,6 +178,7 @@ def run_campaign(
     training_track: str = "phase0_2p",
     policy_arch: str = "flat",
     base_agent: str = "producer",
+    league: bool = False,
     eval_jobs: int = 1,
     eval_include_4p: bool = False,
 ) -> dict[str, Any]:
@@ -207,6 +208,11 @@ def run_campaign(
             checkpoint_in=prev,
             checkpoint_out=str(ckpt),
         )
+        # League/PFSP: the "self" opponent is the PREVIOUS chunk's frozen snapshot
+        # (or the BC init on chunk 0), so opponent strength tracks the agent and the
+        # learning stays in the ~50%-win zone that crosses strength gaps.
+        if league and policy_arch == "gridnet" and prev:
+            common["self_opponent_checkpoint"] = str(prev)
         if training_track == "phase5_4p":
             train_summary = train_phase5_4p(build_phase5_4p_config(**common))
         else:
@@ -317,6 +323,11 @@ def main() -> None:
         help="base plan for producer_residual: producer or pgs_holdwave (incumbent floor)",
     )
     parser.add_argument(
+        "--league",
+        action="store_true",
+        help="GridNet league/PFSP: self opponent = previous chunk snapshot (growing curriculum)",
+    )
+    parser.add_argument(
         "--eval-jobs",
         type=int,
         default=1,
@@ -347,6 +358,7 @@ def main() -> None:
         training_track=args.training_track,
         policy_arch=args.policy_arch,
         base_agent=args.base_agent,
+        league=args.league,
         eval_jobs=max(1, args.eval_jobs),
         eval_include_4p=args.eval_include_4p,
     )
