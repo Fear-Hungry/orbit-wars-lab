@@ -79,3 +79,36 @@ def test_hard_states_only_records_disagreements() -> None:
     packed = _pack(examples)
     if packed["is_hard"].size:
         assert bool(packed["is_hard"].all())
+
+
+def test_pgs_only_is_deterministic_legal_and_labelled() -> None:
+    a = collect_dataset("pgs_only", seeds=[0, 1], **_KW)
+    b = collect_dataset("pgs_only", seeds=[0, 1], **_KW)
+    packed_a, packed_b = _pack(a), _pack(b)
+    assert _content_hash(packed_a) == _content_hash(packed_b)
+
+    report = _dataset_report("pgs_only", packed_a)
+    assert report["legal_action_rate"] == 1.0
+    assert report["num_examples"] > 0
+    # every example carries the pgs expert id (2)
+    assert np.array_equal(packed_a["expert_id"], np.full_like(packed_a["expert_id"], 2))
+
+
+def test_mahoraga_only_is_deterministic_and_labelled() -> None:
+    a = collect_dataset("mahoraga_only", seeds=[0], **_KW)
+    b = collect_dataset("mahoraga_only", seeds=[0], **_KW)
+    packed_a, packed_b = _pack(a), _pack(b)
+    assert _content_hash(packed_a) == _content_hash(packed_b)
+    assert _dataset_report("mahoraga_only", packed_a)["legal_action_rate"] == 1.0
+    assert np.array_equal(packed_a["expert_id"], np.full_like(packed_a["expert_id"], 3))
+
+
+def test_hard_states_pgs_labels_come_from_the_pair() -> None:
+    # At 16 steps PGS ≈ Producer floor, so disagreements may be empty; the
+    # contract under test: any recorded example is hard and labelled with one
+    # of the pair's expert ids (producer=0, pgs=2).
+    examples = collect_dataset("hard_states_pgs", seeds=[0], **_KW)
+    packed = _pack(examples)
+    if packed["is_hard"].size:
+        assert bool(packed["is_hard"].all())
+        assert set(np.unique(packed["expert_id"]).tolist()) <= {0, 2}

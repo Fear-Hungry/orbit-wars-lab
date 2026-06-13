@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,14 @@ from python.train.evaluate_population import evaluate_population, load_evaluatio
 
 def checkpoint_id(path: Path) -> str:
     return path.stem.replace("-", "_").replace(".", "_")
+
+
+def checkpoint_candidate_id(path: Path) -> str:
+    resolved = path.resolve()
+    digest = hashlib.sha1(str(resolved).encode("utf-8")).hexdigest()[:8]
+    parent = resolved.parent.name.replace("-", "_").replace(".", "_")
+    stem = checkpoint_id(resolved)
+    return f"{parent}_{stem}_{digest}" if parent else f"{stem}_{digest}"
 
 
 def score_metrics(metrics: dict[str, Any]) -> float:
@@ -29,7 +38,7 @@ def score_metrics(metrics: dict[str, Any]) -> float:
 def _expand_checkpoints(patterns: list[str]) -> list[Path]:
     paths: list[Path] = []
     for pattern in patterns:
-        matches = sorted(Path(match) for match in glob.glob(pattern))
+        matches = sorted(Path(match) for match in glob.glob(pattern, recursive=True))
         if matches:
             paths.extend(matches)
             continue

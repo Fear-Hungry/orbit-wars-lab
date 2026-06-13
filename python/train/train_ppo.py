@@ -46,9 +46,11 @@ def _build_policy(arch: str, obs_dim: int):
 
 
 _HEURISTIC_POLICIES = get_heuristic_policies()
+# "pgs" is the operational holdwave bot (bots.pgs.agent SUBMISSION_CONFIG). It is
+# ~30ms/decision, so weight it lightly in rollout curricula (e.g. 1 slot in 10).
 PHASE0_OPPONENTS = {
     name: _HEURISTIC_POLICIES[name]
-    for name in ("producer", "oep", "greedy", "defensive", "rush", "anti_meta", "weak_random")
+    for name in ("producer", "oep", "pgs", "greedy", "defensive", "rush", "anti_meta", "weak_random")
 }
 
 

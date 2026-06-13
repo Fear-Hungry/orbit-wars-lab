@@ -50,11 +50,31 @@ SUBMISSION_STATS = {{
     "timeouts": 0,
     "timeout_thread_blocks": 0,
     "fallback_errors": 0,
+    "budget_floor_returns": 0,
 }}
+
+# last-seen snapshot of the planner's internal counters; the runtime resets at
+# step 0 (new game), so deltas are folded in monotonically.
+_runtime_stats_seen = {{}}
 
 
 def _submission_stats_increment(name, amount=1):
     SUBMISSION_STATS[name] = int(SUBMISSION_STATS.get(name, 0)) + int(amount)
+
+
+def _accumulate_runtime_stats():
+    try:
+        stats = _pgs_agent.runtime_stats()
+    except Exception:
+        return
+    for key, value in stats.items():
+        value = int(value)
+        seen = int(_runtime_stats_seen.get(key, 0))
+        if value < seen:  # runtime was recreated (new game): counter restarted
+            seen = 0
+        if value > seen:
+            _submission_stats_increment(key, value - seen)
+        _runtime_stats_seen[key] = value
 
 
 def _timeout_thread_still_alive():
@@ -102,6 +122,7 @@ def agent(obs):
     th.start()
     th.join(max(0.0, _BUDGET_S - (time.perf_counter() - t0)))
     if box.get("r") is not None:
+        _accumulate_runtime_stats()
         return box["r"]
     _submission_stats_increment("fallbacks")
     if th.is_alive():

@@ -21,13 +21,43 @@ import argparse
 import json
 import shutil
 from pathlib import Path
+from statistics import fmean
 from typing import Any
 
-from python.train.train_ppo import Phase0TrainingConfig, _parse_opponents, train_phase0
+from python.train.train_ppo import (
+    Phase0TrainingConfig,
+    _parse_opponents,
+    build_phase5_4p_config,
+    train_phase0,
+    train_phase5_4p,
+)
 from scripts.benchmark_ppo_submission import benchmark_exported_checkpoint
 
 
-def _margin(checkpoint: Path, *, opponents: list[str], seeds: list[int], episode_steps: int) -> dict[str, Any]:
+def _margin_for_format(report: dict[str, Any], fmt: str) -> float | None:
+    records: list[dict[str, Any]] = []
+    for item in report.get("formats", []):
+        if item.get("format") != fmt:
+            continue
+        if fmt == "2p":
+            for opponent in item.get("opponents", []):
+                records.extend(opponent.get("records", []))
+        else:
+            records.extend(item.get("records", []))
+    if not records:
+        return None
+    return float(fmean(float(record["normalized_margin"]) for record in records))
+
+
+def _margin(
+    checkpoint: Path,
+    *,
+    opponents: list[str],
+    seeds: list[int],
+    episode_steps: int,
+    include_4p: bool = False,
+    jobs: int = 1,
+) -> dict[str, Any]:
     report = benchmark_exported_checkpoint(
         checkpoint,
         submission_out=checkpoint.with_suffix(".sub.py"),
@@ -36,10 +66,13 @@ def _margin(checkpoint: Path, *, opponents: list[str], seeds: list[int], episode
         episode_steps=episode_steps,
         enable_comets=True,
         act_timeout=1.0,
-        include_4p=False,
-        jobs=min(8, len(seeds)),
+        include_4p=include_4p,
+        jobs=jobs,
     )
-    return report["summary"]
+    summary = dict(report["summary"])
+    summary["margin_2p"] = _margin_for_format(report, "2p")
+    summary["margin_4p"] = _margin_for_format(report, "4p")
+    return summary
 
 
 def run_campaign(
@@ -58,8 +91,16 @@ def run_campaign(
     seed: int,
     device: str = "cpu",
     rollout_num_envs: int = 1,
+    training_track: str = "phase0_2p",
+    policy_arch: str = "flat",
+    eval_jobs: int = 1,
+    eval_include_4p: bool = False,
 ) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
+    if training_track == "phase5_4p" and rollout_num_envs != 1:
+        # train_ppo only supports vectorized rollouts with num_players == 2.
+        print("phase5_4p: forcing rollout_num_envs=1 (multi-env rollout is 2p-only)")
+        rollout_num_envs = 1
     prev = init_checkpoint
     best_margin = float("-inf")
     best_path: Path | None = None
@@ -68,8 +109,9 @@ def run_campaign(
 
     for chunk in range(chunks):
         ckpt = out_dir / f"chunk{chunk:02d}.pt"
-        cfg = Phase0TrainingConfig(
+        common = dict(
             seed=seed + chunk,
+            policy_arch=policy_arch,
             opponents=opponents,
             total_timesteps=chunk_timesteps,
             rollout_steps=rollout_steps,
@@ -79,15 +121,30 @@ def run_campaign(
             checkpoint_in=prev,
             checkpoint_out=str(ckpt),
         )
-        train_summary = train_phase0(cfg)
+        if training_track == "phase5_4p":
+            train_summary = train_phase5_4p(build_phase5_4p_config(**common))
+        else:
+            train_summary = train_phase0(Phase0TrainingConfig(**common))
         summary = _margin(
-            ckpt, opponents=eval_opponents, seeds=eval_seeds, episode_steps=eval_episode_steps
+            ckpt,
+            opponents=eval_opponents,
+            seeds=eval_seeds,
+            episode_steps=eval_episode_steps,
+            include_4p=eval_include_4p,
+            jobs=eval_jobs,
         )
-        margin = float(summary["mean_score_margin"])
+        # The gate margin must reflect the track's goal: a 4p campaign is judged
+        # on the 4p format, not on an aggregate diluted by 2p games.
+        if training_track == "phase5_4p" and summary.get("margin_4p") is not None:
+            margin = float(summary["margin_4p"])
+        else:
+            margin = float(summary["mean_score_margin"])
         record = {
             "chunk": chunk,
             "cumulative_timesteps": (chunk + 1) * chunk_timesteps,
             "margin": margin,
+            "margin_2p": summary.get("margin_2p"),
+            "margin_4p": summary.get("margin_4p"),
             "win_rate": float(summary["win_rate"]),
             "invalid_action_rate": float(summary["invalid_action_rate"]),
             "explained_variance": float(train_summary.get("last_explained_variance", 0.0)),
@@ -115,9 +172,12 @@ def run_campaign(
 
     report = {
         "init_checkpoint": init_checkpoint,
+        "training_track": training_track,
+        "policy_arch": policy_arch,
         "opponents": list(opponents),
         "eval_opponents": eval_opponents,
         "eval_seeds": eval_seeds,
+        "eval_include_4p": eval_include_4p,
         "ent_coef": ent_coef,
         "patience": patience,
         "best_margin": best_margin,
@@ -149,6 +209,24 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--rollout-num-envs", type=int, default=1)
+    parser.add_argument(
+        "--training-track",
+        choices=("phase0_2p", "phase5_4p"),
+        default="phase0_2p",
+        help="phase5_4p trains 4-player games (single-env rollout only)",
+    )
+    parser.add_argument("--policy-arch", choices=("flat", "entity"), default="flat")
+    parser.add_argument(
+        "--eval-jobs",
+        type=int,
+        default=1,
+        help="parallel benchmark games per eval; keep 1 on WSL (pool deadlocks)",
+    )
+    parser.add_argument(
+        "--eval-include-4p",
+        action="store_true",
+        help="also benchmark the 4p format each chunk (gate margin for phase5_4p)",
+    )
     args = parser.parse_args()
 
     report = run_campaign(
@@ -166,6 +244,10 @@ def main() -> None:
         seed=args.seed,
         device=args.device,
         rollout_num_envs=args.rollout_num_envs,
+        training_track=args.training_track,
+        policy_arch=args.policy_arch,
+        eval_jobs=max(1, args.eval_jobs),
+        eval_include_4p=args.eval_include_4p,
     )
     print(json.dumps({k: v for k, v in report.items() if k != "history"}, indent=2))
 

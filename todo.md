@@ -5,6 +5,41 @@
 
 ---
 
+# 🎯 FOCO ATUAL (2026-06-12, tarde) — PGS v2/v3: missões coordenadas + sanidade de medição
+
+> Plano aprovado (Etapas A–G) implementado SOBRE o scaffolding v3 adaptativo da sessão paralela
+> (DB 198–199; detectado mid-session — auditado, não sobrescrito; snapshot em `stash@{0}`).
+> Etapa A (sanidade): floor por budget agora devolve Producer PURO (closure corrigida), wave filter
+> sem side-effect (commit só quando o plano final usa a base filtrada), `budget_floor_returns`
+> instrumentado planner→agent→wrapper→validador, `_greedy_select` com DOIS orçamentos
+> (físico + safe_drain cumulativo; fix da memória safe_drain_overspend), `avail` do PGS = safe_drain.
+> Lacunas v3 preenchidas: timeline com death-penalty + captura SUSTENTADA; missão HOLD_SOURCE
+> (hoard); wave v2 (age-out DESCARTA em vez de soltar spray) + pending→hammer prioritário.
+> Gate A PASSOU: suíte 355 passed; tarball `VALIDATION OK` (1563 calls 2p/4p all seats,
+> fallbacks=0, timeouts=0, budget_floor_returns=0, sha256 c2810f00…, p95 99.8ms).
+> Teste obrigatório da Etapa D provado: hammer 35+35 captura alvo de 60 que nenhuma fonte captura só.
+
+> **Em execução (agente, sem ação sua):** bateria de gates 32 seeds frozen 9000+ × 500 steps ×
+> 2 assentos → `artifacts/pgs/v2gates/*.json` (holdwave-regressão, full2p, timeline2p, hoard2p,
+> waveactive2p vs producer/oep). Ao terminar: leitura dos resultados, registro no experiments.duckdb
+> (pós-199) e veredito vs âncoras frozen (+0.206 Producer / +0.406 OEP) ficam por minha conta.
+> Critério de regressão do swap `avail=safe_drain`: se o holdwave congelado cair, condicionar o swap
+> a `mission_mode`. Liga continua VETO, não promoção — nenhuma submissão automática.
+
+## Tarballs submetidos na liga (2026-06-12) — mahoraga / r3_adaptive_guard / safehammer
+
+> Os 3 tarballs submetidos no Kaggle estão em `artifacts/` e registrados na liga via
+> `artifacts/league/tarballs/` (auto-discovery): `mahoraga`, `mahoraga_r3_adaptive_guard`
+> e `pgs_v2_safehammer` (novo, adicionado 2026-06-12). Hashes idênticos aos do Downloads.
+
+- [ ] Rodar a liga (VETO, não promoção) incluindo `pgs_v2_safehammer`, `mahoraga` e
+  `mahoraga_r3_adaptive_guard` na pool, 500 steps × 2 assentos
+  - [ ] verificar: nenhum dos 3 incrementa counters proibidos de SUBMISSION_STATS
+    (fallbacks/timeouts/...) e o report H2H sai com CI; liga usada só como veto
+- [ ] Quando os scores LB dos 3 estabilizarem (~1h pós-submit), registrar no
+  `experiments.duckdb` e em `LB_ANCHORS` (scripts/league_agents.py) com ref do episódio
+  - [ ] verificar: 3 novas âncoras com score estabilizado + ref Kaggle anotadas
+
 # ✅ RESOLVIDO (2026-06-11) — entrypoint duplicado do PGS: "pgs" podia significar OUTRO bot
 
 > Achado (auditoria do usuário, confirmado): `bots/pgs/planner.py` ainda expunha `agent()` sobre

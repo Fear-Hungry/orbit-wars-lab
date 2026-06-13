@@ -65,6 +65,7 @@ def test_healthy_pgs_records_zero_fallbacks(monkeypatch):
     assert ns["SUBMISSION_STATS"] == {
         "calls": 5, "fallbacks": 0, "timeouts": 0,
         "timeout_thread_blocks": 0, "fallback_errors": 0,
+        "budget_floor_returns": 0,
     }
 
 
@@ -78,6 +79,7 @@ def test_dead_pgs_counts_every_fallback(monkeypatch):
     assert ns["SUBMISSION_STATS"] == {
         "calls": 10, "fallbacks": 10, "timeouts": 0,
         "timeout_thread_blocks": 0, "fallback_errors": 10,
+        "budget_floor_returns": 0,
     }
 
 
@@ -122,6 +124,7 @@ def test_timeout_blocks_until_thread_finishes_then_resumes_pgs(monkeypatch):
     assert ns["SUBMISSION_STATS"] == {
         "calls": 5, "fallbacks": 5, "timeouts": 1,
         "timeout_thread_blocks": 4, "fallback_errors": 0,
+        "budget_floor_returns": 0,
     }
 
     release.set()
@@ -131,7 +134,24 @@ def test_timeout_blocks_until_thread_finishes_then_resumes_pgs(monkeypatch):
     assert ns["SUBMISSION_STATS"] == {
         "calls": 6, "fallbacks": 5, "timeouts": 1,
         "timeout_thread_blocks": 4, "fallback_errors": 0,
+        "budget_floor_returns": 0,
     }
+
+
+def test_runtime_budget_floor_counter_is_folded_into_submission_stats(monkeypatch):
+    """The wrapper must surface the planner's internal budget_floor_returns —
+    including across the step-0 runtime recreation (counter restarts)."""
+    counters = iter([1, 3, 1])  # game 1: 1→3; new runtime (reset): 1
+
+    def healthy(obs):
+        return [[1, 0.0, 2]]
+
+    agent, ns = _render_agent(monkeypatch, healthy)
+    ns["_pgs_agent"].runtime_stats = lambda: {"budget_floor_returns": next(counters)}
+    for _ in range(3):
+        agent({"player": 0})
+    # deltas: +1 (0→1), +2 (1→3), +1 (3→reset→1)
+    assert ns["SUBMISSION_STATS"]["budget_floor_returns"] == 4
 
 
 def test_packager_rejects_unbundled_value_net_config(monkeypatch, tmp_path):

@@ -29,6 +29,13 @@ def notify_fallback_applied() -> None:
     _RUNTIME = None
 
 
+def runtime_stats() -> dict[str, int]:
+    """Degradation counters of the live runtime (e.g. budget_floor_returns)."""
+    if _RUNTIME is None:
+        return {}
+    return _RUNTIME.runtime_stats()
+
+
 def make_agent():
     """Isolated PGS agent (own runtime, operational config) for batched rollouts."""
     runtime = PGSRuntime(SUBMISSION_CONFIG)
