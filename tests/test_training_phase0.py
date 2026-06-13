@@ -9,6 +9,7 @@ import torch
 from python.agents.policy import FlatActorCritic
 from python.orbit_wars_gym.encoding import encode_state, observation_dim
 from python.orbit_wars_gym.rules import normalized_margin
+from python.train import train_ppo as train_ppo_module
 from python.train.train_ppo import (
     Phase0TrainingConfig,
     _batched_rollout_supported,
@@ -345,7 +346,19 @@ def test_phase0_env_can_use_pgs_holdwave_training_opponent():
     assert "scores" in info
 
 
-def test_phase0_env_can_use_composite_four_player_training_lineup():
+def test_phase0_env_can_use_composite_four_player_training_lineup(monkeypatch):
+    original = train_ppo_module._league_training_policy
+
+    def league_policy(name: str):
+        if name != "brep":
+            return original(name)
+
+        def policy(_state, _player):
+            return []
+
+        return policy
+
+    monkeypatch.setattr(train_ppo_module, "_league_training_policy", league_policy)
     env = build_phase0_env(
         seed=0,
         num_players=4,
