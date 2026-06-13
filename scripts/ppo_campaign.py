@@ -88,6 +88,40 @@ def _margin_residual_inprocess(
     }
 
 
+def _margin_gridnet_inprocess(
+    checkpoint: Path,
+    *,
+    opponents: list[str],
+    seeds: list[int],
+    episode_steps: int,
+) -> dict[str, Any]:
+    """Per-chunk gate for the GridNet arch: evaluate IN-PROCESS (no render_submission
+    path). Margin vs the first opponent (e.g. pgs_holdwave) is the gate."""
+    import torch
+
+    from python.agents.policy import GridNetActorCritic
+    from python.train.train_ppo import evaluate_gridnet_margin
+    from orbit_wars_gym.encoding import observation_dim
+
+    ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    model = GridNetActorCritic(observation_dim())
+    model.load_state_dict(ckpt["model_state_dict"])
+    per_opp = {
+        opp: evaluate_gridnet_margin(model, opponent_name=opp, seeds=len(seeds), episode_steps=episode_steps)
+        for opp in opponents
+    }
+    gate = per_opp[opponents[0]]
+    return {
+        "games": gate["games"],
+        "win_rate": gate["win_rate"],
+        "mean_score_margin": gate["mean_score_margin"],
+        "invalid_action_rate": 0.0,
+        "margin_2p": gate["mean_score_margin"],
+        "margin_4p": None,
+        "per_opponent": {o: per_opp[o]["mean_score_margin"] for o in opponents},
+    }
+
+
 def _margin(
     checkpoint: Path,
     *,
@@ -103,6 +137,10 @@ def _margin(
         return _margin_residual_inprocess(
             checkpoint, base_agent=base_agent, opponents=opponents,
             seeds=seeds, episode_steps=episode_steps,
+        )
+    if policy_arch == "gridnet":
+        return _margin_gridnet_inprocess(
+            checkpoint, opponents=opponents, seeds=seeds, episode_steps=episode_steps,
         )
     report = benchmark_exported_checkpoint(
         checkpoint,
@@ -271,7 +309,7 @@ def main() -> None:
         help="phase5_4p trains 4-player games (single-env rollout only)",
     )
     parser.add_argument(
-        "--policy-arch", choices=("flat", "entity", "producer_residual"), default="flat"
+        "--policy-arch", choices=("flat", "entity", "producer_residual", "gridnet"), default="flat"
     )
     parser.add_argument(
         "--base-agent",
