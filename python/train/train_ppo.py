@@ -759,17 +759,23 @@ def _gridnet_moves_batch(
     decoder_cfg: DecoderConfig,
     *,
     sample: bool,
+    obs_np: "np.ndarray | None" = None,
 ) -> dict[int, list[list[float]]]:
     """Batched GridNet move generation for a set of envs (one forward, greedy or
     sampled). Used for the SELF-PLAY opponent seat — the net plays itself, which is
     batchable (~1ms) instead of a Python planner per step (the historical
-    throughput bottleneck)."""
+    throughput bottleneck). ``obs_np`` (the backend's batched encoding for ``player``)
+    is reused when given, avoiding a per-env Python encode_state loop (~50% of the
+    rollout time)."""
     if not indices:
         return {}
-    obs = torch.as_tensor(
-        np.stack([encode_state(states[i], player, DEFAULT_ENCODER_CONFIG) for i in indices]),
-        dtype=torch.float32, device=device,
-    )
+    if obs_np is not None:
+        obs = torch.as_tensor(obs_np[indices], dtype=torch.float32, device=device)
+    else:
+        obs = torch.as_tensor(
+            np.stack([encode_state(states[i], player, DEFAULT_ENCODER_CONFIG) for i in indices]),
+            dtype=torch.float32, device=device,
+        )
     mask = torch.as_tensor(
         np.stack([gridnet_planet_mask(states[i], player, decoder_cfg) for i in indices]),
         dtype=torch.bool, device=device,
@@ -860,8 +866,10 @@ def _collect_gridnet_rollout_segment(
         actions_np = action_tensor.cpu().numpy()
 
         if is_self:
+            opp_obs_np = backend.encoded_states(opp_player)  # batched, no per-env encode
             opp_moves = _gridnet_moves_batch(
-                opp_net, current_states, active_indices, opp_player, device, decoder_cfg, sample=True
+                opp_net, current_states, active_indices, opp_player, device, decoder_cfg,
+                sample=True, obs_np=opp_obs_np,
             )
         else:
             opp_moves = {i: _hcap(opponent_policies[i](current_states[i], opp_player)) for i in active_indices}
