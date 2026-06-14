@@ -1829,6 +1829,9 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
     summary = {
         "algorithm": "ppo",
         "arch": policy_arch,
+        # preserve non-default GridNet dims so the saved checkpoint reloads cleanly
+        **({"hidden": arch_kwargs["hidden"]} if "hidden" in arch_kwargs else {}),
+        **({"entity_hidden": arch_kwargs["entity_hidden"]} if "entity_hidden" in arch_kwargs else {}),
         "policy_track": training_cfg.policy_track,
         "num_players": training_cfg.num_players,
         "timesteps": total_timesteps,
