@@ -253,6 +253,15 @@ def plan_lite_waves(
     )  # [C]
     score = torch.where(cand_valid, score, torch.full_like(score, float("-inf")))
 
+    # Offensive spend budget per planet = scattered safe_drain (see "drenagem
+    # dupla", todo.md 2026-06-11). Padded shortlist slots contribute zero.
+    spend_budget = torch.zeros(P, dtype=dtype, device=device)
+    spend_budget.scatter_add_(
+        0,
+        source_idx.clamp(0, P - 1).to(torch.long),
+        torch.where(source_exists, drain.floor().to(dtype), torch.zeros_like(drain, dtype=dtype)),
+    )
+
     wave_entries, leftover = _greedy_select(
         P=P,
         W=W,
@@ -268,6 +277,7 @@ def plan_lite_waves(
         cand_tgt_short=cand_tgt_short,
         cand_is_def=cand_is_def,
         source_budget=obs.ships.to(dtype).clone(),
+        source_spend_budget=spend_budget,
         target_exists=target_exists,
         roi_threshold=float(config.roi_threshold),
     )
