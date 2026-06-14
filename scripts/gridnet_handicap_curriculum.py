@@ -57,7 +57,9 @@ def main() -> None:
     best_full_margin = -1.0  # margin vs the UNHANDICAPPED planner (the real target)
 
     for chunk in range(args.max_chunks):
-        scale_next = min(1.0, scale + args.scale_step)
+        # Train on the current level + a NEARBY harder one (+0.05). A distant next
+        # level (+0.10) degrades the policy (tested: @0.2+@0.3 → ~0 vs @0.2+@0.25 → +0.21).
+        scale_next = min(1.0, scale + 0.05)
         opp = f"{args.planner}@{scale:.2f}"
         ckpt = out / f"chunk{chunk:02d}.pt"
         # GENTLE refine vs the handicapped planner — NO self-play (it degrades the
