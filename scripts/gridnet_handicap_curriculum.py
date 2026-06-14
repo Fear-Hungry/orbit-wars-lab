@@ -35,12 +35,17 @@ def main() -> None:
     ap.add_argument("--chunk-timesteps", type=int, default=40000)
     ap.add_argument("--max-chunks", type=int, default=40)
     ap.add_argument("--max-chunks-per-level", type=int, default=6)
-    ap.add_argument("--rollout-num-envs", type=int, default=24)
+    ap.add_argument("--rollout-num-envs", type=int, default=48)
     ap.add_argument("--rollout-steps", type=int, default=128)
-    ap.add_argument("--ent-coef", type=float, default=0.003)
+    ap.add_argument("--ent-coef", type=float, default=0.0005)
+    ap.add_argument("--learning-rate", type=float, default=1e-4)
     ap.add_argument("--eval-seeds", type=int, default=8)
     ap.add_argument("--eval-steps", type=int, default=256)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--device", default="cpu")
+    ap.add_argument("--self-ratio", type=int, default=0,
+                    help="self segments per planner segment. 0 = NO self (self-play degrades the "
+                    "BC competence; gentle PPO vs the handicapped planner alone refines it).")
     args = ap.parse_args()
 
     out = Path(args.out_dir)
@@ -52,15 +57,27 @@ def main() -> None:
     best_full_margin = -1.0  # margin vs the UNHANDICAPPED planner (the real target)
 
     for chunk in range(args.max_chunks):
+        scale_next = min(1.0, scale + args.scale_step)
         opp = f"{args.planner}@{scale:.2f}"
         ckpt = out / f"chunk{chunk:02d}.pt"
+        # GENTLE refine vs the handicapped planner — NO self-play (it degrades the
+        # BC's planner-competence). Train on the current level + the next one so the
+        # policy is already pushing into the harder level it's about to be promoted
+        # to. ent/lr low so PPO refines the BC instead of exploring it away.
+        if args.self_ratio <= 0:
+            opponents = (opp, f"{args.planner}@{scale_next:.2f}")
+        else:
+            opponents = tuple([opp] + ["self"] * args.self_ratio)
         cfg = Phase0TrainingConfig(
             seed=args.seed + chunk, policy_arch="gridnet",
-            opponents=(opp, "self"),  # handicapped planner + self-play for robustness
+            opponents=opponents,
             total_timesteps=args.chunk_timesteps, rollout_steps=args.rollout_steps,
-            rollout_num_envs=args.rollout_num_envs, ent_coef=args.ent_coef, device="cpu",
+            rollout_num_envs=args.rollout_num_envs, ent_coef=args.ent_coef,
+            learning_rate=args.learning_rate, device=args.device,
             checkpoint_in=prev, checkpoint_out=str(ckpt),
-            self_opponent_checkpoint=str(prev) if prev and prev.endswith(".pt") else None,
+            self_opponent_checkpoint=(
+                str(prev) if args.self_ratio > 0 and prev and prev.endswith(".pt") else None
+            ),
         )
         train_phase0(cfg)
         prev = str(ckpt)
