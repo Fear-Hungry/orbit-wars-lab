@@ -19,6 +19,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
+from .constants import BOARD_SIZE, CENTER, SUN_RADIUS
 from .geometry import fleet_speed
 from .movement import PlanetMovement
 from .movement_aiming import (
@@ -26,7 +27,6 @@ from .movement_aiming import (
     TARGET_HIT_SURFACE_OFFSET,
     _swept_pair_hit_mask,
 )
-from .constants import BOARD_SIZE, CENTER, SUN_RADIUS
 
 _FP_ITERS = 6  # continuous fixed-point iterations for the intercept time
 _BIG = 1_000_000.0
@@ -197,23 +197,28 @@ def _analytic_first_contact(
     (max shortlist length) is cheap.
     """
     M = cos_a.shape[0]
-    P = px.shape[-1]
     dev = cos_a.device
     dt = launch_x.dtype
     N = M
     big = _BIG
 
-    lx = launch_x.reshape(N); ly = launch_y.reshape(N)
-    ca = cos_a.reshape(N); sa = sin_a.reshape(N); sp = speed.reshape(N)
+    lx = launch_x.reshape(N)
+    ly = launch_y.reshape(N)
+    ca = cos_a.reshape(N)
+    sa = sin_a.reshape(N)
+    sp = speed.reshape(N)
 
     # --- Broad phase: AABB cull (no time axis → cheap). The conservative segment box
     # runs launch → launch + u·seg_len, where seg_len bounds the fleet's relevant
     # flight (distance to the intercept; falls back to the full horizon v·H). The
     # planet box is its swept extent over [0,H] inflated by its radius. ---
     slen = (sp * float(H)) if seg_len is None else seg_len.reshape(N)
-    end_x = lx + ca * slen; end_y = ly + sa * slen
-    seg_xmin = torch.minimum(lx, end_x); seg_xmax = torch.maximum(lx, end_x)   # [N]
-    seg_ymin = torch.minimum(ly, end_y); seg_ymax = torch.maximum(ly, end_y)
+    end_x = lx + ca * slen
+    end_y = ly + sa * slen
+    seg_xmin = torch.minimum(lx, end_x)
+    seg_xmax = torch.maximum(lx, end_x)   # [N]
+    seg_ymin = torch.minimum(ly, end_y)
+    seg_ymax = torch.maximum(ly, end_y)
     bb_xmin = px.amin(0) - radii                                              # [P]
     bb_xmax = px.amax(0) + radii
     bb_ymin = py.amin(0) - radii
@@ -251,8 +256,10 @@ def _analytic_first_contact(
         alivec = p_alive0[sl] & valid[s:e]                                    # [n, K]
         real_slot = sl.to(dt)                                                 # [n, K]
 
-        fx0 = fx[:, :-1].unsqueeze(-1); fy0 = fy[:, :-1].unsqueeze(-1)        # [n,H,1]
-        fx1 = fx[:, 1:].unsqueeze(-1);  fy1 = fy[:, 1:].unsqueeze(-1)
+        fx0 = fx[:, :-1].unsqueeze(-1)        # [n,H,1]
+        fy0 = fy[:, :-1].unsqueeze(-1)        # [n,H,1]
+        fx1 = fx[:, 1:].unsqueeze(-1)
+        fy1 = fy[:, 1:].unsqueeze(-1)
         hit = _swept_pair_hit_mask(
             fx0, fy0, fx1, fy1,
             pxc[:, :-1, :], pyc[:, :-1, :], pxc[:, 1:, :], pyc[:, 1:, :],
@@ -266,13 +273,19 @@ def _analytic_first_contact(
         contact_planet = torch.where(is_first, real_slot, torch.full_like(real_slot, big)).amin(1)  # [n]
 
         # env death: OOB at the new position OR the segment grazes the sun (static).
-        nfx = fx[:, 1:]; nfy = fy[:, 1:]; ofx = fx[:, :-1]; ofy = fy[:, :-1]   # [n,H]
+        nfx = fx[:, 1:]   # [n,H]
+        nfy = fy[:, 1:]   # [n,H]
+        ofx = fx[:, :-1]   # [n,H]
+        ofy = fy[:, :-1]   # [n,H]
         oob = (nfx < 0) | (nfx > BOARD_SIZE) | (nfy < 0) | (nfy > BOARD_SIZE)
-        vx = nfx - ofx; vy = nfy - ofy
-        wx = CENTER - ofx; wy = CENTER - ofy
+        vx = nfx - ofx
+        vy = nfy - ofy
+        wx = CENTER - ofx
+        wy = CENTER - ofy
         vv = (vx * vx + vy * vy).clamp(min=1e-12)
         t = ((wx * vx + wy * vy) / vv).clamp(0.0, 1.0)
-        cxp = ofx + t * vx; cyp = ofy + t * vy
+        cxp = ofx + t * vx
+        cyp = ofy + t * vy
         sun = ((cxp - CENTER) ** 2 + (cyp - CENTER) ** 2) < (SUN_RADIUS * SUN_RADIUS)
         env = oob | sun                                                       # [n,H]
         death_step = torch.where(env, step_h.squeeze(-1), torch.full_like(env, big, dtype=dt)).amin(1)  # [n]

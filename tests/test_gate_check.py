@@ -170,6 +170,36 @@ def test_gate_no_silent_fallbacks_rejects_report_without_checked_formats():
     assert gate["checks"] == []
 
 
+def test_gate_no_silent_fallbacks_rejects_missing_instrumentation_rate():
+    report = {
+        "formats": [
+            {
+                "format": "4p",
+                "summary": {
+                    "fallback_rate": 0.0,
+                    "policy_illegal_move_rate": 0.0,
+                    "fallback_error_rate": 0.0,
+                    "instrumentation_missing_rate": 1.0,
+                },
+            }
+        ]
+    }
+
+    gate = _gate_no_silent_fallbacks(report)
+
+    assert not gate["passed"]
+    failed = [check for check in gate["checks"] if not check["passed"]]
+    assert failed == [
+        {
+            "opponent": "four_player",
+            "metric": "instrumentation_missing_rate",
+            "value": 1.0,
+            "maximum": 0.0,
+            "passed": False,
+        }
+    ]
+
+
 def test_final_seed_list_uses_holdout_range_offset():
     assert _final_seed_list(_cfg()) == list(range(100, 120))
 

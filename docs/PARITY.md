@@ -43,7 +43,31 @@ Elementos conhecidos:
 12. Score terminal.
 
 Cobertos em `tests/test_official_spec.py`, `tests/test_official_snapshots.py` e
-`tests/test_parity_tolerances.py`.
+`tests/test_parity_tolerances.py`. A paridade sob **combate ativo** (launch → colisão →
+combate → captura → reforço, que os testes passivos NÃO exercem) é coberta por
+`tests/test_parity_actions.py` e `tests/test_movement_fidelity.py`.
+
+> **Combate ativo — bug corrigido 2026-06-09:** `compute_planet_paths` (`step.rs`) calculava a
+> posição orbital por rotação matricial; o oficial usa reconstrução **polar**
+> `r·cos(atan2(dy,dx)+ω·step)`. Idênticas na matemática, mas float-diferentes (~1e-10) — dentro da
+> tolerância da paridade passiva, mas o bastante para virar a colisão *knife-edge* de uma frota
+> recém-lançada contra seu planeta de origem em órbita. Fix: replicar o caminho polar exato.
+
+## Frescor do binding (CRÍTICO — ler antes de confiar em QUALQUER resultado de motor)
+
+O `RustBatchBackend` é a "verdade" do motor de treino/régua. Se o `.so` instalado no venv está
+**stale** vs `crates/`, todo teste/treino/eval roda o motor ERRADO **em silêncio** (e o "expected"
+dos testes de fidelidade vira a verdade errada). Duas armadilhas, ambas já custaram horas:
+
+1. **`maturin develop` nem sempre recompila** (fingerprint de mtime no WSL) — confirme o build.
+2. **`uv run` (com auto-sync) REVERTE o `.so` fresco** reinstalando `orbit-wars-lab` de um wheel em
+   cache (`Uninstalled 1/Installed 1` na saída). Por isso `make` usa `uv run --no-sync` em tudo que
+   RODA código, e `make build` faz `sync-binding` (force-copy de `target/release/liborbit_wars_rs.so`
+   para o venv). **Nunca** rode testes/treino com `uv run` puro depois de um build.
+
+**Sempre:** `make build` (compila + sincroniza o binding) → rode com `make test`/`make <target>` ou
+`uv run --no-sync …` ou `.venv/bin/python …`. Verifique com `make verify-binding`. Nunca trate o
+binding compilado como verdade sem confirmar frescor.
 
 ## Estratégia
 

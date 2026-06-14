@@ -1,10 +1,12 @@
 from __future__ import annotations
+# ruff: noqa: E402,I001
 
 import argparse
 import importlib.util
 import json
 import os
 import random
+import sys
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -12,11 +14,17 @@ from statistics import fmean
 from time import perf_counter
 from typing import Any
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from python.agents.registry import (
     PRODUCER_AGENT_PATH,
     PRODUCER_SETUP_COMMAND,
     Policy,
+    STATEFUL_SINGLETON_OPPONENTS,
     get_heuristic_policies,
+    get_isolated_opponents,
 )
 from python.orbit_wars_gym.backend import RustBatchBackend, RustConfig
 from python.orbit_wars_gym.observation import to_official_observation
@@ -27,6 +35,15 @@ DEFAULT_OPPONENTS = ["producer"]
 DEFAULT_SEEDS = 16
 DEFAULT_JOBS = max(1, os.cpu_count() or 1)
 _POLICY_CACHE: dict[str, Policy] = {}
+TECHNICAL_FAILURE_METRICS = (
+    "crash_rate",
+    "timeout_rate",
+    "invalid_action_rate",
+    "fallback_rate",
+    "policy_illegal_move_rate",
+    "fallback_error_rate",
+)
+INSTRUMENTATION_FAILURE_METRIC = "instrumentation_missing_rate"
 
 
 def _opponent_label(path: Path) -> str:
@@ -45,11 +62,31 @@ def _load_submission_agent(path: Path) -> Callable[[dict[str, Any]], list[list[f
     return agent
 
 
+def _league_agent_names() -> set[str]:
+    from scripts.league_agents import FACTORIES
+
+    return set(FACTORIES)
+
+
+def _league_policy(name: str) -> tuple[str, Policy] | None:
+    if name not in _league_agent_names():
+        return None
+    from scripts.league_agents import make
+
+    bot = make(name)
+
+    def act(state: dict[str, Any], player: int) -> list[list[float]]:
+        moves = bot(to_official_observation(state, player=player))
+        return list(moves) if isinstance(moves, list) else []
+
+    return name, act
+
+
 def _submission_runtime(agent: Callable[[dict[str, Any]], list[list[float]]]) -> Policy:
-    def _stats_snapshot() -> dict[str, float]:
-        raw = getattr(agent, "__globals__", {}).get("SUBMISSION_STATS", {})
+    def _stats_snapshot() -> dict[str, float] | None:
+        raw = getattr(agent, "__globals__", {}).get("SUBMISSION_STATS", None)
         if not isinstance(raw, dict):
-            return {}
+            return None
         return {
             "fallbacks": float(raw.get("fallbacks", 0.0)),
             "illegal_moves": float(raw.get("illegal_moves", 0.0)),
@@ -63,11 +100,14 @@ def _submission_runtime(agent: Callable[[dict[str, Any]], list[list[float]]]) ->
             moves = agent(obs)
         finally:
             after = _stats_snapshot()
-            act._last_submission_stats_delta = {
-                name: max(0.0, float(after.get(name, 0.0)) - float(before.get(name, 0.0)))
-                for name in ("fallbacks", "illegal_moves", "fallback_errors")
-            }
-        return list(moves) if isinstance(moves, list) else []
+            missing = before is None or after is None
+            act._last_submission_stats_delta = {"instrumentation_missing": 1.0 if missing else 0.0}
+            if not missing:
+                act._last_submission_stats_delta.update({
+                    name: max(0.0, float(after.get(name, 0.0)) - float(before.get(name, 0.0)))
+                    for name in ("fallbacks", "illegal_moves", "fallback_errors")
+                })
+        return moves
 
     return act
 
@@ -80,6 +120,9 @@ def _resolve_opponent(spec: str) -> tuple[str, Policy]:
         )
     if spec in HEURISTIC_POLICIES:
         return spec, HEURISTIC_POLICIES[spec]
+    league = _league_policy(spec)
+    if league is not None:
+        return league
     path = Path(spec)
     if path.exists() and path.is_file():
         return _opponent_label(path), _submission_runtime(_load_submission_agent(path))
@@ -94,6 +137,11 @@ def _cached_submission_runtime(path: str) -> Policy:
 
 
 def _cached_opponent_runtime(spec: str) -> tuple[str, Policy]:
+    league = _league_policy(spec)
+    if league is not None:
+        # League agents are factories and may keep per-game state. Do not cache
+        # them across benchmark tasks.
+        return league
     path = Path(spec)
     key = f"opponent:{path.resolve()}" if path.exists() else f"opponent:{spec}"
     if key not in _POLICY_CACHE:
@@ -102,6 +150,35 @@ def _cached_opponent_runtime(spec: str) -> tuple[str, Policy]:
         return name, policy
     name = _opponent_label(path) if path.exists() and path.is_file() else spec
     return name, _POLICY_CACHE[key]
+
+
+def _opponent_instances(specs: list[str]) -> list[tuple[str, Policy]]:
+    """Build live-seat opponent instances for a single 4p game.
+
+    Some built-in opponents keep game memory in a module singleton. In 4p, a
+    lineup like producer,producer,producer needs three independent runtimes,
+    not three references to one callable.
+    """
+    stateful_counts = {
+        name: specs.count(name)
+        for name in set(specs)
+        if name in STATEFUL_SINGLETON_OPPONENTS
+    }
+    stateful_pools = {
+        name: iter(get_isolated_opponents(name, count))
+        for name, count in stateful_counts.items()
+    }
+    out: list[tuple[str, Policy]] = []
+    for spec in specs:
+        path = Path(spec)
+        if spec in stateful_pools:
+            out.append((spec, next(stateful_pools[spec])))
+        elif path.exists() and path.is_file():
+            # File-based agents can also be stateful; load one module per seat.
+            out.append((_opponent_label(path), _submission_runtime(_load_submission_agent(path))))
+        else:
+            out.append(_cached_opponent_runtime(spec))
+    return out
 
 
 def _win_points(scores: list[float], player: int) -> float:
@@ -118,6 +195,7 @@ def _empty_runtime_stats() -> dict[str, float]:
         "fallbacks": 0.0,
         "policy_illegal_moves": 0.0,
         "fallback_errors": 0.0,
+        "instrumentation_missing": 0.0,
         "decision_turns": 0.0,
         "elapsed_seconds": 0.0,
     }
@@ -141,11 +219,14 @@ def _run_match(
     )
     state = backend.reset(seed)[0]
     runtime_stats = [_empty_runtime_stats() for _ in players]
+    terminal_status: list[str | None] = [None for _ in players]
     outcome = {"scores": [0.0 for _ in players], "done": False}
 
     while True:
         actions = [[] for _ in players]
         for idx, policy in enumerate(players):
+            if terminal_status[idx] is not None:
+                continue
             stats = runtime_stats[idx]
             stats["decision_turns"] += 1.0
             try:
@@ -161,15 +242,20 @@ def _run_match(
                     stats["fallback_errors"] += float(
                         submission_delta.get("fallback_errors", 0.0)
                     )
+                    stats["instrumentation_missing"] += float(
+                        submission_delta.get("instrumentation_missing", 0.0)
+                    )
                 stats["elapsed_seconds"] += elapsed
                 if elapsed > act_timeout:
                     stats["timeouts"] += 1.0
+                    terminal_status[idx] = "TIMEOUT"
                     moves = []
                 if not isinstance(moves, list) or not moves_are_legal(state, idx, moves):
                     stats["invalid_actions"] += 1.0
                     moves = []
             except Exception:
                 stats["crashes"] += 1.0
+                terminal_status[idx] = "ERROR"
                 moves = []
             actions[idx] = moves
 
@@ -179,7 +265,13 @@ def _run_match(
         if outcome["done"]:
             break
 
-    return [float(score) for score in outcome["scores"]], runtime_stats
+    scores = [float(score) for score in outcome["scores"]]
+    if any(status is not None for status in terminal_status):
+        floor = min(scores, default=0.0) - 1.0
+        for idx, status in enumerate(terminal_status):
+            if status is not None:
+                scores[idx] = floor
+    return scores, runtime_stats
 
 
 def _parallel_map(fn, tasks: list[dict[str, Any]], jobs: int) -> list[dict[str, Any]]:
@@ -217,10 +309,10 @@ def _two_player_task(task: dict[str, Any]) -> dict[str, Any]:
 def _four_player_task(task: dict[str, Any]) -> dict[str, Any]:
     submission = _cached_submission_runtime(str(task["submission"]))
     opponent_specs = [str(spec) for spec in task["opponents"]]
-    opponents = [_cached_opponent_runtime(spec) for spec in opponent_specs]
     seed = int(task["seed"])
     rng = random.Random(7_919 * (seed + 1))
-    picks = [rng.choice(opponents) for _ in range(3)]
+    pick_specs = [rng.choice(opponent_specs) for _ in range(3)]
+    picks = _opponent_instances(pick_specs)
     players: list[Policy] = [submission] + [policy for _, policy in picks]
     scores, runtime_stats = _run_match(
         players,
@@ -239,6 +331,7 @@ def _four_player_task(task: dict[str, Any]) -> dict[str, Any]:
         "fallbacks": runtime_stats[0]["fallbacks"],
         "policy_illegal_moves": runtime_stats[0]["policy_illegal_moves"],
         "fallback_errors": runtime_stats[0]["fallback_errors"],
+        "instrumentation_missing": runtime_stats[0]["instrumentation_missing"],
         "decision_turns": runtime_stats[0]["decision_turns"],
         "elapsed_seconds": runtime_stats[0]["elapsed_seconds"],
         "lineup": [name for name, _ in picks],
@@ -257,6 +350,7 @@ def _summary_from_records(records: list[dict[str, float]]) -> dict[str, float]:
             "fallback_rate": 0.0,
             "policy_illegal_move_rate": 0.0,
             "fallback_error_rate": 0.0,
+            "instrumentation_missing_rate": 0.0,
             "mean_decision_ms": 0.0,
         }
     decisions = sum(record["decision_turns"] for record in records)
@@ -274,8 +368,39 @@ def _summary_from_records(records: list[dict[str, float]]) -> dict[str, float]:
         / max(decisions, 1.0),
         "fallback_error_rate": sum(record["fallback_errors"] for record in records)
         / max(decisions, 1.0),
+        "instrumentation_missing_rate": sum(
+            record.get("instrumentation_missing", 0.0) for record in records
+        ) / max(decisions, 1.0),
         "mean_decision_ms": 1000.0 * elapsed / max(decisions, 1.0),
     }
+
+
+def _iter_summaries(report: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    summaries: list[tuple[str, dict[str, Any]]] = []
+    for item in report.get("formats", []):
+        game_format = str(item.get("format", "unknown"))
+        if game_format == "2p":
+            for opponent in item.get("opponents", []):
+                label = f"2p:{opponent.get('opponent', 'unknown')}"
+                summaries.append((label, dict(opponent.get("summary", {}))))
+        else:
+            summaries.append((game_format, dict(item.get("summary", {}))))
+    return summaries
+
+
+def technical_failures(
+    report: dict[str, Any], *, require_submission_stats: bool = False
+) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    metrics = list(TECHNICAL_FAILURE_METRICS)
+    if require_submission_stats:
+        metrics.append(INSTRUMENTATION_FAILURE_METRIC)
+    for label, summary in _iter_summaries(report):
+        for metric in metrics:
+            value = float(summary.get(metric, 0.0))
+            if value > 0.0:
+                failures.append({"label": label, "metric": metric, "value": value})
+    return failures
 
 
 def benchmark_two_player(
@@ -393,6 +518,7 @@ def benchmark_four_player(
                 "fallbacks": runtime_stats[0]["fallbacks"],
                 "policy_illegal_moves": runtime_stats[0]["policy_illegal_moves"],
                 "fallback_errors": runtime_stats[0]["fallback_errors"],
+                "instrumentation_missing": runtime_stats[0]["instrumentation_missing"],
                 "decision_turns": runtime_stats[0]["decision_turns"],
                 "elapsed_seconds": runtime_stats[0]["elapsed_seconds"],
                 "lineup": [name for name, _ in picks],
@@ -455,6 +581,16 @@ def main() -> None:
     parser.add_argument("--skip-2p", action="store_true")
     parser.add_argument("--skip-4p", action="store_true")
     parser.add_argument("--disable-comets", action="store_true")
+    parser.add_argument(
+        "--allow-technical-failures",
+        action="store_true",
+        help="write the report even when crash/timeout/invalid/fallback rates are nonzero",
+    )
+    parser.add_argument(
+        "--require-submission-stats",
+        action="store_true",
+        help="also fail if the submission does not expose SUBMISSION_STATS instrumentation",
+    )
     parser.add_argument("--out", default=None)
     args = parser.parse_args()
 
@@ -515,6 +651,12 @@ def main() -> None:
         out_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
 
     print(json.dumps(report, indent=2, sort_keys=True))
+    failures = technical_failures(report, require_submission_stats=args.require_submission_stats)
+    if failures and not args.allow_technical_failures:
+        raise SystemExit(
+            "technical failures detected; rerun with --allow-technical-failures "
+            f"for exploratory measurement: {failures}"
+        )
 
 
 if __name__ == "__main__":

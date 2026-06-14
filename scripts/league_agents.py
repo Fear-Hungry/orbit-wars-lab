@@ -1,0 +1,335 @@
+"""Agent pool for the local league (H-P4 field ruler).
+
+Every entry is a FACTORY returning a fresh callable(official_obs_dict) -> moves,
+one instance per game (cross-contamination gotcha: never share runtimes).
+
+LB_ANCHORS holds the real leaderboard score of OUR submissions of the same
+config — the league is only trusted if its ranking reproduces these (Spearman +
+the hard requirement that pgs_allscripts lands clearly below producer/oep/brep).
+"""
+from __future__ import annotations
+
+import contextlib
+import fcntl
+import hashlib
+import importlib.util
+import os
+import py_compile
+import shutil
+import sys
+import tarfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+
+# LEAGUE = VETO ONLY (rule since the 2026-06-10 falsification). The league
+# discards obvious floors (allscripts-class) but must NOT promote between close
+# configs: pgs_hold and pgs_wave_s100 both passed P(>=producer)=1.00 and landed
+# 115-135 LB points BELOW producer (1057.6 / ~1036-1109). BT rank is relative
+# to THIS pool (8/10 producer-lineage; ext bots too weak to discriminate the
+# top — Balduzzi 2018 arXiv:1806.02643). Promotion between close configs needs
+# an LB probe or a pool with style exploiters (rusher / pgs_bigwave below).
+# GATE_REFERENCE is the veto floor; INCUMBENT is the live LB champion the
+# report prints head-to-head against (promotion sanity, never sufficient).
+GATE_REFERENCE = "producer"
+INCUMBENT = "pgs_holdwave"  # LB record 1228.8 (ref=53537753)
+
+# real Kaggle ratings of our submitted configs (refreshed 2026-06-11 via
+# Kaggle CLI). NEVER trust these without a refresh: s100 moved 1036->1109->1138
+# across reads the same day.
+LB_ANCHORS = {
+    "producer": 1173.1,       # ref=53366194
+    "oep": 1182.7,            # ref=53433131
+    "brep": 1156.1,           # ref=53513962
+    "pgs_allscripts": 1021.5, # ref=53519882 (accidental all-scripts default)
+    "pgs_holdwave": 1228.8,   # ref=53537753 (T+7h, ESTABILIZADO — nível do recorde)
+    "pgs_hold": 1057.6,       # ref=53541125 (stable across refreshes T+2h..T+5h)
+    "pgs_wave_s100": 1146.1,  # ref=53542864 (CLI 2026-06-11; climbed 1036->1109->1138->1146)
+    # ref=53542884 (holdwave RESUBMIT, identical config to 53537753): current 1156.7
+    # while converging — treat as a Kaggle NOISE measurement (~±60), not a new anchor.
+}
+
+_EXT_N = [0]
+
+_FORBIDDEN_SUBMISSION_STATS = {
+    "fallbacks",
+    "timeouts",
+    "timeout_thread_blocks",
+    "fallback_errors",
+    "illegal_moves",
+    "policy_illegal_moves",
+    "invalid_actions",
+}
+
+
+def _submission_stats_snapshot(mod) -> dict[str, int]:
+    stats = getattr(mod, "SUBMISSION_STATS", None)
+    if not isinstance(stats, dict):
+        return {}
+    out: dict[str, int] = {}
+    for key, value in stats.items():
+        try:
+            out[str(key)] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _forbidden_submission_stats_delta(before: dict[str, int], after: dict[str, int]) -> dict[str, int]:
+    bad: dict[str, int] = {}
+    for key, value in after.items():
+        if key in _FORBIDDEN_SUBMISSION_STATS or key.endswith("_fallbacks"):
+            delta = int(value) - int(before.get(key, 0))
+            if delta > 0:
+                bad[key] = delta
+    return bad
+
+
+def _fresh_module(path: Path, tag: str):
+    _EXT_N[0] += 1
+    spec = importlib.util.spec_from_file_location(f"_league_{tag}_{_EXT_N[0]}", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _external(path: str):
+    p = ROOT / path
+    return lambda: _fresh_module(p, p.parent.name.replace("-", "_")).agent
+
+
+def _producer():
+    from bots.producer.agent import make_agent
+
+    return make_agent()
+
+
+def _oep():
+    from bots.oep.agent import make_agent
+
+    return make_agent()
+
+
+def _pgs(**cfg):
+    from bots.pgs.planner import PGSConfig, PGSRuntime
+
+    return PGSRuntime(PGSConfig(**cfg)).act
+
+
+def _rusher(**kw):
+    from bots.exploiters.rusher import make_agent
+
+    return make_agent(**kw)
+
+
+def _heuristic(name: str):
+    from python.agents.registry import get_heuristic_policies
+
+    policy = get_heuristic_policies()[name]
+
+    def act(obs):
+        player = int(obs.get("player", 0))
+        moves = policy(obs, player)
+        return list(moves) if isinstance(moves, list) else []
+
+    return act
+
+
+class _TarballIsolation:
+    """Per-tarball import context. Tarballs bundle bare-named modules
+    (_brep_weights, _producer_agent, _upstream, orbit_lite, ...); with the
+    cache dir permanently on sys.path those names hit the GLOBAL sys.modules
+    cache, so two tarballs share whichever copy imported first — including
+    LAZY imports during act() (the real main.py imports _brep_weights on first
+    use). Each tarball therefore keeps its bundled modules in a private
+    overlay, swapped into sys.modules only while its code runs. Safe because
+    league_match calls agents sequentially in one thread."""
+
+    def __init__(self, cache: Path):
+        self._cache = str(cache)
+        self._owned = set()
+        for entry in cache.iterdir():
+            if entry.name == "main.py":
+                continue
+            if entry.suffix == ".py":
+                self._owned.add(entry.stem)
+            elif (entry / "__init__.py").exists():
+                self._owned.add(entry.name)
+        self._overlay: dict[str, object] = {}
+
+    def _owns(self, key: str) -> bool:
+        return key.split(".", 1)[0] in self._owned
+
+    @contextlib.contextmanager
+    def active(self):
+        saved = {}
+        for key in [k for k in sys.modules if self._owns(k)]:
+            saved[key] = sys.modules.pop(key)
+        sys.modules.update(self._overlay)
+        inserted = self._cache not in sys.path
+        if inserted:
+            sys.path.insert(0, self._cache)
+        try:
+            yield
+        finally:
+            if inserted:
+                sys.path.remove(self._cache)
+            for key, mod in list(sys.modules.items()):
+                mod_file = getattr(mod, "__file__", None) or ""
+                if self._owns(key) or mod_file.startswith(self._cache + "/"):
+                    self._overlay[key] = sys.modules.pop(key)
+            sys.modules.update(saved)
+
+
+def _ensure_tarball_cache(tar_path: Path, cache_name: str) -> Path:
+    digest = hashlib.sha1(tar_path.read_bytes()).hexdigest()[:12]
+    key = f"{cache_name}-{digest}"
+    cache = ROOT / "artifacts" / "league" / "cache" / key
+    complete = cache / ".complete"
+    if complete.exists() and (cache / "main.py").exists():
+        return cache
+
+    cache_parent = cache.parent
+    cache_parent.mkdir(parents=True, exist_ok=True)
+    locks = cache_parent / ".locks"
+    locks.mkdir(parents=True, exist_ok=True)
+    lock_path = locks / f"{key}.lock"
+    with lock_path.open("w", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            if complete.exists() and (cache / "main.py").exists():
+                return cache
+            if cache.exists():
+                shutil.rmtree(cache)
+            tmp = cache_parent / f".{key}.{os.getpid()}.tmp"
+            shutil.rmtree(tmp, ignore_errors=True)
+            tmp.mkdir(parents=True, exist_ok=True)
+            try:
+                with tarfile.open(tar_path) as tf:
+                    # filter="data" blocks path traversal / symlink escapes from
+                    # a hostile tarball (and is the post-3.14 mandatory default
+                    # anyway).
+                    tf.extractall(tmp, filter="data")
+                main_py = tmp / "main.py"
+                if not main_py.exists():
+                    raise ValueError(f"tarball missing main.py: {tar_path}")
+                py_compile.compile(str(main_py), doraise=True)
+                (tmp / ".complete").write_text("ok\n", encoding="utf-8")
+                os.replace(tmp, cache)
+            except Exception:
+                shutil.rmtree(tmp, ignore_errors=True)
+                raise
+            return cache
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def _tarball_agent(tar_path: Path, cache_name: str):
+    """Load a self-contained submission tarball as a league agent (fresh main
+    module and fresh bundled-module overlay per instance; bare-named deps stay
+    private — see _TarballIsolation — so multiple tarballs never share
+    weights/models/runtime state through sys.modules or sys.path ordering).
+
+    The cache dir is keyed by the tarball's CONTENT hash: re-exporting a
+    tarball under the same name gets a fresh extraction AND a fresh import
+    overlay. The overlay is intentionally PER INSTANCE, not per tarball hash:
+    PGS/OEP submissions have module-global runtimes inside bundled packages, so
+    two games using the same tarball still need isolated package state. Old hash
+    dirs become orphans — never reused, safe to leave. A missing tarball fails
+    LOUD even when a stale cache exists (no-silent-fallback rule)."""
+    cache = _ensure_tarball_cache(tar_path, cache_name)
+    iso = _TarballIsolation(cache)
+    with iso.active():
+        mod = _fresh_module(cache / "main.py", cache_name)
+    inner = mod.agent
+
+    def act(obs):
+        before = _submission_stats_snapshot(mod)
+        with iso.active():
+            result = inner(obs)
+        bad = _forbidden_submission_stats_delta(before, _submission_stats_snapshot(mod))
+        if bad:
+            raise RuntimeError(f"{cache_name} submission degradation counters changed: {bad}")
+        return result
+
+    return act
+
+
+_BREP_TAR = Path.home() / "projects/Kaggle/orbit-wars-lab-B/artifacts/submission_brep.tar.gz"
+
+
+def _brep():
+    return _tarball_agent(_BREP_TAR, "brep")
+
+
+def register_submission_file(name: str, path: str | Path) -> None:
+    """Register a Kaggle-format ``agent(obs)`` file as a league bot."""
+
+    p = Path(path)
+    if not p.is_absolute():
+        p = ROOT / p
+    if not p.exists():
+        raise FileNotFoundError(p)
+    FACTORIES[str(name)] = (lambda f=p, n=str(name): _fresh_module(f, n).agent)
+
+
+def register_submission_tarball(name: str, path: str | Path) -> None:
+    """Register a Kaggle-format tarball as a league bot."""
+
+    p = Path(path)
+    if not p.is_absolute():
+        p = ROOT / p
+    if not p.exists():
+        raise FileNotFoundError(p)
+    FACTORIES[str(name)] = (lambda f=p, n=str(name): _tarball_agent(f, n))
+
+
+FACTORIES = {
+    "producer": lambda: _producer(),
+    "oep": lambda: _oep(),
+    "brep": lambda: _brep(),
+    "greedy": lambda: _heuristic("greedy"),
+    "rush": lambda: _heuristic("rush"),
+    "pgs_hold": lambda: _pgs(scripts="hold"),
+    "pgs_holdwave": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150),
+    "pgs_holdwave_half2p": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                        half_in_2p=True),
+    "pgs_allscripts": lambda: _pgs(),
+    "ext_lb1050": _external("artifacts/opponents/top5_proxy/lb-1050-heuristic-simulation-agent-test-3/agent.py"),
+    "ext_hellburner": _external("artifacts/opponents/top5_proxy/hellburner/agent.py"),
+    # H-P5 league-guided wave round (one round, pre-registered; /goal 2026-06-10)
+    "pgs_wave_s100": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=100),
+    "pgs_wave_s50": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=50),
+    "pgs_wave_4pfloor": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                     floor_in_4p=True),
+    # H7 E4: holdwave base + learned value net plugged into the search (scores the
+    # post-launch board instead of margin-at-H). Tests if the learned value unblocks
+    # 4p deviation + improves survival. defend_in_4p on so reinforce/evac are candidates.
+    "pgs_valuenet": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                 defend_in_4p=True,
+                                 value_net_path=str(ROOT / "artifacts/h7/value_net.pt")),
+    # style exploiters (league-only, NEVER submit): cover the field's loss axes
+    # absent from the producer-lineage pool (2026-06-10 falsification).
+    "rusher": lambda: _rusher(attack_from=50, cadence=4),       # early all-in (annihilates hold-family regime)
+    "pgs_bigwave": lambda: _pgs(scripts="hold", wave_min_ships=100.0, wave_start_step=50,
+                                wave_max_delay=25),             # elite proxy: hoard + few BIG waves (lb taxonomy)
+}
+
+# Any tarball dropped in artifacts/league/tarballs/<name>.tar.gz auto-registers
+# as a league bot "<name>" — the cross-worktree contract (worktree B exports its
+# champions here; self-contained, no shared code needed).
+def _register_league_artifacts() -> None:
+    for tar in sorted((ROOT / "artifacts" / "league" / "tarballs").glob("*.tar.gz")):
+        name = tar.stem.replace(".tar", "")
+        FACTORIES[name] = (lambda t=tar, n=name: _tarball_agent(t, n))
+
+    for py in sorted((ROOT / "artifacts" / "league" / "submissions").glob("*.py")):
+        if py.stem not in FACTORIES:
+            register_submission_file(py.stem, py)
+
+
+_register_league_artifacts()
+
+
+def make(name: str):
+    return FACTORIES[name]()

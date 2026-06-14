@@ -44,4 +44,8 @@ def test_benchmark_exported_checkpoint_runs_submission_runtime(tmp_path: Path):
     assert report["summary"]["crash_rate"] == 0.0
     assert report["summary"]["timeout_rate"] == 0.0
     assert report["summary"]["invalid_action_rate"] == 0.0
+    assert report["summary"]["fallback_rate"] == 0.0
+    assert report["summary"]["policy_illegal_move_rate"] == 0.0
+    assert report["summary"]["fallback_error_rate"] == 0.0
+    assert report["summary"]["instrumentation_missing_rate"] == 0.0
     assert report["formats"][0]["opponents"][0]["opponent"] == "weak_random"

@@ -147,6 +147,10 @@ class OEPLiteConfig:
     plan_memory_variants: int = 0
     beam_first_width: int = 0
     beam_pair_width: int = 0
+    rollout_search_width: int = 0
+    rollout_terminal_value: bool = False
+    standalone_territory: bool = False
+    standalone_targets_per_source: int = 3
     profile_stages: bool = False
 
     def __post_init__(self) -> None:
@@ -156,6 +160,8 @@ class OEPLiteConfig:
             raise ValueError("OEP_BEAM_FIRST_WIDTH must be non-negative")
         if int(self.beam_pair_width) < 0:
             raise ValueError("OEP_BEAM_PAIR_WIDTH must be non-negative")
+        if int(self.rollout_search_width) < 0:
+            raise ValueError("OEP_ROLLOUT_SEARCH_WIDTH must be non-negative")
         if bool(self.reactive_reply) and int(self.ordinal_opponent_variants) > 1:
             raise ValueError(
                 "OEP_REACTIVE_REPLY cannot be combined with OEP_ORDINAL_OPPONENT_VARIANTS > 1"
@@ -1322,6 +1328,73 @@ def plan_oep_waves(
     )
 
 
+def _oep_plan_variant_list(
+    *,
+    movement: PlanetMovement,
+    obs,
+    obs_tensors: dict,
+    cache,
+    status,
+    prod: Tensor,
+    alive_by_step: Tensor,
+    config: OEPPlannerConfig,
+    fractions: tuple[float, ...],
+    player_count: int,
+    opponent_entries: LaunchEntries | None,
+    beam_width: int,
+) -> list[LaunchEntries]:
+    """Greedy plan plus forced-first-launch beam variants, as a candidate list.
+
+    Mirrors ``plan_oep_beam_first_waves`` candidate construction but returns every
+    variant instead of selecting one, so the E3 rollout search (``_rollout_value``)
+    can score each candidate by simulation value rather than by the 1-ply fitness.
+    """
+    built = _build_fraction_candidates(
+        movement=movement,
+        obs=obs,
+        obs_tensors=obs_tensors,
+        cache=cache,
+        status=status,
+        prod=prod,
+        alive_by_step=alive_by_step,
+        config=config,
+        fractions=fractions,
+        player_count=player_count,
+        opponent_entries=opponent_entries,
+    )
+    if built is None:
+        return []
+    variants = [
+        _greedy_entries_from_built(
+            built=built,
+            movement=movement,
+            obs=obs,
+            obs_tensors=obs_tensors,
+            cache=cache,
+            status=status,
+            config=config,
+        )
+    ]
+    for first_idx in _beam_first_indices(
+        built,
+        width=int(beam_width),
+        roi_threshold=float(config.roi_threshold),
+    ):
+        variant = _forced_prefix_entries_from_built(
+            built=built,
+            prefix_indices=(first_idx,),
+            movement=movement,
+            obs=obs,
+            obs_tensors=obs_tensors,
+            cache=cache,
+            status=status,
+            config=config,
+        )
+        if variant is not None:
+            variants.append(variant)
+    return variants
+
+
 def plan_oep_beam_first_waves(
     *,
     movement: PlanetMovement,
@@ -1952,6 +2025,230 @@ class OEPLiteRuntime:
         )
         return reply_entries, reply_status, reply_alive_by_step
 
+    def _rollout_value(
+        self,
+        *,
+        candidate_entries: LaunchEntries,
+        opp_id: int | None,
+        obs,
+        obs_tensors: dict,
+        movement: PlanetMovement,
+        cache,
+        status,
+        alive_by_step: Tensor,
+        base_config: OEPPlannerConfig,
+        player_count: int,
+        static_opponent_launch_set: LaunchSet | None,
+    ) -> float:
+        """E3 value: score a candidate plan against the opponent's REACTIVE reply.
+
+        The opponent (Producer policy) re-plans against the world AFTER the
+        candidate's launches, so the value reflects a reacting adversary instead
+        of the static 1-ply prediction that the diagnosis (B) found inflates
+        deviations. Empty plans and 4p (no single opponent to model) fall back to
+        the static opponent prediction.
+        """
+        if opp_id is None or not bool(candidate_entries.valid.any().item()):
+            opp_ls = static_opponent_launch_set
+        else:
+            reply_entries, _, _ = self._reactive_reply_entries(
+                our_entries=candidate_entries,
+                opponent_id=int(opp_id),
+                obs_tensors=obs_tensors,
+                movement=movement,
+                cache=cache,
+                base_config=base_config,
+                player_count=player_count,
+                player_id=int(obs.player_id),
+            )
+            opp_ls = _launch_set_from_entries(
+                entries=reply_entries, owner_id=int(opp_id), candidates=1
+            )
+        return _plan_fitness(
+            candidate_entries,
+            opponent_launch_set=opp_ls,
+            status=status,
+            prod=movement.planet_prod,
+            alive_by_step=alive_by_step,
+            player_count=player_count,
+            player_id=int(obs.player_id),
+        )
+
+    def _territory_value(
+        self,
+        *,
+        candidate_entries: LaunchEntries,
+        opp_id: int | None,
+        obs,
+        obs_tensors: dict,
+        movement: PlanetMovement,
+        cache,
+        base_config: OEPPlannerConfig,
+        player_count: int,
+        horizon: int,
+    ) -> float:
+        """Terminal-territory value (sim-value-search style, intel-backed).
+
+        Project the world AFTER the candidate's launches AND the opponent's
+        reactive reply, then score the TERMINAL state by production-weighted
+        territory control (owned production minus enemy production) — which
+        tracks the real win condition better than the short-horizon net ship
+        delta that E3 (rollout) used and that regressed.
+        """
+        clone = _clone_movement(movement)
+        my_launches = infer_planned_launches_from_entries(
+            obs_tensors=obs_tensors,
+            movement=clone,
+            entries=candidate_entries,
+            player_id=int(obs.player_id),
+        )
+        apply_private_planned_launches(
+            movement=clone,
+            launches=my_launches,
+            owner_id=int(obs.player_id),
+            obs_tensors=obs_tensors,
+        )
+        _debit_entry_sources(clone, candidate_entries)
+        if opp_id is not None and bool(candidate_entries.valid.any().item()):
+            reply_entries, _, _ = self._reactive_reply_entries(
+                our_entries=candidate_entries,
+                opponent_id=int(opp_id),
+                obs_tensors=obs_tensors,
+                movement=movement,
+                cache=cache,
+                base_config=base_config,
+                player_count=player_count,
+                player_id=int(obs.player_id),
+            )
+            opp_launches = infer_planned_launches_from_entries(
+                obs_tensors=obs_tensors,
+                movement=clone,
+                entries=reply_entries,
+                player_id=int(opp_id),
+            )
+            apply_private_planned_launches(
+                movement=clone,
+                launches=opp_launches,
+                owner_id=int(opp_id),
+                obs_tensors=obs_tensors,
+            )
+            _debit_entry_sources(clone, reply_entries)
+        status = clone.garrison_status(max_horizon=int(horizon))
+        owner_h = status.owner[:, int(horizon)]
+        prod = clone.planet_prod
+        me = owner_h == int(obs.player_id)
+        enemy = (owner_h >= 0) & (~me)
+        return float((prod[me].sum() - prod[enemy].sum()).item())
+
+    def _standalone_territory_plan(
+        self,
+        *,
+        movement: PlanetMovement,
+        obs,
+        obs_tensors: dict,
+        status,
+        cache,
+        opp_id: int | None,
+        base_config: OEPPlannerConfig,
+        oep_config: OEPPlannerConfig,
+        player_count: int,
+    ) -> LaunchEntries:
+        """Standalone sim-value-search plan (NO Producer anchor).
+
+        Enumerates broad lanes (each owned planet -> its K nearest non-owned
+        planets, full send), ranks single lanes by terminal-territory gain, then
+        greedily combines the lanes that keep improving the combined territory
+        value. This is the intel's sim-value-search core, built outside the
+        best-response-over-Producer frame that capped at -0.045. Uses the cheap
+        (no reactive opponent) territory value for ranking to fit actTimeout.
+        """
+        empty = _empty_entries(obs.device, obs.ships.dtype)
+        pid = int(obs.player_id)
+        slot_by_id = _planet_id_to_slot(movement)
+        id_by_slot = {slot: pid_ for pid_, slot in slot_by_id.items()}
+        P = int(movement.P)
+        sources = [
+            s
+            for s in range(P)
+            if bool(obs.alive[s]) and int(obs.owner_abs[s].item()) == pid
+        ]
+        targets = [
+            t
+            for t in range(P)
+            if bool(obs.alive[t]) and int(obs.owner_abs[t].item()) != pid
+        ]
+        if not sources or not targets:
+            return empty
+        dist = movement.pairwise_distance(0)
+        k_targets = max(1, int(self.config.standalone_targets_per_source))
+        lanes: list[LaneIntent] = []
+        for s in sources:
+            if s not in id_by_slot:
+                continue
+            ranked = sorted(targets, key=lambda t: float(dist[s, t].item()))
+            for t in ranked[:k_targets]:
+                if t not in id_by_slot:
+                    continue
+                lanes.append(
+                    LaneIntent(
+                        source_planet_id=int(id_by_slot[s]),
+                        target_planet_id=int(id_by_slot[t]),
+                        fraction=1.0,
+                    )
+                )
+        if not lanes:
+            return empty
+
+        def territory(entries: LaunchEntries) -> float:
+            # Reactive opponent in the value penalizes over-extension — the
+            # measured cause of the no-opponent version losing 88% (−0.75).
+            return self._territory_value(
+                candidate_entries=entries,
+                opp_id=opp_id,
+                obs=obs,
+                obs_tensors=obs_tensors,
+                movement=movement,
+                cache=cache,
+                base_config=base_config,
+                player_count=player_count,
+                horizon=int(oep_config.horizon),
+            )
+
+        base_val = territory(empty)
+        scored: list[tuple[float, LaneIntent]] = []
+        for lane in lanes:
+            ent = _entries_from_lane_intents(
+                (lane,), movement=movement, obs=obs, status=status,
+                config=oep_config, player_id=pid,
+            )
+            if not bool(ent.valid.any().item()):
+                continue
+            scored.append((territory(ent) - base_val, lane))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        chosen: list[LaneIntent] = []
+        best_val = base_val
+        for gain, lane in scored:
+            if gain <= 0.0:
+                break
+            trial = _entries_from_lane_intents(
+                tuple([*chosen, lane]), movement=movement, obs=obs, status=status,
+                config=oep_config, player_id=pid,
+            )
+            if not bool(trial.valid.any().item()):
+                continue
+            v = territory(trial)
+            if v > best_val:
+                best_val = v
+                chosen.append(lane)
+            if len(chosen) >= max(1, int(oep_config.max_waves_per_turn)):
+                break
+        if not chosen:
+            return empty
+        return _entries_from_lane_intents(
+            tuple(chosen), movement=movement, obs=obs, status=status,
+            config=oep_config, player_id=pid,
+        )
+
     def tensor_action(self, obs_tensors: dict, raw_obs: Any | None = None):
         action_start = self._profile_start()
         mem = self.memory
@@ -2324,7 +2621,24 @@ class OEPLiteRuntime:
         ordinal_win_rate: float | None = None
         ordinal_wins = 0
         ordinal_variants = 0
-        if bool(self.config.reactive_reply):
+        if bool(self.config.standalone_territory):
+            # Standalone sim-value-search: build the plan from scratch by
+            # terminal-territory value, NOT as a deviation from the Producer.
+            stage_start = self._profile_start()
+            oep_entries = self._standalone_territory_plan(
+                movement=movement,
+                obs=obs,
+                obs_tensors=obs_tensors,
+                status=status,
+                cache=cache,
+                opp_id=opp_id,
+                base_config=base_config,
+                oep_config=oep_config,
+                player_count=player_count,
+            )
+            chose_oep = bool(oep_entries.valid.any().item())
+            self._profile_record("standalone_territory", stage_start)
+        elif bool(self.config.reactive_reply):
             if opp_id is None:
                 chose_oep = _advantage > float(self.config.min_advantage) and _advantage < float(
                     self.config.max_advantage
@@ -2437,6 +2751,77 @@ class OEPLiteRuntime:
                 threshold=float(self.config.ordinal_win_threshold),
             )
             self._profile_record("fitness_ordinal_variants", stage_start)
+        elif int(self.config.rollout_search_width) > 0:
+            # E3: search a diverse candidate set (greedy + forced-first-launch
+            # beam variants) and score EACH by rollout value — _plan_fitness
+            # against the opponent's reactive reply to that candidate — instead
+            # of the 1-ply static fitness. Deviate from the Producer only if the
+            # best OEP candidate beats the Producer plan under the SAME reactive
+            # value (symmetric). This is the only lever that combines candidate
+            # diversity with a reacting-opponent value; selection/beam tuning
+            # alone saturated at -0.045.
+            stage_start = self._profile_start()
+            candidates = _oep_plan_variant_list(
+                movement=movement,
+                obs=obs,
+                obs_tensors=obs_tensors,
+                cache=cache,
+                status=status,
+                prod=movement.planet_prod,
+                alive_by_step=alive_by_step,
+                config=oep_config,
+                fractions=self.config.fractions,
+                player_count=player_count,
+                opponent_entries=opponent_entries,
+                beam_width=int(self.config.rollout_search_width),
+            )
+            if not candidates:
+                candidates = [oep_entries]
+            def _candidate_value(cand: LaunchEntries) -> float:
+                if bool(self.config.rollout_terminal_value):
+                    return self._territory_value(
+                        candidate_entries=cand,
+                        opp_id=opp_id,
+                        obs=obs,
+                        obs_tensors=obs_tensors,
+                        movement=movement,
+                        cache=cache,
+                        base_config=base_config,
+                        player_count=player_count,
+                        horizon=int(oep_config.horizon),
+                    )
+                return self._rollout_value(
+                    candidate_entries=cand,
+                    opp_id=opp_id,
+                    obs=obs,
+                    obs_tensors=obs_tensors,
+                    movement=movement,
+                    cache=cache,
+                    status=status,
+                    alive_by_step=alive_by_step,
+                    base_config=base_config,
+                    player_count=player_count,
+                    static_opponent_launch_set=opponent_launch_set,
+                )
+
+            best_value: float | None = None
+            best_candidate = candidates[0]
+            for candidate in candidates:
+                value = _candidate_value(candidate)
+                if best_value is None or value > best_value:
+                    best_value = value
+                    best_candidate = candidate
+            producer_value = _candidate_value(producer_entries)
+            oep_entries = best_candidate
+            oep_fitness = float(best_value if best_value is not None else 0.0)
+            producer_fitness = float(producer_value)
+            _advantage = oep_fitness - producer_fitness
+            # Conservative deviation threshold (reuses OEP_MIN_ADVANTAGE): only
+            # deviate from the Producer when the best candidate's value clears a
+            # margin. Combines the best value (territory) with the conservative
+            # selection that gave the -0.045 ceiling — the one untried pairing.
+            chose_oep = _advantage > float(self.config.min_advantage)
+            self._profile_record("rollout_search", stage_start)
         else:
             chose_oep = _advantage > float(self.config.min_advantage) and _advantage < float(
                 self.config.max_advantage
@@ -2590,6 +2975,18 @@ def _env_config() -> OEPLiteConfig:
         ),
         beam_first_width=_env_int("OEP_BEAM_FIRST_WIDTH", defaults.beam_first_width),
         beam_pair_width=_env_int("OEP_BEAM_PAIR_WIDTH", defaults.beam_pair_width),
+        rollout_search_width=_env_int(
+            "OEP_ROLLOUT_SEARCH_WIDTH", defaults.rollout_search_width
+        ),
+        rollout_terminal_value=_env_bool(
+            "OEP_ROLLOUT_TERMINAL_VALUE", defaults.rollout_terminal_value
+        ),
+        standalone_territory=_env_bool(
+            "OEP_STANDALONE_TERRITORY", defaults.standalone_territory
+        ),
+        standalone_targets_per_source=_env_int(
+            "OEP_STANDALONE_TARGETS_PER_SOURCE", defaults.standalone_targets_per_source
+        ),
     )
 
 
@@ -2607,11 +3004,29 @@ def _load_private_producer_policy(name: str) -> Policy:
     return policy
 
 
-_RUNTIME = OEPLiteRuntime(
-    seed_policy=_load_private_producer_policy("seed"),
-    opponent_policy=_load_private_producer_policy("opponent"),
-    config=_env_config(),
-)
+def make_runtime() -> OEPLiteRuntime:
+    """Build a fresh OEP runtime with fully isolated per-game state.
+
+    Each runtime gets its own ``OEPLiteMemory`` AND its own private Producer
+    seed/opponent policies (which themselves carry per-game memory), so two
+    runtimes never share mutable state. Used for batched/vectorized rollouts
+    where concurrent games must not contaminate each other (the module-global
+    ``_RUNTIME`` is only safe for sequential single-env play).
+    """
+    return OEPLiteRuntime(
+        seed_policy=_load_private_producer_policy("seed"),
+        opponent_policy=_load_private_producer_policy("opponent"),
+        config=_env_config(),
+    )
+
+
+_RUNTIME = make_runtime()
+
+
+def reset_runtime() -> None:
+    """Replace the module-global runtime after an external fallback move."""
+    global _RUNTIME
+    _RUNTIME = make_runtime()
 
 
 def agent(obs):

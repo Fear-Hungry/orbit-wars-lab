@@ -77,31 +77,122 @@ def _load_checkpoint_payload(path: str) -> dict[str, Any]:
     if not isinstance(checkpoint, dict) or "model_state_dict" not in checkpoint:
         raise ValueError(f"invalid PPO checkpoint: {path}")
     state = checkpoint["model_state_dict"]
-    required = (
-        "net.0.weight",
-        "net.0.bias",
-        "net.2.weight",
-        "net.2.bias",
-        "source.weight",
-        "source.bias",
-        "target.weight",
-        "target.bias",
-        "frac.weight",
-        "frac.bias",
-        "offset.weight",
-        "offset.bias",
-    )
+    summary = checkpoint.get("summary") if isinstance(checkpoint.get("summary"), dict) else {}
+    arch = str(summary.get("arch", "flat"))
+
+    _HEAD = ("launch", "source", "target", "frac", "offset")
+    if arch == "entity":
+        required = tuple(
+            f"{p}.{i}.{w}"
+            for p in ("planet_mlp", "fleet_mlp", "trunk")
+            for i in (0, 2)
+            for w in ("weight", "bias")
+        ) + tuple(f"heads.{h}.{w}" for h in _HEAD for w in ("weight", "bias"))
+    else:
+        required = (
+            "net.0.weight", "net.0.bias", "net.2.weight", "net.2.bias",
+        ) + tuple(f"{h}.{w}" for h in _HEAD for w in ("weight", "bias"))
+
     missing = [key for key in required if key not in state]
     if missing:
-        raise ValueError(f"checkpoint is missing policy tensors: {missing}")
+        raise ValueError(f"checkpoint is missing {arch} policy tensors: {missing}")
     return {
+        "arch": arch,
         "decoder": _decoder_payload(checkpoint),
         "weights": {key: _tensor_payload(state[key]) for key in required},
     }
 
 
-def _neural_runtime_source(payload: dict[str, Any]) -> str:
+_FLAT_ACTION_SRC = '''def _neural_action(obs, player):
+    weights = _NEURAL_POLICY["weights"]
+    hidden = _tanh_vec(_linear(_encode_state_flat(obs, player), weights["net.0.weight"], weights["net.0.bias"]))
+    hidden = _tanh_vec(_linear(hidden, weights["net.2.weight"], weights["net.2.bias"]))
+    planets = obs.get("planets", [])
+    min_ships = int(_NEURAL_POLICY["decoder"].get("min_ships_to_launch", 2))
+    n_launchable = sum(1 for planet in planets if _planet_owner(planet) == player and _planet_ships(planet) >= min_ships)
+    planet_count = len(planets)
+    launch = _argmax(_linear(hidden, weights["launch.weight"], weights["launch.bias"])) if n_launchable > 0 else 0
+    return [
+        launch,
+        _masked_argmax(_linear(hidden, weights["source.weight"], weights["source.bias"]), n_launchable),
+        _masked_argmax(_linear(hidden, weights["target.weight"], weights["target.bias"]), max(planet_count - 1, 0)),
+        _argmax(_linear(hidden, weights["frac.weight"], weights["frac.bias"])),
+        _argmax(_linear(hidden, weights["offset.weight"], weights["offset.bias"])),
+    ]'''
+
+
+_ENTITY_ACTION_SRC = '''def _entity_pool(rows, prefix):
+    weights = _NEURAL_POLICY["weights"]
+    width = len(weights[prefix + ".2.bias"])
+    acc = [0.0] * width
+    count = 0.0
+    for row in rows:
+        if row[0] <= 0.0:
+            continue
+        h = _tanh_vec(_linear(row, weights[prefix + ".0.weight"], weights[prefix + ".0.bias"]))
+        h = _tanh_vec(_linear(h, weights[prefix + ".2.weight"], weights[prefix + ".2.bias"]))
+        for j in range(width):
+            acc[j] += h[j]
+        count += 1.0
+    if count > 0.0:
+        acc = [value / count for value in acc]
+    return acc
+
+
+def _neural_action(obs, player):
+    weights = _NEURAL_POLICY["weights"]
+    flat = _encode_state_flat(obs, player)
+    glob = flat[:8]
+    planet_rows = [flat[8 + i * 14:8 + (i + 1) * 14] for i in range(_NEURAL_MAX_PLANETS)]
+    foff = 8 + _NEURAL_MAX_PLANETS * 14
+    fleet_rows = [flat[foff + i * 10:foff + (i + 1) * 10] for i in range(_NEURAL_MAX_FLEETS)]
+    trunk_in = list(glob) + _entity_pool(planet_rows, "planet_mlp") + _entity_pool(fleet_rows, "fleet_mlp")
+    hidden = _tanh_vec(_linear(trunk_in, weights["trunk.0.weight"], weights["trunk.0.bias"]))
+    hidden = _tanh_vec(_linear(hidden, weights["trunk.2.weight"], weights["trunk.2.bias"]))
+    planets = obs.get("planets", [])
+    min_ships = int(_NEURAL_POLICY["decoder"].get("min_ships_to_launch", 2))
+    n_launchable = sum(1 for planet in planets if _planet_owner(planet) == player and _planet_ships(planet) >= min_ships)
+    planet_count = len(planets)
+    launch = _argmax(_linear(hidden, weights["heads.launch.weight"], weights["heads.launch.bias"])) if n_launchable > 0 else 0
+    return [
+        launch,
+        _masked_argmax(_linear(hidden, weights["heads.source.weight"], weights["heads.source.bias"]), n_launchable),
+        _masked_argmax(_linear(hidden, weights["heads.target.weight"], weights["heads.target.bias"]), max(planet_count - 1, 0)),
+        _argmax(_linear(hidden, weights["heads.frac.weight"], weights["heads.frac.bias"])),
+        _argmax(_linear(hidden, weights["heads.offset.weight"], weights["heads.offset.bias"])),
+    ]'''
+
+
+def _policy_action_source(payload: dict[str, Any], *, function_name: str, policy_name: str) -> str:
+    action_src = _ENTITY_ACTION_SRC if payload.get("arch") == "entity" else _FLAT_ACTION_SRC
+    return action_src.replace("def _neural_action(obs, player):", f"def {function_name}(obs, player):").replace(
+        "_NEURAL_POLICY", policy_name
+    )
+
+
+def _neural_runtime_source(
+    payload: dict[str, Any],
+    *,
+    four_player_payload: dict[str, Any] | None = None,
+    four_player_policy: str = "neural",
+) -> str:
+    if four_player_policy not in {"neural", "template"}:
+        raise ValueError("four_player_policy must be 'neural' or 'template'")
     encoded = base64.b64encode(zlib.compress(json.dumps(payload, separators=(",", ":")).encode("utf-8"), level=9)).decode("ascii")
+    action_src = _policy_action_source(payload, function_name="_neural_action", policy_name="_NEURAL_POLICY")
+    encoded_4p = (
+        base64.b64encode(
+            zlib.compress(json.dumps(four_player_payload, separators=(",", ":")).encode("utf-8"), level=9)
+        ).decode("ascii")
+        if four_player_payload is not None
+        else None
+    )
+    policy_4p_src = (
+        f'_NEURAL_POLICY_4P = json.loads(zlib.decompress(base64.b64decode("{encoded_4p}")).decode("utf-8"))\n'
+        + _policy_action_source(four_player_payload, function_name="_neural_action_4p", policy_name="_NEURAL_POLICY_4P")
+        if four_player_payload is not None
+        else "_NEURAL_POLICY_4P = None\n"
+    )
     return f'''
 
 import base64
@@ -110,6 +201,9 @@ import zlib
 from math import floor, tanh
 
 _NEURAL_POLICY = json.loads(zlib.decompress(base64.b64decode("{encoded}")).decode("utf-8"))
+{policy_4p_src}
+_FOUR_PLAYER_POLICY = "{four_player_policy}"
+_BASE_TEMPLATE_AGENT = agent
 _NEURAL_MAX_PLANETS = 96
 _NEURAL_MAX_FLEETS = 256
 
@@ -213,20 +307,44 @@ def _argmax(values):
     return best_idx
 
 
-def _neural_action(obs, player):
-    weights = _NEURAL_POLICY["weights"]
-    hidden = _tanh_vec(_linear(_encode_state_flat(obs, player), weights["net.0.weight"], weights["net.0.bias"]))
-    hidden = _tanh_vec(_linear(hidden, weights["net.2.weight"], weights["net.2.bias"]))
-    return [
-        _argmax(_linear(hidden, weights["source.weight"], weights["source.bias"])),
-        _argmax(_linear(hidden, weights["target.weight"], weights["target.bias"])),
-        _argmax(_linear(hidden, weights["frac.weight"], weights["frac.bias"])),
-        _argmax(_linear(hidden, weights["offset.weight"], weights["offset.bias"])),
-    ]
+def _masked_argmax(values, valid_count):
+    # Train/inference parity with action_masks: argmax only over valid ranks.
+    if valid_count <= 0 or valid_count >= len(values):
+        return _argmax(values)
+    return _argmax(values[:valid_count])
 
 
-def _neural_decode(obs, player, action):
-    decoder = _NEURAL_POLICY["decoder"]
+{action_src}
+
+
+def _observed_player_count(obs):
+    raw = obs.get("num_players", None)
+    try:
+        value = int(raw)
+        if value in (2, 4):
+            return value
+    except Exception:
+        pass
+    max_owner = int(obs.get("player", 0))
+    for row in obs.get("planets", []):
+        try:
+            owner = int(row[1] if not isinstance(row, dict) else row.get("owner", -1))
+        except Exception:
+            continue
+        if owner >= 0:
+            max_owner = max(max_owner, owner)
+    for row in obs.get("fleets", []):
+        try:
+            owner = int(row[1] if not isinstance(row, dict) else row.get("owner", -1))
+        except Exception:
+            continue
+        if owner >= 0:
+            max_owner = max(max_owner, owner)
+    return 4 if max_owner >= 3 else 2
+
+
+def _neural_decode_with_policy(policy, obs, player, action):
+    decoder = policy["decoder"]
     fractions = decoder.get("fractions", [0.10, 0.25, 0.50, 0.75])
     angle_offsets = decoder.get("angle_offsets", [-0.261799, -0.130899, 0.0, 0.130899, 0.261799])
     max_moves = int(decoder.get("max_moves_per_turn", 8))
@@ -236,8 +354,12 @@ def _neural_decode(obs, player, action):
     own = [planet for planet in planets if _planet_owner(planet) == player and _planet_ships(planet) >= min_ships]
     if not own:
         return []
+    # Action layout: [launch, source_rank, target_rank, fraction_idx, offset_idx].
+    # launch == 0 is an explicit pass (see todo P1.5).
+    if int(action[0]) == 0:
+        return []
+    source_rank, target_rank, fraction_idx, offset_idx = [int(value) for value in action[1:5]]
     own.sort(key=lambda planet: (_planet_ships(planet), _planet_production(planet)), reverse=True)
-    source_rank, target_rank, fraction_idx, offset_idx = [int(value) for value in action[:4]]
     offset = source_rank % len(own)
     ranked_sources = own[offset:] + own[:offset]
     moves = []
@@ -283,11 +405,25 @@ def _neural_decode(obs, player, action):
     return moves
 
 
+def _neural_decode(obs, player, action):
+    return _neural_decode_with_policy(_NEURAL_POLICY, obs, player, action)
+
+
+def _neural_decode_4p(obs, player, action):
+    policy = _NEURAL_POLICY_4P if _NEURAL_POLICY_4P is not None else _NEURAL_POLICY
+    return _neural_decode_with_policy(policy, obs, player, action)
+
+
 def agent(obs):
+    if _observed_player_count(obs) >= 4 and _FOUR_PLAYER_POLICY == "template":
+        return list(_BASE_TEMPLATE_AGENT(obs))
     _submission_stats_increment("calls")
     try:
         player = int(obs.get("player", 0))
-        moves = _neural_decode(obs, player, _neural_action(obs, player))
+        if _observed_player_count(obs) >= 4 and _NEURAL_POLICY_4P is not None:
+            moves = _neural_decode_4p(obs, player, _neural_action_4p(obs, player))
+        else:
+            moves = _neural_decode(obs, player, _neural_action(obs, player))
         if not _moves_are_legal(obs, player, moves):
             _submission_stats_increment("illegal_moves")
             raise ValueError("neural policy produced illegal moves")
@@ -298,24 +434,46 @@ def agent(obs):
 '''
 
 
-def render_submission(template: str, checkpoint: str | None = None) -> str:
+def render_submission(
+    template: str,
+    checkpoint: str | None = None,
+    *,
+    checkpoint_4p: str | None = None,
+    four_player_policy: str = "neural",
+) -> str:
     validate_submission_template(template)
     if checkpoint is None:
+        if checkpoint_4p is not None:
+            raise ValueError("checkpoint_4p requires checkpoint")
         return template
-    return template + _neural_runtime_source(_load_checkpoint_payload(checkpoint))
+    four_player_payload = _load_checkpoint_payload(checkpoint_4p) if checkpoint_4p is not None else None
+    return template + _neural_runtime_source(
+        _load_checkpoint_payload(checkpoint),
+        four_player_payload=four_player_payload,
+        four_player_policy=four_player_policy,
+    )
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", default=None)
+    parser.add_argument("--checkpoint-4p", default=None)
+    parser.add_argument("--four-player-policy", choices=("neural", "template"), default="neural")
     parser.add_argument("--out", default="submission.py")
     args = parser.parse_args()
 
     if args.checkpoint is not None and not Path(args.checkpoint).exists():
         raise SystemExit(f"checkpoint not found: {args.checkpoint}")
+    if args.checkpoint_4p is not None and not Path(args.checkpoint_4p).exists():
+        raise SystemExit(f"4p checkpoint not found: {args.checkpoint_4p}")
 
     template = Path("python/submission/submission_template.py").read_text(encoding="utf-8")
-    rendered = render_submission(template, args.checkpoint)
+    rendered = render_submission(
+        template,
+        args.checkpoint,
+        checkpoint_4p=args.checkpoint_4p,
+        four_player_policy=args.four_player_policy,
+    )
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(rendered, encoding="utf-8")

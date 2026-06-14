@@ -6,6 +6,7 @@ import yaml
 from python.league.evaluation import load_population_manifest
 from python.train.final_selection import load_final_selection_config
 from python.train.objective_validation import (
+    _export_runtime_validation,
     load_objective_validation_config,
     run_objective_validation,
 )
@@ -83,3 +84,25 @@ def test_objective_validation_exports_two_candidates_and_checks_self_play(tmp_pa
     assert (out_dir / "candidate_1_submission.py").exists()
     assert (out_dir / "candidate_2_submission.py").exists()
     assert (out_dir / "objective_validation_report.json").exists()
+
+
+def test_objective_runtime_validation_stops_crashed_seats(tmp_path: Path):
+    candidate = tmp_path / "candidate.py"
+    candidate.write_text(
+        """
+def agent(obs):
+    raise RuntimeError("boom")
+""",
+        encoding="utf-8",
+    )
+
+    report = _export_runtime_validation(
+        candidate,
+        num_players=2,
+        seeds=[0],
+        episode_steps=8,
+        enable_comets=False,
+    )
+
+    assert report["decision_turns"] == 2
+    assert report["crash_rate"] == 1.0

@@ -65,7 +65,7 @@ rtk .venv/bin/python -m scripts.oep_promotion_gate \
 ```
 
 Interprete `underpowered` como "amostra insuficiente", não como regressão real. Só promova uma mudança quando a margem normalizada média contra o Producer for `>= 0.0` e nenhum veredito marcar regressão significativa. `margin_significant_improvement`, `paired_significant_improvement` ou `significant_improvement` são bônus; `inconclusive` com margem negativa é descarte, não commit.
-Para o OEP, `scripts.oep_promotion_gate` torna essa regra executável: exige `192` jogos (`96` seeds × `2` lados), margem média `>= 0.0` contra Producer, crash/timeout/invalid `0.0`, e delta pareado de margem não-negativo contra o baseline G2.
+Para o OEP, `scripts.oep_promotion_gate` torna essa regra executável: exige `192` jogos (`96` seeds × `2` lados), margem média `>= 0.0` contra Producer, crash/timeout/invalid/fallback/policy-illegal/fallback-error/instrumentation-missing `0.0`, e delta pareado de margem não-negativo contra o baseline G2.
 
 Rode `submission_v_old.py`, `greedy`, `rush` e `4p` em baixa amostra como sanity técnico, não como decisor de melhoria 2p:
 
@@ -145,6 +145,102 @@ Estados persistidos:
 
 - `artifacts/hall_of_fame.json`;
 - `artifacts/map_elites.json`.
+
+## Validar pela liga local
+
+Antes de usar a liga para julgar um bot novo, rode o diagnóstico executável:
+
+```bash
+rtk .venv/bin/python scripts/league_doctor.py
+```
+
+Ele valida os invariantes que tornam a liga comparável ao ambiente de competição:
+
+- `actTimeout=1s` com banco de overage `12s`;
+- crash vira `ERROR`, timeout terminal vira `TIMEOUT`, e esses assentos não podem vencer;
+- movimentos malformados ou overbudget são contabilizados em `faults`;
+- jogos limpos ainda gravam `faults: {}` para separar jogo auditado de JSON antigo;
+- empates não viram vitória falsa do assento 0;
+- tarballs são isolados por conteúdo e reexportar o mesmo nome invalida cache velho;
+- smoke real 2p/4p roda bots internos com status `DONE` e zero faults.
+
+Se o diagnóstico avisar `existing_artifacts_are_fully_audited`, isso significa que o
+corpus antigo em `artifacts/league/v1` contém jogos pré-instrumentação. Use esse
+corpus como histórico anotado, não como prova limpa para promover bot. Para exigir
+corpus 100% auditado em CI, rode:
+
+```bash
+rtk .venv/bin/python scripts/league_doctor.py --strict-existing
+```
+
+Para uma sonda isolada, sem escrever no corpus permanente:
+
+```bash
+rtk .venv/bin/python scripts/league_match.py \
+  --agents candidate,producer \
+  --seeds 16 --seed-base 50000 --steps 500 \
+  --out /tmp/candidate_vs_producer_league.json
+
+rtk .venv/bin/python scripts/league_report.py '/tmp/candidate_vs_producer_league.json' 100
+```
+
+Para validação competitiva de um candidato registrado em `scripts/league_agents.py`
+ou em `artifacts/league/tarballs/<nome>.tar.gz`, use H2H contra o pool:
+
+```bash
+rtk .venv/bin/python scripts/league_challenger.py --candidate candidate --seeds 20 --workers 4
+```
+
+Para escolher submissão entre candidatos, use a régua pareada forte. Ela não usa
+BT/ranking aleatório: roda cada candidato contra as mesmas âncoras 2p, lineups
+4p fixas, H2H direto contra o incumbente e contra os outros candidatos do mesmo
+comando, e só recomenda `PASS_LOCAL` se todos os gates técnicos e competitivos
+passarem. O `overall_score` usa o split de campo medido (46% 2p / 54% 4p), conta
+empates 2p como não-vitórias no score bruto, e o ranking é ordenado primeiro por
+veredito: `PASS_LOCAL` > `INCONCLUSIVE` > `REJECT_LOCAL`. Os mapas 2p sao
+derivados do nome do adversario, entao `vs producer` usa o mesmo slice mesmo que
+voce rode um candidato sozinho ou dentro de um painel maior.
+Em 4p, cada seed da regua decisora e jogada nas quatro rotacoes de assento; isso
+evita confundir sorte de mapa com posicao inicial e tambem impede JSON parcial
+de registrar seeds que o backend nao executou.
+
+```bash
+rtk .venv/bin/python scripts/league_submit_ruler.py \
+  --candidates pgs_hold pgs_holdwave pgs_wave_s100 \
+  --incumbent pgs_holdwave \
+  --seeds 24 --steps 500 --jobs 2 \
+  --match-chunk-size 8 \
+  --out artifacts/league/submit_ruler/report.json
+```
+
+Em runs longos, mantenha `--match-chunk-size` ligado. Os JSONs parciais sao
+gravados por chunk e, nos runs iniciados apos o commit `ac6ad0c`, os chunks sao
+intercalados por seat order/rotacao para que o progresso parcial ja seja
+monitoravel sem esperar o match inteiro. Nos runs apos o commit de checkpoint
+balanceado, o arquivo parcial so e escrito depois de completar o par de seat
+orders 2p ou o bloco de rotacoes 4p disponivel, evitando leitura enviesada no
+meio do chunk.
+O `--skip-run` e estrito: ele so aceita JSONs que batem exatamente com a tarefa
+esperada (modo, agentes, seed slice, numero de jogos, seat orders/rotacoes,
+`faults` e `agent_status`). JSON antigo, parcial ou de outro comando deve falhar.
+Fallback/timeout interno reportado por `SUBMISSION_STATS` de tarball tambem e
+falha audivel na liga; nao use ranking local que esteja medindo o Producer
+fallback como se fosse o bot.
+O gate de tarball imprime `tarball_sha256` e `tarball_size`; cite esses campos
+em registros de experimento/submissao para nao misturar validacao antiga com um
+arquivo reempacotado no mesmo caminho.
+
+Interpretação:
+
+- `PASS_LOCAL`: candidato passou faults/status, cobriu H2H mínimo, empatou/bateu
+  Producer e incumbente, limpou o floor rejeitado e não morreu demais em 4p;
+- `INCONCLUSIVE`: a amostra não tem decisivos suficientes; aumente `--seeds`;
+- `REJECT_LOCAL`: há falha técnica ou gate competitivo local ruim.
+
+Regra operacional: a liga é **veto-only**. Ela é boa para detectar crash, timeout,
+ação inválida, perda H2H clara, fragilidade 4p e estilos exploradores. Ela não
+promove sozinha entre configs próximas; promoção final exige score Kaggle/LB
+estabilizado e interpretação das âncoras atuais.
 
 ## Validação
 

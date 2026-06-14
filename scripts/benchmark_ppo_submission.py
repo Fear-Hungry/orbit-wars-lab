@@ -11,6 +11,7 @@ from scripts.benchmark_submission import (
     _resolve_opponent,
     benchmark_four_player_spec,
     benchmark_two_player_spec,
+    technical_failures,
 )
 from scripts.export_submission import render_submission
 
@@ -43,6 +44,10 @@ def _summary(report: dict[str, Any]) -> dict[str, float]:
             "crash_rate": 0.0,
             "timeout_rate": 0.0,
             "invalid_action_rate": 0.0,
+            "fallback_rate": 0.0,
+            "policy_illegal_move_rate": 0.0,
+            "fallback_error_rate": 0.0,
+            "instrumentation_missing_rate": 0.0,
             "mean_decision_ms": 0.0,
         }
     decisions = sum(float(record["decision_turns"]) for record in records)
@@ -54,6 +59,19 @@ def _summary(report: dict[str, Any]) -> dict[str, float]:
         "crash_rate": float(sum(float(record["crashes"]) for record in records) / max(decisions, 1.0)),
         "timeout_rate": float(sum(float(record["timeouts"]) for record in records) / max(decisions, 1.0)),
         "invalid_action_rate": float(sum(float(record["invalid_actions"]) for record in records) / max(decisions, 1.0)),
+        "fallback_rate": float(sum(float(record.get("fallbacks", 0.0)) for record in records) / max(decisions, 1.0)),
+        "policy_illegal_move_rate": float(
+            sum(float(record.get("policy_illegal_moves", 0.0)) for record in records)
+            / max(decisions, 1.0)
+        ),
+        "fallback_error_rate": float(
+            sum(float(record.get("fallback_errors", 0.0)) for record in records)
+            / max(decisions, 1.0)
+        ),
+        "instrumentation_missing_rate": float(
+            sum(float(record.get("instrumentation_missing", 0.0)) for record in records)
+            / max(decisions, 1.0)
+        ),
         "mean_decision_ms": float(1000.0 * elapsed / max(decisions, 1.0)),
     }
 
@@ -124,6 +142,11 @@ def main() -> None:
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--skip-4p", action="store_true")
     parser.add_argument("--disable-comets", action="store_true")
+    parser.add_argument(
+        "--allow-technical-failures",
+        action="store_true",
+        help="write the report even when crash/timeout/invalid/fallback rates are nonzero",
+    )
     args = parser.parse_args()
 
     report = benchmark_exported_checkpoint(
@@ -141,6 +164,12 @@ def main() -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps({"summary": report["summary"], "submission": report["submission"]}, indent=2, sort_keys=True))
+    failures = technical_failures(report, require_submission_stats=True)
+    if failures and not args.allow_technical_failures:
+        raise SystemExit(
+            "technical failures detected; rerun with --allow-technical-failures "
+            f"for exploratory measurement: {failures}"
+        )
 
 
 if __name__ == "__main__":

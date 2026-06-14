@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import argparse
+import io
 import tarfile
 from pathlib import Path
 
 
 def _add_file(tar: tarfile.TarFile, source: Path, arcname: str) -> None:
     tar.add(source, arcname=arcname, recursive=False)
+
+
+def _add_text(tar: tarfile.TarFile, arcname: str, text: str) -> None:
+    data = text.encode("utf-8")
+    info = tarfile.TarInfo(arcname)
+    info.size = len(data)
+    tar.addfile(info, io.BytesIO(data))
 
 
 def _add_tree(tar: tarfile.TarFile, source: Path, arc_prefix: str) -> None:
@@ -36,8 +44,13 @@ def main() -> None:
         )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
+    main_source = args.producer_agent.read_text(encoding="utf-8")
+    # Kaggle selects the last callable from main.py. The repo-side Producer file
+    # exposes make_agent() after agent() for local isolated rollouts, but the
+    # submission must expose only agent as the final callable.
+    main_source += "\n\ntry:\n    del make_agent\nexcept NameError:\n    pass\n"
     with tarfile.open(args.out, "w:gz") as tar:
-        _add_file(tar, args.producer_agent, "main.py")
+        _add_text(tar, "main.py", main_source)
         _add_file(tar, args.producer_upstream, "_upstream.py")
         _add_tree(tar, args.orbit_lite_dir, "orbit_lite")
     print({

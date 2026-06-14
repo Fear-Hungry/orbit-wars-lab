@@ -92,10 +92,13 @@ def _export_runtime_validation(
             config=RustConfig(episode_steps=episode_steps, enable_comets=enable_comets, act_timeout=act_timeout),
         )
         state = backend.reset(seed)[0]
+        terminal_status: list[str | None] = [None for _ in range(num_players)]
         games += 1
         while True:
             actions = [[] for _ in range(num_players)]
             for player in range(num_players):
+                if terminal_status[player] is not None:
+                    continue
                 decision_turns += 1
                 obs = to_official_observation(state, player=player)
                 try:
@@ -104,12 +107,14 @@ def _export_runtime_validation(
                     elapsed = perf_counter() - start
                     if elapsed > act_timeout:
                         timeouts += 1
+                        terminal_status[player] = "TIMEOUT"
                         moves = []
                     if not isinstance(moves, list) or not _moves_are_legal(state, player, moves):
                         invalid_actions += 1
                         moves = []
                 except Exception:
                     crashes += 1
+                    terminal_status[player] = "ERROR"
                     moves = []
                 actions[player] = moves
 

@@ -35,6 +35,11 @@ artifacts/*
 autoresearch-*.json
 autoresearch-*.md
 uv.lock
+
+# Experiment store: experiments.duckdb is the CANONICAL, git-tracked store
+# (add via `python -m python.lab.experiments add`, then commit it). Only the
+# regenerated markdown dump is ignored.
+EXPERIMENTS.export.md
 *.pt
 *.pth
 *.onnx

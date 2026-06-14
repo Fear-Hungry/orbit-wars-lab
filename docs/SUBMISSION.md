@@ -34,7 +34,7 @@ deve falhar com `fallback_rate > 0`.
 
 ## Estado do ciclo (snapshot)
 
-> Instantâneo manual; o registro vivo de experimentos fica em [`../EXPERIMENTS.md`](../EXPERIMENTS.md).
+> Instantâneo manual; o registro vivo de experimentos fica no DB `experiments.duckdb` (`make experiments-report`).
 
 - Data: 2026-06-02 · Commit `c4b9467` · Kaggle ref `53290356`
 - Arquivo: `artifacts/submission.py`
