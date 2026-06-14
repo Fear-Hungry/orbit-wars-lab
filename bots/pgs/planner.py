@@ -133,6 +133,22 @@ class PGSConfig:
     # selects them). A real 4p fix needs a LEARNED value (H7) or a 4p-aware multi-turn
     # threat model — not a flag. Left off by default.
     defend_in_4p: bool = False
+    # H9 (DB 169/234) — 4p multi-player threat value. When True, _plan_value in 4p
+    # scores the post-launch projection with bots/pgs/threat.compute_threat_features
+    # (forward, PER-ENEMY max/min over the trajectory + arrivals_by_owner) instead of
+    # the endpoint margin@H. The probe (scripts/h9_threat_probe.py) confirmed margin@H
+    # is flat across launch/hold/defend (DB 118) while threat_value separates them in
+    # 86% of states, so the coordinate-ascent search can finally SELECT survival plans
+    # (reinforce/evac already offered via `scripts`). No learned net (contrast H7, DB
+    # 166/172). Pure-python / submission-safe. Off until the 4p death gate passes.
+    threat_value_4p: bool = False
+    # H9 threat-value term weights (research-loop search space). Defaults reproduce
+    # the shipped v2 ThreatFeatures.threat_value scalar exactly; the auto-research
+    # loop (scripts/research_loop/) mutates these to trade off survival terms.
+    threat_planet_weight: float = 100.0
+    threat_first_loss_weight: float = 2.0
+    threat_incoming_weight: float = 0.5
+    threat_ships_weight: float = 0.01
 
 
 def _select_entries(entries: LaunchEntries, mask: Tensor) -> LaunchEntries:
@@ -504,6 +520,18 @@ class PGSRuntime:
             )
             _debit_entry_sources(clone, entries)
         st = clone.garrison_status(max_horizon=H)
+        if bool(cfg.threat_value_4p) and int(self._player_count or 0) == 4:
+            # H9: rank plans by forward per-enemy survival threat, not the flat
+            # endpoint margin@H (DB 118). reinforce/evac can finally win the search.
+            from bots.pgs.threat import compute_threat_features
+
+            return compute_threat_features(st, int(me), horizon=H).threat_value(
+                float(cfg.prod_weight),
+                planet_weight=float(cfg.threat_planet_weight),
+                first_loss_weight=float(cfg.threat_first_loss_weight),
+                incoming_weight=float(cfg.threat_incoming_weight),
+                ships_weight=float(cfg.threat_ships_weight),
+            )
         owner_h = st.owner[:, H]
         prod = clone.planet_prod
         mine = owner_h == int(me)
@@ -623,6 +651,20 @@ class PGSRuntime:
                 _debit_entry_sources(opp_clone, entries)
             script_status = opp_clone.garrison_status(max_horizon=H)
 
+        # H9-conditional (DB 234-239): only deviate when HOLDING actually loses planets.
+        # Robustness gate showed unconditional threat-deviation HELPS where the floor dies
+        # (Producer/oep) but COSTS where the floor already survives (rush/greedy: 0% death,
+        # but deviating sheds planets/tempo) -> net-neutral on the field (LB ~1048). So gate
+        # the search on the DO-NOTHING projection: if holding loses no planet and we are not
+        # annihilated, return the floor (= holdwave behavior) and skip the deviation search.
+        if bool(cfg.threat_value_4p) and player_count != 2:
+            from bots.pgs.threat import compute_threat_features
+
+            my_planets_now = int((owner0 == me).sum().item())
+            tf_hold = compute_threat_features(script_status, int(me), horizon=H)
+            if not tf_hold.annihilated and tf_hold.min_my_planet_count >= float(my_planets_now):
+                return producer_floor_payload()
+
         def value(my_entries: LaunchEntries) -> float:
             return self._plan_value(movement, obs_tensors, my_entries, opp_entries_by_owner, me)
 
@@ -654,6 +696,13 @@ class PGSRuntime:
             enabled.add("half")
         if player_count != 2 and bool(cfg.defend_in_4p):
             enabled |= {"reinforce", "evac"}  # mode-gated 4p survival defense (H-118)
+        if player_count != 2 and bool(cfg.threat_value_4p):
+            # H9: the threat value can only pick survival plans if they are offered.
+            # 4p-only so the shipped 2p config (scripts="hold") stays frozen.
+            # v2 (DB 235): DEFENSE ONLY. v1 added evac/attack -> the search emptied
+            # planets and hit 100% annihilation. reinforce keeps territory; evac/snipe
+            # deferred until pure defense is shown to beat the holdwave death rate.
+            enabled |= {"reinforce"}
         portfolio: dict[int, list[tuple[str, LaunchEntries]]] = {}
         for s in sources:
             if budget_low():

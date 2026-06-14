@@ -121,6 +121,7 @@ BOT_FILES = [
     "bots/pgs/agent.py",
     "bots/pgs/planner.py",
     "bots/pgs/_helpers.py",
+    "bots/pgs/threat.py",
     "bots/producer/__init__.py",
     "bots/producer/agent.py",
     "bots/producer/_upstream.py",
