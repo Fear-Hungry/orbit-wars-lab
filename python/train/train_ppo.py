@@ -54,10 +54,10 @@ _POLICY_ARCHS = {
 }
 
 
-def _build_policy(arch: str, obs_dim: int):
+def _build_policy(arch: str, obs_dim: int, **kwargs):
     if arch not in _POLICY_ARCHS:
         raise ValueError(f"unknown policy arch {arch!r}; valid: {sorted(_POLICY_ARCHS)}")
-    return _POLICY_ARCHS[arch](obs_dim)
+    return _POLICY_ARCHS[arch](obs_dim, **kwargs)
 
 
 _HEURISTIC_POLICIES = get_heuristic_policies()
@@ -1711,13 +1711,20 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
     # When warm-starting, adopt the checkpoint's architecture (e.g. an entity-BC
     # init) so the state_dict loads cleanly; otherwise use the configured arch.
     checkpoint = _load_checkpoint(training_cfg.checkpoint_in, device) if training_cfg.checkpoint_in else None
+    arch_kwargs: dict[str, Any] = {}
     if checkpoint is not None:
         ckpt_summary = checkpoint.get("summary") if isinstance(checkpoint.get("summary"), dict) else {}
         policy_arch = str(ckpt_summary.get("arch", training_cfg.policy_arch))
+        # GridNet may be a non-default size (e.g. 512/128); adopt the checkpoint's
+        # dims so the state_dict loads cleanly.
+        if policy_arch == "gridnet":
+            for src, dst in (("hidden", "hidden"), ("entity_hidden", "entity_hidden")):
+                if src in ckpt_summary:
+                    arch_kwargs[dst] = int(ckpt_summary[src])
     else:
         policy_arch = training_cfg.policy_arch
 
-    model = _build_policy(policy_arch, observation_dim()).to(device)
+    model = _build_policy(policy_arch, observation_dim(), **arch_kwargs).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=training_cfg.learning_rate)
     if checkpoint is not None:
         model.load_state_dict(checkpoint["model_state_dict"])
