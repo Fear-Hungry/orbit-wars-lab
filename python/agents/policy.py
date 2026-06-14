@@ -477,3 +477,30 @@ class GridNetActorCritic(nn.Module):
         ent = launch_d.entropy() * active_f
         ent = ent + (target_d.entropy() + frac_d.entropy() + offset_d.entropy()) * launched
         return a, lp.sum(-1), ent.sum(-1), out["value"]
+
+
+def gridnet_gated_kl(
+    cur_out: dict[str, torch.Tensor],
+    ref_out: dict[str, torch.Tensor],
+    planet_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Per-planet KL(cur||ref) for the GridNet policy, gated like the rollout/loss:
+    KL(launch) + P_cur(launch=1)*Σ KL(move heads), summed over active planets.
+    Anchors PPO to a reference (BC) so RL can't degrade the good BC minimum
+    (AlphaStar/RLHF device). ``planet_mask`` is (B, PLANET_N) bool."""
+    active = planet_mask.to(cur_out["value"].dtype)
+
+    def _kl(c: torch.Tensor, r: torch.Tensor) -> torch.Tensor:
+        clp = torch.log_softmax(c, dim=-1)
+        rlp = torch.log_softmax(r, dim=-1)
+        return (clp.exp() * (clp - rlp)).sum(-1)
+
+    launch_kl = _kl(cur_out["launch"], ref_out["launch"])  # (B, N)
+    p_launch = torch.softmax(cur_out["launch"], dim=-1)[..., 1]  # (B, N)
+    move_kl = (
+        _kl(cur_out["target"], ref_out["target"])
+        + _kl(cur_out["frac"], ref_out["frac"])
+        + _kl(cur_out["offset"], ref_out["offset"])
+    )
+    per_planet = launch_kl + p_launch * move_kl
+    return (per_planet * active).sum(-1)  # (B,)

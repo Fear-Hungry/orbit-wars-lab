@@ -23,6 +23,7 @@ from python.agents.policy import (
     GridNetActorCritic,
     ProducerResidualBranchActorCritic,
     _action_value_from_heads,
+    gridnet_gated_kl,
     launch_gated_kl,
 )
 from python.agents.registry import (
@@ -1350,9 +1351,17 @@ def _ppo_update(
             loss = policy_loss + cfg.vf_coef * value_loss - cfg.ent_coef * entropy_loss
 
             kl_to_ref_val = 0.0
-            # KL-to-ref anchors the 5-head policy to a reference; branch archs
-            # (residual/GridNet) have their own structure, so skip it there.
-            if use_kl_ref and not is_branch:
+            # KL-to-ref anchors the policy to a reference (BC) so RL can't degrade
+            # the good BC minimum. 5-head archs use launch_gated_kl; GridNet uses
+            # its per-planet gated KL; the residual edit-branch has no anchor.
+            if use_kl_ref and is_gridnet:
+                cur_out = model.forward(obs_mb)
+                with torch.no_grad():
+                    ref_out = ref_model.forward(obs_mb)
+                kl_ref = gridnet_gated_kl(cur_out, ref_out, batch["masks"][indices]).mean()
+                loss = loss + cfg.kl_to_ref_coef * kl_ref
+                kl_to_ref_val = float(kl_ref.item())
+            elif use_kl_ref and not is_branch:
                 with torch.no_grad():
                     ref_out = ref_model(obs_mb)
                 kl_ref = launch_gated_kl(cur_out, ref_out, mask_mb).mean()
@@ -1745,8 +1754,10 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
     ref_path = training_cfg.ref_checkpoint or training_cfg.checkpoint_in
     if training_cfg.kl_to_ref_coef > 0.0 and ref_path:
         ref_ckpt = _load_checkpoint(ref_path, device)
-        ref_arch = str((ref_ckpt.get("summary") or {}).get("arch", policy_arch))
-        ref_model = _build_policy(ref_arch, observation_dim()).to(device)
+        ref_sum = ref_ckpt.get("summary") or {}
+        ref_arch = str(ref_sum.get("arch", policy_arch))
+        ref_kwargs = {k: int(ref_sum[k]) for k in ("hidden", "entity_hidden") if ref_arch == "gridnet" and k in ref_sum}
+        ref_model = _build_policy(ref_arch, observation_dim(), **ref_kwargs).to(device)
         ref_model.load_state_dict(ref_ckpt["model_state_dict"])
         ref_model.eval()
         for param in ref_model.parameters():
