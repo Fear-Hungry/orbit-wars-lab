@@ -83,6 +83,11 @@ class Phase0TrainingConfig:
     # a growing pool of past chunks so the opponent's strength tracks the agent's —
     # the AlphaStar device for crossing strength gaps the live-self-play empate can't.
     self_opponent_checkpoint: str | None = None
+    # Handicap curriculum: scale a planner opponent's launched ships by this factor.
+    # The GridNet policy beats the producer at ~0.2x ships but is crushed at 1.0x —
+    # a difficulty curriculum (start low, raise as the policy dominates) is the only
+    # bridge across the reactive→planner cliff (no intermediate-strength bot exists).
+    opponent_handicap: float = 1.0
     num_players: int = 2
     total_timesteps: int = 200_000
     rollout_steps: int = 256
@@ -207,7 +212,11 @@ def _parse_opponents(raw: str | Sequence[str]) -> tuple[str, ...]:
     # seat); valid alone (pure self-play needs no second distinct opponent).
     if len(set(items)) < 2 and "self" not in items:
         raise ValueError("training requires at least two distinct opponents")
-    unknown = [name for name in items if name not in PHASE0_OPPONENTS and name != "self"]
+    # "<name>@<scale>" = handicap-curriculum opponent (ships scaled). Validate base.
+    unknown = [
+        name for name in items
+        if name.partition("@")[0] not in PHASE0_OPPONENTS and name != "self"
+    ]
     if unknown:
         raise ValueError(f"unknown phase-0 opponents: {', '.join(sorted(unknown))}")
     return items
@@ -798,17 +807,28 @@ def _collect_gridnet_rollout_segment(
     if training_cfg.num_players != 2:
         raise ValueError("GridNet rollout currently supports only 2-player training")
     is_self = opponent_name == "self"
-    if not is_self and opponent_name not in PHASE0_OPPONENTS:
-        raise ValueError(f"unknown phase-0 opponent: {opponent_name}")
+    # "<name>@<scale>" handicaps the opponent's launched ships (curriculum).
+    handicap = float(training_cfg.opponent_handicap)
+    base_opp_name = opponent_name
+    if "@" in opponent_name:
+        base_opp_name, _, scale_s = opponent_name.partition("@")
+        handicap = float(scale_s)
+    if not is_self and base_opp_name not in PHASE0_OPPONENTS:
+        raise ValueError(f"unknown phase-0 opponent: {base_opp_name}")
     agent_player, opp_player = 0, 1
     decoder_cfg = decoder_config(training_cfg)
     opp_net = opponent_model if opponent_model is not None else model
     num_envs = max(1, min(int(training_cfg.rollout_num_envs), int(sample_limit)))
-    opponent_policies = None if is_self else get_isolated_opponents(opponent_name, num_envs)
+    opponent_policies = None if is_self else get_isolated_opponents(base_opp_name, num_envs)
+
+    def _hcap(moves: list) -> list:
+        if handicap >= 1.0:
+            return moves
+        return [[m[0], m[1], max(1.0, float(m[2]) * handicap)] for m in moves]
     base_shaping_scale, comet_shaping_scale = shaping_scales(training_cfg, progress)
     reward_env = build_phase0_env(
         seed=base_seed, num_players=2,
-        opponent_name="producer" if is_self else opponent_name,
+        opponent_name="producer" if is_self else base_opp_name,
         enable_comets=training_cfg.enable_comets, decoder_cfg=decoder_cfg,
         sun_loss_penalty=training_cfg.sun_loss_penalty, border_loss_penalty=training_cfg.border_loss_penalty,
         ship_margin_scale=training_cfg.ship_margin_scale,
@@ -844,7 +864,7 @@ def _collect_gridnet_rollout_segment(
                 opp_net, current_states, active_indices, opp_player, device, decoder_cfg, sample=True
             )
         else:
-            opp_moves = {i: opponent_policies[i](current_states[i], opp_player) for i in active_indices}
+            opp_moves = {i: _hcap(opponent_policies[i](current_states[i], opp_player)) for i in active_indices}
 
         action_rows: list[list[float]] = []
         player_moves_by_env: list[list[list[float]]] = [[] for _ in range(num_envs)]
@@ -1590,7 +1610,11 @@ def _play_gridnet_game(
         config=RustConfig(episode_steps=episode_steps, enable_comets=enable_comets),
     )
     state = backend.reset(seed)[0]
-    opponents = {p: make_isolated_opponent(opponent_name) for p in range(num_players) if p != agent_player}
+    base_opp_name, handicap = opponent_name, 1.0
+    if "@" in opponent_name:
+        base_opp_name, _, scale_s = opponent_name.partition("@")
+        handicap = float(scale_s)
+    opponents = {p: make_isolated_opponent(base_opp_name) for p in range(num_players) if p != agent_player}
     last_scores: list[float] = [0.0] * num_players
     for _ in range(episode_steps):
         mask = torch.as_tensor(
@@ -1606,7 +1630,10 @@ def _play_gridnet_game(
         agent_moves = decode_gridnet_action(state, agent_player, a[0].cpu().numpy(), decoder_cfg)
         rows: list[list[float]] = list(_moves_to_flat_rows(0, agent_player, agent_moves))
         for p, opp in opponents.items():
-            rows.extend(_moves_to_flat_rows(0, p, opp(state, p)))
+            om = opp(state, p)
+            if handicap < 1.0:
+                om = [[mv[0], mv[1], max(1.0, float(mv[2]) * handicap)] for mv in om]
+            rows.extend(_moves_to_flat_rows(0, p, om))
         flat = np.asarray(rows, dtype=np.float64) if rows else np.zeros((0, 5), dtype=np.float64)
         outcomes, states = backend.step_flat_with_states(flat)
         state = states[0]
