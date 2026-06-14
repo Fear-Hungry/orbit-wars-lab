@@ -270,6 +270,7 @@ class ProducerResidualBranchActorCritic(nn.Module):
         n_edit: int = N_EDIT,
         entity_hidden: int = 64,
         hidden: int = 256,
+        keep_init_bias: float = 5.0,
     ):
         super().__init__()
         expected = GLOBAL_F + PLANET_N * PLANET_F + FLEET_N * FLEET_F
@@ -295,11 +296,15 @@ class ProducerResidualBranchActorCritic(nn.Module):
         self.value = nn.Linear(hidden, 1)
         # KEEP-init: zero the edit head so the untrained output is dominated by a
         # high bias on KEEP (index 0) → every slot KEEPs → exact base = parity floor.
+        # The argmax is KEEP for ANY keep_init_bias > 0 (weights zeroed), so the
+        # parity floor holds regardless of magnitude; a SMALLER bias only softens the
+        # sampling temperature so PPO can explore (and escape to) edits faster — a
+        # bias of 5.0 makes KEEP ~97% of samples, so edits never get enough signal.
         with torch.no_grad():
             self.edit.weight.zero_()
             bias = self.edit.bias.view(self.k_max, self.n_edit)
             bias.zero_()
-            bias[:, 0] = 5.0
+            bias[:, 0] = float(keep_init_bias)
 
     @staticmethod
     def _masked_mean(emb: torch.Tensor, present: torch.Tensor) -> torch.Tensor:
