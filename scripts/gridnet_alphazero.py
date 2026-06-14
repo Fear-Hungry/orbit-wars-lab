@@ -28,6 +28,18 @@ from python.train.train_ppo import _scores_margin, evaluate_gridnet_margin
 from scripts.gridnet_mcts import mcts_action
 
 
+def make_handicapped(name):
+    """Opponent callable (state,player)->moves with ships scaled by @<h> (curriculum)."""
+    base, _, sc = name.partition("@")
+    h = float(sc) if sc else 1.0
+    opp = make_isolated_opponent(base)
+    if h >= 1.0:
+        return opp
+    def wrapped(state, player):
+        return [[m[0], m[1], max(1.0, float(m[2]) * h)] for m in opp(state, player)]
+    return wrapped
+
+
 def generate_games(model, *, opponent, seeds, steps, n_sim, k, c_puct, max_depth, device):
     """MCTS-guided games vs the opponent; record (obs, mcts_action, mask, outcome)."""
     obs_l, act_l, mask_l, out_l = [], [], [], []
@@ -37,8 +49,8 @@ def generate_games(model, *, opponent, seeds, steps, n_sim, k, c_puct, max_depth
         op = 1 - seat
         b = RustBatchBackend(num_envs=1, num_players=2, seed=seed, config=RustConfig(episode_steps=steps, enable_comets=True))
         s = b.reset(seed)[0]
-        real_opp = make_isolated_opponent(opponent)
-        sim_opp = make_isolated_opponent(opponent)
+        real_opp = make_handicapped(opponent)
+        sim_opp = make_handicapped(opponent)
         sim = RustBatchBackend(num_envs=1, num_players=2, seed=0, config=RustConfig(enable_comets=True))
         game_obs, game_act, game_mask = [], [], []
         last = [0.0, 0.0]
@@ -109,6 +121,9 @@ def main() -> None:
     ap.add_argument("--max-depth", type=int, default=6)
     ap.add_argument("--epochs", type=int, default=20)
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--start-scale", type=float, default=0.2)
+    ap.add_argument("--scale-step", type=float, default=0.05)
+    ap.add_argument("--promote-margin", type=float, default=0.15)
     ap.add_argument("--out", default="artifacts/bc/gridnet_az.pt")
     args = ap.parse_args()
     dev = torch.device(args.device)
@@ -119,23 +134,28 @@ def main() -> None:
     model.load_state_dict(ck["model_state_dict"])
     model.eval()
 
-    base = evaluate_gridnet_margin(model, opponent_name=args.opponent, seeds=6, episode_steps=200, device=args.device)["mean_score_margin"]
-    print(json.dumps({"iter": -1, "bare_policy_vs_" + args.opponent: round(base, 4)}), flush=True)
+    scale = args.start_scale
+    base = evaluate_gridnet_margin(model, opponent_name=f"producer@{scale:.2f}", seeds=6, episode_steps=200, device=args.device)["mean_score_margin"]
+    print(json.dumps({"iter": -1, "scale": scale, "bare_vs_level": round(base, 4)}), flush=True)
 
     for it in range(args.iterations):
-        data = generate_games(model, opponent=args.opponent,
+        opp_level = f"producer@{scale:.2f}"
+        data = generate_games(model, opponent=opp_level,
                               seeds=list(range(it * 50, it * 50 + args.games)),
                               steps=args.steps, n_sim=args.n_sim, k=args.k, c_puct=1.5,
                               max_depth=args.max_depth, device=args.device)
         model.train()
         model = fit(model, data, epochs=args.epochs, lr=3e-4, device=args.device)
         model.eval()
-        bare = evaluate_gridnet_margin(model, opponent_name=args.opponent, seeds=6, episode_steps=200, device=args.device)["mean_score_margin"]
-        grd = evaluate_gridnet_margin(model, opponent_name="greedy", seeds=4, episode_steps=200, device=args.device)["mean_score_margin"]
-        print(json.dumps({"iter": it, "examples": int(data["obs"].shape[0]),
+        bare = evaluate_gridnet_margin(model, opponent_name=opp_level, seeds=6, episode_steps=200, device=args.device)["mean_score_margin"]
+        full = evaluate_gridnet_margin(model, opponent_name="producer", seeds=4, episode_steps=200, device=args.device)["mean_score_margin"]
+        promoted = False
+        if bare >= args.promote_margin and scale < 1.0:
+            scale = min(1.0, scale + args.scale_step); promoted = True
+        print(json.dumps({"iter": it, "scale": round(scale, 2), "examples": int(data["obs"].shape[0]),
                           "mean_mcts_outcome": round(float(data["outcome"].mean()), 4),
-                          "bare_policy_vs_" + args.opponent: round(bare, 4),
-                          "vs_greedy": round(grd, 4)}), flush=True)
+                          "bare_vs_level": round(bare, 4), "bare_vs_full_producer": round(full, 4),
+                          "promoted": promoted}), flush=True)
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
