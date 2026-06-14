@@ -57,13 +57,14 @@ def collect(seeds: list[int], num_players: int, episode_steps: int) -> dict[str,
     }
 
 
-def train(data: dict[str, np.ndarray], *, epochs: int, batch_size: int, lr: float, seed: int) -> tuple[GridNetActorCritic, dict[str, Any]]:
+def train(data: dict[str, np.ndarray], *, epochs: int, batch_size: int, lr: float, seed: int, hidden: int = 256, entity_hidden: int = 64, device: str = "cpu") -> tuple[GridNetActorCritic, dict[str, Any]]:
     torch.manual_seed(seed)
-    model = GridNetActorCritic(observation_dim())
+    dev = torch.device(device)
+    model = GridNetActorCritic(observation_dim(), entity_hidden=entity_hidden, hidden=hidden).to(dev)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
-    obs = torch.as_tensor(data["obs"], dtype=torch.float32)
-    act = torch.as_tensor(data["action"], dtype=torch.long)
-    mask = torch.as_tensor(data["mask"], dtype=torch.bool)
+    obs = torch.as_tensor(data["obs"], dtype=torch.float32, device=dev)
+    act = torch.as_tensor(data["action"], dtype=torch.long, device=dev)
+    mask = torch.as_tensor(data["mask"], dtype=torch.bool, device=dev)
     n = obs.shape[0]
     metrics: dict[str, Any] = {}
     for ep in range(epochs):
@@ -110,15 +111,20 @@ def main() -> None:
     ap.add_argument("--epochs", type=int, default=40)
     ap.add_argument("--batch-size", type=int, default=256)
     ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--hidden", type=int, default=256)
+    ap.add_argument("--entity-hidden", type=int, default=64)
+    ap.add_argument("--device", default="cpu")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="artifacts/bc/gridnet_bc.pt")
     args = ap.parse_args()
     lo, hi = (args.seeds.split("-") + [args.seeds])[:2] if "-" in args.seeds else (args.seeds, args.seeds)
     seeds = list(range(int(lo), int(hi) + 1)) if "-" in args.seeds else [int(x) for x in args.seeds.split(",")]
     data = collect(seeds, args.num_players, args.episode_steps)
-    model, metrics = train(data, epochs=args.epochs, batch_size=args.batch_size, lr=args.lr, seed=args.seed)
+    model, metrics = train(data, epochs=args.epochs, batch_size=args.batch_size, lr=args.lr, seed=args.seed, hidden=args.hidden, entity_hidden=args.entity_hidden, device=args.device)
+    metrics["hidden"]=args.hidden; metrics["entity_hidden"]=args.entity_hidden
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
+    model.to("cpu")
     torch.save({"model_state_dict": model.state_dict(), "summary": {"arch": "gridnet", **metrics}}, out)
     print(json.dumps({"out": str(out), **{k: (round(v, 4) if isinstance(v, float) else v) for k, v in metrics.items() if not k.startswith("epoch_")}}, indent=2))
 
