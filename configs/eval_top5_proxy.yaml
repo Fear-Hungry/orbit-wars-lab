@@ -1,0 +1,65 @@
+# T0 — top-5 proxy ruler (RESTARTED 2026-06-14)
+#
+# Why restarted: the 4p engine semantics changed after eval v5 began (audit
+# 2026-06-11), so every pre-v5 4p partial is incomparable. This ruler restarts
+# from zero — every candidate is measured against the SAME fixed public pool
+# below, 2p and 4p reported SEPARATELY, with fixed seeds.
+#
+# Gate intent: beating only the Producer while getting beaten by this proxy pool
+# is NOT a top-5 candidate. A real top-5 candidate must hold its margin against
+# the strong public LB agents here, not just the in-repo Producer/OEP.
+#
+# Run:  .venv/bin/python -m scripts.eval_top5_proxy            # all candidates
+#       .venv/bin/python -m scripts.eval_top5_proxy --candidate <entry.py> --label foo
+# The runner pins threads (OMP/MKL=1, the Kaggle CPU model) so jobs=N uses N
+# clean cores and contention can't manufacture false timeouts.
+
+eval:
+  seeds: 24                # fixed set = range(0, 24); deterministic in benchmark_submission
+  episode_steps: 500       # official length (96/128 misleads — see kaggle_500_step_eval_required)
+  enable_comets: true
+  jobs: 5                  # <= physical cores; thread-pinned so 1 worker == 1 core
+  formats: [2p, 4p]        # measured and reported separately
+
+candidates:                # in-repo agents under test (the baseline pair)
+  - id: producer
+    entry: bots/producer/agent.py
+  - id: oep
+    entry: bots/oep/agent.py
+
+pool:                      # FIXED public proxy opponents (the ruler). Do not edit casually:
+                           # changing the pool invalidates the baseline below.
+  - id: ext_lb1224
+    entry: artifacts/opponents/top5_proxy/orbit-star-wars-lb-max-1224/agent.py
+    declared_lb: 1224
+    lineage: build_world (Tamrazov)
+    deps: [stdlib]
+  - id: ext_lb1110
+    entry: artifacts/opponents/top5_proxy/orbit-wars-heuristic-lb-1110/agent.py
+    declared_lb: 1110
+    lineage: plan_moves (sim heuristic)
+    deps: [stdlib]
+  - id: ext_lb1100
+    entry: artifacts/opponents/top5_proxy/distance-prioritized-agent-lb-max-score-1100/agent.py
+    declared_lb: 1100
+    lineage: build_world (Tamrazov)
+    deps: [stdlib]
+  - id: ext_lb1050
+    entry: artifacts/opponents/top5_proxy/lb-1050-heuristic-simulation-agent-test-3/agent.py
+    declared_lb: 1050
+    lineage: plan_moves (sim heuristic)
+    deps: [stdlib]
+    note: "4p invalid_action_rate ~0.0015 (engine-clipped; zero crash/timeout)"
+  - id: ext_hellburner
+    entry: artifacts/opponents/top5_proxy/hellburner/agent.py
+    declared_lb: null      # LB not recorded; kept for lineage diversity
+    lineage: kaggle_environments rollout sim
+    deps: [stdlib, kaggle_environments]
+  - id: ext_rulebase_ml
+    entry: artifacts/opponents/top5_proxy/orbit-wars-rule-base-ml-shot-validator-hybrid/agent.py
+    declared_lb: null      # LB not recorded; kept for lineage diversity
+    lineage: rule-base + ML shot validator
+    deps: [stdlib, numpy]
+
+source_benchmark: 704095   # Kaggle benchmark the public pool was pulled from
+baseline: artifacts/top5_proxy/baseline_producer_oep.json
