@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import os
 from dataclasses import dataclass
 
 import torch
@@ -57,6 +58,21 @@ class ProducerLiteConfig:
     max_regroup_targets_per_source: int = 7
     regroup_pressure_norm: str = "none"
     regroup_time_penalty_weight: float = 1e-3
+    # --- G3.1a opening capture-and-HOLD (4p only) ------------------------
+    # During the opening, require a neutral capture's wave to clear defenders AND
+    # survive projected enemy counter-pressure (cheap_enemy_pressure * margin),
+    # via capture_floor's reinforcement hook. If unaffordable, the contestable
+    # capture is gated out (we don't grab neutrals we'd immediately lose).
+    # Data: bad 4p openings hold only 71% of opening captures vs 100% in wins
+    # (docs/LOSS_TAXONOMY.md + opening_detector). 0.0 == today's behaviour.
+    opening_hold_margin: float = 0.0
+    opening_hold_until_step: int = 50
+    # G3.1a literal Phase-2 rule: during the opening, suppress attacks on enemy
+    # PLAYERS while the source still has a viable neutral capture in range
+    # ("deixar os outros se desgastarem"). Off by default. Phase-1 predicts this
+    # does not help (within losses, more early PvP correlates with a better
+    # state) — implemented to execute the goal as written and gate it at 96 seeds.
+    opening_suppress_pvp: bool = False
 
 
 def _movement_config(config: ProducerLiteConfig, *, player_count: int) -> MovementConfig:
@@ -167,12 +183,29 @@ def plan_lite_waves(
     # Uniform reach cap = K_eta (= horizon).
     eta_cap = torch.full((T,), float(K_eta), dtype=dtype, device=device)  # [T]
 
+    # G3.1a: opening capture-and-hold margin. For NEUTRAL targets during the
+    # opening, inflate the capture floor by projected enemy counter-pressure so a
+    # contestable neutral we can't capture-and-hold is gated out of `clears_floor`.
+    reinforcement = None
+    if float(config.opening_hold_margin) > 0.0:
+        cur_step = float(obs.step.flatten()[0])
+        if cur_step < float(config.opening_hold_until_step):
+            pressure = cheap_enemy_pressure(obs, cache, horizon=float(K_eta), player_id=pid)  # [P]
+            tgt_c = target_idx.clamp(0, P - 1)
+            margin_t = torch.where(
+                obs.is_neutral[tgt_c],
+                pressure[tgt_c] * float(config.opening_hold_margin),
+                torch.zeros((), dtype=dtype, device=device).expand(T),
+            )  # [T]
+            reinforcement = margin_t.view(T, 1).expand(T, K_eta).contiguous()  # [T, K_eta]
+
     floor = capture_floor(
         garrison_status,
         target_idx=target_idx,
         k_max=K_eta,
         capture_overhead=1.0,
         player_id=pid,
+        reinforcement=reinforcement,
     )  # [T, K]
     K = int(floor.shape[-1])
 
@@ -221,6 +254,15 @@ def plan_lite_waves(
         & source_exists.view(S, 1)
         & target_exists.view(1, T)
     )  # [S, T]
+
+    # G3.1a literal Phase-2 rule: in the opening, drop a source's PvP candidates
+    # (enemy-PLAYER targets) while that source still has a viable neutral capture.
+    if bool(config.opening_suppress_pvp) and float(obs.step.flatten()[0]) < float(config.opening_hold_until_step):
+        tgt_c = target_idx.clamp(0, P - 1)
+        is_enemy_t = obs.is_enemy[tgt_c].view(1, T)        # enemy-player target
+        is_neutral_t = obs.is_neutral[tgt_c].view(1, T)    # neutral (capture) target
+        has_neutral = (valid & is_neutral_t).any(dim=1, keepdim=True)  # [S,1]
+        valid = valid & ~(is_enemy_t & has_neutral)
 
     # --- pack one candidate per (source, target); contributor axis L = 1 --------
     L = 1
@@ -357,6 +399,11 @@ CONFIG_4P = dataclasses.replace(
     max_defensive_targets=2,
     max_regroup_time=6.0,
     max_regroup_targets_per_source=8,
+    # G3.1a: opening capture-and-hold. Off by default; the 96-seed sweep toggles
+    # it via env so we A/B without editing code (proven before shipping).
+    opening_hold_margin=float(os.environ.get("OWL_OPENING_HOLD_MARGIN", "0.0")),
+    opening_hold_until_step=int(os.environ.get("OWL_OPENING_HOLD_UNTIL", "50")),
+    opening_suppress_pvp=bool(int(os.environ.get("OWL_OPENING_SUPPRESS_PVP", "0"))),
 )
 
 
@@ -377,8 +424,13 @@ class ProducerLiteMemory:
 
 
 class ProducerLiteRuntime:
-    def __init__(self, memory: ProducerLiteMemory | None = None) -> None:
+    def __init__(self, memory: ProducerLiteMemory | None = None,
+                 config_override: "ProducerLiteConfig | None" = None) -> None:
         self.memory = memory if memory is not None else ProducerLiteMemory()
+        # Optional explicit config (overrides _config_for). Used by the G3.1a
+        # eval to give ONLY seat 0 the opening-hold margin while opponents stay
+        # baseline, without touching global env. None == default behaviour.
+        self.config_override = config_override
 
     def reset(self) -> None:
         self.memory.reset()
@@ -389,7 +441,11 @@ class ProducerLiteRuntime:
             mem.reset()
         if mem.cached_player_count is None:
             mem.cached_player_count = largest_initial_player_count(obs_tensors)
-        config = _config_for(mem.cached_player_count)
+        config = (
+            self.config_override
+            if self.config_override is not None
+            else _config_for(mem.cached_player_count)
+        )
         row = run_turn(
             obs_tensors,
             config=config,
