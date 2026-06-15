@@ -31,13 +31,17 @@ def _game(seats, winner, *, mode="2p", faults=None, status=None, died=None, seed
     }
 
 
-def _write(tmp_path, label, mode, games, *, candidate="cand"):
+def _write(tmp_path, label, mode, games, *, candidate="cand", role=None, latency_ms=100.0):
     path = tmp_path / f"{label}.json"
     names = list(games[0]["seats"])
     for game in games:
         game.pop("mode", None)
-    path.write_text(json.dumps({"mode": mode, "games": games}))
-    return {
+    payload = {"mode": mode, "games": games}
+    if latency_ms is not None:
+        payload["decision_ms_p95"] = {name: float(latency_ms) for name in names}
+        payload["decision_ms_max"] = {name: float(latency_ms) * 2 for name in names}
+    path.write_text(json.dumps(payload))
+    result = {
         "label": label,
         "mode": mode,
         "candidate": candidate,
@@ -48,6 +52,9 @@ def _write(tmp_path, label, mode, games, *, candidate="cand"):
         "stdout": "",
         "stderr": "",
     }
+    if role is not None:
+        result["role"] = role
+    return result
 
 
 def _passing_results(tmp_path, *, candidate="cand", label_prefix=""):
@@ -94,9 +101,10 @@ def test_submit_ruler_passes_clean_candidate(tmp_path):
     )
 
     assert summary["verdict"] == "PASS_LOCAL"
-    assert summary["pairwise"]["producer"]["decisive_win_rate"] == 0.75
-    assert summary["pairwise"]["inc"]["decisive_win_rate"] == 0.5
+    assert summary["pairwise_fixed"]["producer"]["decisive_win_rate"] == 0.75
+    assert summary["pairwise_fixed"]["inc"]["decisive_win_rate"] == 0.5
     assert summary["four_player"]["win_rate"] == 0.5
+    assert "overall_score" not in summary  # raw 2p/4p mixing is dead (etapa 20)
 
 
 def test_submit_ruler_rejects_faults(tmp_path):
@@ -229,12 +237,14 @@ def test_submit_ruler_2p_score_counts_ties_as_non_wins(tmp_path):
         weight_2p=0.5,
     )
 
-    assert summary["pairwise"]["producer"]["decisive_win_rate"] == 1.0
-    assert summary["pairwise"]["producer"]["win_rate"] == 0.25
-    assert summary["score_2p"] == 0.25
+    assert summary["pairwise_fixed"]["producer"]["decisive_win_rate"] == 1.0
+    assert summary["pairwise_fixed"]["producer"]["win_rate"] == 0.25
+    assert summary["score_2p_fixed"] == 0.25
 
 
-def test_submit_ruler_report_recommends_best_passing_candidate(tmp_path):
+def test_report_exposes_veto_passes_and_never_recommends(tmp_path):
+    """Selector contract: the ruler is structurally incapable of recommending a
+    submission — that is the calibrated selector's job."""
     report = build_report(
         ["cand"],
         _passing_results(tmp_path),
@@ -247,9 +257,14 @@ def test_submit_ruler_report_recommends_best_passing_candidate(tmp_path):
         weight_2p=0.5,
     )
 
-    assert report["recommended_candidate"] == "cand"
+    assert "recommended_candidate" not in report
+    assert report["local_veto_passes"] == ["cand"]
+    assert report["selector_candidate"] is None
+    assert report["selection_status"] == "VETO_ONLY"
+    assert report["promotion_order_valid"] is False
     assert report["ranking"][0]["candidate"] == "cand"
     assert report["ranking"][0]["verdict"] == "PASS_LOCAL"
+    assert "overall_score" not in report["ranking"][0]
 
 
 def test_submit_ruler_ranking_prioritizes_verdict_before_score(tmp_path):
@@ -338,9 +353,11 @@ def test_build_tasks_uses_shared_seed_slices_across_candidates(tmp_path):
     assert {task.seed_base for task in four_player_tasks} == {1234 + 5000}
 
 
-def test_build_tasks_adds_peer_candidates_to_reference_panel(tmp_path):
+def test_build_tasks_peers_are_diagnostic_only(tmp_path):
+    """Peers never enter another candidate's fixed panel; they meet in exactly
+    one canonical peer_2p task per unordered pair (panel independence)."""
     tasks = build_tasks(
-        ["pgs_hold", "pgs_holdwave", "pgs_wave_s100"],
+        ["pgs_hold", "pgs_wave_s50", "pgs_valuenet"],
         incumbent="pgs_holdwave",
         references=["producer"],
         four_player_templates=[],
@@ -350,18 +367,209 @@ def test_build_tasks_adds_peer_candidates_to_reference_panel(tmp_path):
         out_dir=tmp_path,
     )
 
-    opponents_by_candidate = {
-        candidate: {
-            task.names[1]
-            for task in tasks
-            if task.mode == "2p" and task.candidate == candidate
-        }
-        for candidate in ["pgs_hold", "pgs_holdwave", "pgs_wave_s100"]
+    fixed = [t for t in tasks if t.role == "fixed_2p"]
+    peers = [t for t in tasks if t.role == "peer_2p"]
+    for task in fixed:
+        assert task.names[1] in {"pgs_holdwave", "producer"}, task.names
+    peer_pairs = {t.names for t in peers}
+    assert peer_pairs == {
+        ("pgs_hold", "pgs_valuenet"),
+        ("pgs_hold", "pgs_wave_s50"),
+        ("pgs_valuenet", "pgs_wave_s50"),
     }
 
-    assert opponents_by_candidate["pgs_hold"] == {"pgs_holdwave", "pgs_wave_s100", "producer"}
-    assert opponents_by_candidate["pgs_holdwave"] == {"pgs_hold", "pgs_wave_s100", "producer"}
-    assert opponents_by_candidate["pgs_wave_s100"] == {"pgs_hold", "pgs_holdwave", "producer"}
+
+def test_selector_panel_independence(tmp_path):
+    """Etapa 3 criterion: a candidate's fixed tasks are identical whether it is
+    evaluated alone or alongside other candidates."""
+    kwargs = dict(
+        incumbent="pgs_holdwave",
+        references=["producer", "pgs_allscripts"],
+        four_player_templates=[("producer", "oep", "pgs_bigwave")],
+        seeds=4,
+        seed_base=1234,
+        steps=500,
+        out_dir=tmp_path,
+    )
+    solo = build_tasks(["pgs_hold"], **kwargs)
+    panel = build_tasks(["pgs_hold", "pgs_wave_s50"], **kwargs)
+
+    def fixed_of(tasks, candidate):
+        return sorted(
+            (t.label, t.names, t.seed_base, t.role, str(t.out))
+            for t in tasks
+            if t.candidate == candidate and t.role in {"fixed_2p", "fixed_4p"}
+        )
+
+    assert fixed_of(solo, "pgs_hold") == fixed_of(panel, "pgs_hold")
+
+
+def test_4p_lineups_never_contain_peers(tmp_path):
+    tasks = build_tasks(
+        ["pgs_hold", "pgs_wave_s50"],
+        incumbent="pgs_holdwave",
+        references=["producer"],
+        # template too short on purpose: fillers must come from the FIXED list
+        four_player_templates=[("producer", "oep")],
+        seeds=4,
+        seed_base=1234,
+        steps=500,
+        out_dir=tmp_path,
+    )
+    four_p = [t for t in tasks if t.role == "fixed_4p"]
+    assert four_p, "filler completion must produce 4p tasks"
+    for task in four_p:
+        others = set(task.names) - {task.candidate}
+        assert "pgs_hold" not in others and "pgs_wave_s50" not in others, task.names
+
+
+def test_normalization_helpers():
+    assert ruler.adv_2p(0.5) == 0.0
+    assert ruler.adv_2p(0.6) == pytest.approx(0.2)
+    assert ruler.adv_4p(0.25) == 0.0
+    assert ruler.adv_4p(1.0) == pytest.approx(1.0)
+    assert ruler.adv_4p(0.0) == pytest.approx(-1 / 3)
+    assert ruler.field_advantage(0.2, 0.1, 0.46) == pytest.approx(0.46 * 0.2 + 0.54 * 0.1)
+
+
+def test_peer_score_excluded_from_field_advantage(tmp_path):
+    """A candidate crushing its peers must not outrank its fixed-panel truth."""
+    results = _passing_results(tmp_path)
+    results.append(_write(tmp_path, "peer", "2p", [
+        _game(["cand", "rival"], "cand"),
+        _game(["rival", "cand"], "cand"),
+        _game(["cand", "rival"], "cand"),
+        _game(["rival", "cand"], "cand"),
+    ], candidate="cand", role="peer_2p"))
+
+    summary = summarize_candidate(
+        "cand",
+        results,
+        incumbent="inc",
+        min_decisive_2p=4,
+        min_producer_winrate=0.5,
+        min_incumbent_winrate=0.5,
+        min_floor_winrate=0.6,
+        max_annihilation_rate_4p=0.35,
+        weight_2p=0.5,
+    )
+
+    assert summary["pairwise_peer"]["rival"]["win_rate"] == 1.0
+    assert summary["score_2p_peer"] == 1.0
+    assert "rival" not in summary["pairwise_fixed"]
+    # fixed scores unchanged by the peer sweep
+    no_peer = summarize_candidate(
+        "cand",
+        _passing_results(tmp_path),
+        incumbent="inc",
+        min_decisive_2p=4,
+        min_producer_winrate=0.5,
+        min_incumbent_winrate=0.5,
+        min_floor_winrate=0.6,
+        max_annihilation_rate_4p=0.35,
+        weight_2p=0.5,
+    )
+    assert summary["score_2p_fixed"] == no_peer["score_2p_fixed"]
+    assert summary["field_advantage"] == no_peer["field_advantage"]
+
+
+def test_4p_gates_min_winrate_and_worst_template(tmp_path):
+    results = _passing_results(tmp_path)
+    # second 4p template where the candidate loses everything
+    results.append(_write(tmp_path, "line1", "4p", [
+        _game(["cand", "producer", "inc", "pgs_allscripts"], "producer", mode="4p"),
+        _game(["cand", "producer", "inc", "pgs_allscripts"], "producer", mode="4p"),
+    ], candidate="cand"))
+
+    summary = summarize_candidate(
+        "cand",
+        results,
+        incumbent="inc",
+        min_decisive_2p=4,
+        min_producer_winrate=0.5,
+        min_incumbent_winrate=0.5,
+        min_floor_winrate=0.6,
+        max_annihilation_rate_4p=0.35,
+        min_4p_winrate=0.30,
+        min_worst_template_4p_winrate=0.20,
+        weight_2p=0.5,
+    )
+
+    failed = {c["name"] for c in summary["checks"] if not c["passed"]}
+    # aggregate 4p win rate = 1/4 < 0.30; worst template (line1) = 0.0 < 0.20
+    assert "min_4p_winrate" in failed
+    assert "min_worst_template_4p_winrate" in failed
+    assert summary["verdict"] == "REJECT_LOCAL"
+    assert summary["four_player_templates"]["line1"]["win_rate"] == 0.0
+
+
+def test_latency_ladder_warning_vs_hard_fail(tmp_path):
+    def summarize(latency):
+        results = [
+            _write(tmp_path, f"lat{int(latency)}", "2p", [
+                _game(["cand", "producer"], "cand"),
+                _game(["producer", "cand"], "cand"),
+            ], candidate="cand", latency_ms=latency),
+        ]
+        return summarize_candidate(
+            "cand", results, incumbent="inc", min_decisive_2p=1,
+            min_producer_winrate=0.5, min_incumbent_winrate=0.5,
+            min_floor_winrate=0.6, max_annihilation_rate_4p=0.35, weight_2p=0.5,
+        )
+
+    healthy = summarize(300.0)
+    check = next(c for c in healthy["checks"] if c["name"] == "latency_within_budget")
+    assert check["passed"] and not check["details"]["warning"]
+
+    warn = summarize(600.0)
+    check = next(c for c in warn["checks"] if c["name"] == "latency_within_budget")
+    assert check["passed"] and check["details"]["warning"]
+    assert warn["risk_components"].get("high_latency") == 0.05
+
+    hard = summarize(900.0)
+    check = next(c for c in hard["checks"] if c["name"] == "latency_within_budget")
+    assert not check["passed"]
+    assert hard["verdict"] == "REJECT_LOCAL"
+
+
+def test_old_payload_without_latency_is_inconclusive(tmp_path):
+    results = [
+        _write(tmp_path, "old", "2p", [
+            _game(["cand", "producer"], "cand"),
+            _game(["producer", "cand"], "cand"),
+        ], candidate="cand", latency_ms=None),
+    ]
+    summary = summarize_candidate(
+        "cand", results, incumbent="inc", min_decisive_2p=1,
+        min_producer_winrate=0.5, min_incumbent_winrate=0.5,
+        min_floor_winrate=0.6, max_annihilation_rate_4p=0.35, weight_2p=0.5,
+    )
+    check = next(c for c in summary["checks"] if c["name"] == "latency_audited")
+    assert not check["passed"] and check["severity"] == "inconclusive"
+
+
+def test_reject_on_total_critical_bucket_failure(tmp_path):
+    results = _passing_results(tmp_path)
+    # rusher (critical bucket rush_pressure) sweeps the candidate 0-4
+    results.append(_write(tmp_path, "rusher", "2p", [
+        _game(["cand", "rusher"], "rusher"),
+        _game(["rusher", "cand"], "rusher"),
+        _game(["cand", "rusher"], "rusher"),
+        _game(["rusher", "cand"], "rusher"),
+    ], candidate="cand"))
+
+    summary = summarize_candidate(
+        "cand", results, incumbent="inc", min_decisive_2p=4,
+        min_producer_winrate=0.5, min_incumbent_winrate=0.5,
+        min_floor_winrate=0.6, max_annihilation_rate_4p=0.35, weight_2p=0.5,
+    )
+
+    assert summary["worst_bucket_score"] == 0.0
+    check = next(
+        c for c in summary["checks"] if c["name"] == "no_critical_bucket_total_failure"
+    )
+    assert not check["passed"]
+    assert summary["verdict"] == "REJECT_LOCAL"
 
 
 def test_build_tasks_propagates_match_chunk_size(tmp_path):

@@ -1025,6 +1025,11 @@ def _build_fraction_candidates(
         )
         score = score - baseline
     score = torch.where(cand_valid, score, torch.full_like(score, float("-inf")))
+    # Per-turn spend cap = safe_drain per source ([S] shortlist -> [P] slots).
+    # Without it, full+fraction candidates of one source each fund against the
+    # raw garrison and jointly overdrain a threatened planet (drain << ships).
+    spend_budget = torch.zeros(P, dtype=dtype, device=device)
+    spend_budget[source_idx[source_exists]] = drain.floor()[source_exists].clamp(min=0.0)
     return {
         "P": P,
         "W": W,
@@ -1040,6 +1045,7 @@ def _build_fraction_candidates(
         "cand_tgt_short": cand_tgt_short,
         "cand_is_def": obs.owned[cand_tgt_slot.clamp(0, P - 1)],
         "source_budget": obs.ships.to(dtype).clone(),
+        "source_spend_budget": spend_budget,
         "target_exists": target_exists,
     }
 
@@ -1102,6 +1108,7 @@ def _greedy_entries_from_built(
         cand_tgt_short=built["cand_tgt_short"],
         cand_is_def=built["cand_is_def"],
         source_budget=built["source_budget"],
+        source_spend_budget=built["source_spend_budget"],
         target_exists=built["target_exists"],
         roi_threshold=float(config.roi_threshold),
     )
@@ -1140,11 +1147,12 @@ def _masked_score_after_prefix(
     built: dict[str, Any],
     config: OEPPlannerConfig,
     prefix_indices: tuple[int, ...],
-) -> tuple[Tensor, Tensor, Tensor, list[LaunchEntries]] | None:
+) -> tuple[Tensor, Tensor, Tensor, Tensor, list[LaunchEntries]] | None:
     if not prefix_indices:
         return (
             built["score"].clone(),
             built["source_budget"].clone(),
+            built["source_spend_budget"].clone(),
             built["target_exists"].clone(),
             [],
         )
@@ -1154,6 +1162,7 @@ def _masked_score_after_prefix(
     cand_active = built["cand_active"]
     forced_score = score.clone()
     source_budget = built["source_budget"].clone()
+    spend_budget = built["source_spend_budget"].clone()
     target_exists = built["target_exists"].clone()
     forced_entries: list[LaunchEntries] = []
     forced_sources: list[Tensor] = []
@@ -1171,8 +1180,8 @@ def _masked_score_after_prefix(
             return None
         if not bool(target_exists[int(built["cand_tgt_short"][idx].item())].item()):
             return None
-        budget_at = source_budget[cand_src[idx]]
-        if not bool(((cand_send[idx] <= budget_at) | ~active).all().item()):
+        spend_at = spend_budget[cand_src[idx]]
+        if not bool(((cand_send[idx] <= spend_at) | ~active).all().item()):
             return None
 
         entries = LaunchEntries(
@@ -1198,6 +1207,7 @@ def _masked_score_after_prefix(
             torch.where(active, cand_send[idx], torch.zeros_like(cand_send[idx])),
         )
         source_budget = (source_budget - debit).clamp(min=0.0)
+        spend_budget = (spend_budget - debit).clamp(min=0.0)
         target_exists[int(built["cand_tgt_short"][idx].item())] = False
         forced_score[idx] = float("-inf")
 
@@ -1225,7 +1235,7 @@ def _masked_score_after_prefix(
                 torch.full_like(forced_score, float("-inf")),
                 forced_score,
             )
-    return forced_score, source_budget, target_exists, forced_entries
+    return forced_score, source_budget, spend_budget, target_exists, forced_entries
 
 
 def _forced_prefix_entries_from_built(
@@ -1246,7 +1256,7 @@ def _forced_prefix_entries_from_built(
     )
     if state is None:
         return None
-    forced_score, source_budget, target_exists, forced_entries = state
+    forced_score, source_budget, spend_budget, target_exists, forced_entries = state
     if not forced_entries:
         return None
 
@@ -1270,6 +1280,7 @@ def _forced_prefix_entries_from_built(
             cand_tgt_short=built["cand_tgt_short"],
             cand_is_def=built["cand_is_def"],
             source_budget=source_budget,
+            source_spend_budget=spend_budget,
             target_exists=target_exists,
             roi_threshold=float(config.roi_threshold),
         )
@@ -1525,7 +1536,7 @@ def plan_oep_beam_pair_waves(
         )
         if state is None:
             continue
-        forced_score, _, _, _ = state
+        forced_score, _, _, _, _ = state
         first_built = dict(built)
         first_built["score"] = forced_score
         second_indices = _beam_first_indices(

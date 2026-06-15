@@ -50,11 +50,33 @@ SUBMISSION_STATS = {{
     "timeouts": 0,
     "timeout_thread_blocks": 0,
     "fallback_errors": 0,
+    "budget_floor_returns": 0,
 }}
 
 
 def _submission_stats_increment(name, amount=1):
     SUBMISSION_STATS[name] = int(SUBMISSION_STATS.get(name, 0)) + int(amount)
+
+
+# PGSRuntime counters are cumulative per runtime and the runtime is rebuilt at
+# step 0, so accumulate per-call DELTAS (treating a drop as a counter reset).
+_LAST_RUNTIME_STATS = [{{}}]
+
+
+def _accumulate_runtime_stats():
+    try:
+        cur = _pgs_agent.runtime_stats()
+    except Exception:
+        return
+    prev = _LAST_RUNTIME_STATS[0]
+    for key, value in cur.items():
+        base = int(prev.get(key, 0))
+        if int(value) < base:
+            base = 0
+        delta = int(value) - base
+        if delta > 0:
+            _submission_stats_increment(key, delta)
+    _LAST_RUNTIME_STATS[0] = dict(cur)
 
 
 def _timeout_thread_still_alive():
@@ -102,6 +124,7 @@ def agent(obs):
     th.start()
     th.join(max(0.0, _BUDGET_S - (time.perf_counter() - t0)))
     if box.get("r") is not None:
+        _accumulate_runtime_stats()
         return box["r"]
     _submission_stats_increment("fallbacks")
     if th.is_alive():

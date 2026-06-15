@@ -170,6 +170,9 @@ FORBIDDEN_EXACT_STATS = {
     "illegal_moves",
     "policy_illegal_moves",
     "invalid_actions",
+    # internal PGS budget degradation (planner returned the raw Producer floor
+    # because its own deadline ran low) — silent shadow of the searched bot
+    "budget_floor_returns",
 }
 
 

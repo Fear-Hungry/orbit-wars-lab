@@ -18,33 +18,36 @@
 > DEBUG-sd01): `/tmp/repro_safe_drain.py` (sintético) e `/tmp/probe_drain_live2.py` (ao vivo).
 > PGS não é afetado (não chama `_greedy_select`); artifacts/ são cópias congeladas.
 
-- [ ] **Fix de dois orçamentos em `_greedy_select`** (`orbit_lite/planner_core.py:367-440`): novo
-  param opcional `source_spend_budget` (default `None` → clone do `source_budget`, preserva
-  callers antigos); `can_fund` passa a checar o spend budget; ao selecionar, debitar OS DOIS;
-  continuar retornando `source_budget` como leftover real (contrato do `_plan_regroup` intacto).
-  **Atenção de shape**: `drain` é `[S]` (shortlist) e o budget é `[P]` (por slot de planeta) —
-  construir `spend = zeros(P); spend[source_idx] = drain.floor()` e passar isso, NÃO
-  `drain.floor()` direto como o parecer original sugeria.
-  - [ ] verificar: `pytest tests/test_planner_core_source_budget.py` passa (teste abaixo)
-- [ ] **Call sites**: producer `bots/producer/_upstream.py:256-273` (spend = scatter de
-  `drain.floor()`); OEP `bots/oep/planner.py:1028-1044` (chave `source_spend_budget` no built),
-  `:1080-1107` (repassar ao `_greedy_select`), `:1138-1209` (`_masked_score_after_prefix` mantém
-  e debita os dois orçamentos; o can-fund da linha ~1174 checa o spend) e `:1258` (segunda
-  chamada recebe os dois pós-prefixo).
-  - [ ] verificar: re-rodar `/tmp/probe_drain_live2.py` (producer 4p+rusher 8 seeds E oep vs
-    rusher) → 0 violações; suítes producer/oep existentes passam
-- [ ] **Teste de regressão** `tests/test_planner_core_source_budget.py`: 2 candidatos de alta
-  pontuação da mesma fonte, send=40 cada, `source_budget=100`, `source_spend_budget=40` → no
-  máximo 1 selecionado, total da fonte ≤ 40, leftover real = 60. Caso 2 (estilo OEP): sends
-  40 (frac 1.0) e 20 (frac 0.5) com spend 40 → só o de 40 dispara. Caso 3: spend default
-  (None) reproduz comportamento atual (2 waves) — trava o contrato de compat.
-  - [ ] verificar: teste falha no código atual (40→80) e passa com o fix
-- [ ] **Gate antes de promover**: o fix MUDA o producer (que é a submissão viva, LB 1228) — no
-  producer todo candidato envia o drain inteiro, então o fix ⇒ no máx. 1 wave/fonte/turno.
-  Violações são raras (~1/6647 turnos-assento), efeito esperado pequeno, mas medir mesmo assim:
-  H2H fixado vs incumbente a 500 steps, ambos assentos, 96 seeds frozen + liga como VETO.
-  - [ ] verificar: margem ≥ 0 vs incumbente nos 96 seeds E sem rebaixamento no veto da liga
-    antes de embarcar em tarball
+- [x] **Fix de dois orçamentos em `_greedy_select`** (`orbit_lite/planner_core.py:367`): APLICADO
+  2026-06-12 — param opcional `source_spend_budget` (default `None` → clone, callers antigos
+  preservados); `can_fund` checa o spend; seleção debita OS DOIS; retorno continua
+  `source_budget` (contrato do `_plan_regroup` intacto). Shape tratado: spend construído
+  `zeros(P)` + scatter de `drain.floor()` nos `source_idx[source_exists]`.
+  - [x] verificar: `pytest tests/test_planner_core_source_budget.py` → 3 passed
+- [x] **Call sites**: producer FEITO (`bots/producer/_upstream.py`, spend = scatter de
+  `drain.floor()`); OEP FEITO 2026-06-12 — `_build_fraction_candidates` põe
+  `source_spend_budget` no built; `_greedy_entries_from_built` repassa;
+  `_masked_score_after_prefix` mantém/debita os dois orçamentos (can-fund checa o spend;
+  retorno virou 5-tupla — consumidores em `_forced_prefix_entries_from_built` e no beam ~1532
+  atualizados); segunda chamada do `_greedy_select` recebe os dois pós-prefixo.
+  - [x] verificar (producer): probe ao vivo producer 4p+rusher 8 seeds × 500 → **0 violações em
+    6315 chamadas** (antes: 1 caso 2.0×); suítes producer/pgs/parity/movement 48 passed
+  - [x] verificar (oep): probe oep vs rusher pós-fix → **0 violações em 2276 chamadas** (antes:
+    1 caso 1.5×, gastou 108 vs drain 72); test_oep_agent + profile 32 passed; ruff limpo
+- [x] **Teste de regressão** `tests/test_planner_core_source_budget.py`: APLICADO — caso 1
+  (2×40 da mesma fonte, spend 40 → 1 wave, ≤40, leftover físico 60), caso 2 (estilo OEP,
+  frações 40+20 com spend 40 → só o de 40), caso 3 (default None reproduz 2 waves/80 — trava
+  compat).
+  - [x] verificar: caso 3 prova que o código legado mandava 80; casos 1-2 passam com o fix
+- [x] **Gate antes de promover — H2H MEDIDO 2026-06-12** (producer fix vs incumbente legado;
+  incumbente = mesmo processo com flag que descarta `source_spend_budget`, default None =
+  legado exato; 96 seeds frozen 9000-9095, 500 steps, ambas direções; JSONs em
+  `/tmp/gate_h2h_*.json`):
+  - assento 0: fix 43W/38L/15T, margem média naves **+46.6** (share +0.048)
+  - assento 1: fix 46W/35L/15T, margem média naves **+216.2** (share +0.124)
+  - margem ≥ 0 nos DOIS assentos ⇒ critério H2H BATIDO; 0 crashes/timeouts (192 jogos DONE)
+  - [ ] restante: veto da liga (sem rebaixamento) ANTES de embarcar o producer corrigido em
+    tarball — só quando houver decisão de re-submeter (custa slots)
 
 # 📋 PARECER (2026-06-11, tarde) — review do pacote de 14 commits (régua v4 + hardening)
 
@@ -888,3 +891,76 @@ régua/world-model infiel = perseguir ruído (corrompe a correlação local↔le
 - Micro-tuning de heurística (reservas/aberturas/hammer) — saturado contra bots locais (exp. 73–99).
 - Tweak de knob no OEP (min_advantage/horizon/wider/banda) — EXAUSTADO em B (tudo regrediu vs −0.045).
 - ~~GPU~~ — **REVISTO 2026-06-07: GPU LIBERADA para TREINO** (a máquina tem GPU local; ver CLAUDE.md "Compute / GPU"). A regra antiga ("compute não é o gargalo") valia para micro-tuning de heurística, mas o caminho PPO competitivo (~1300 > Producer com ~12–15h GPU) é justamente limitado por compute. **Inferência/submissão segue CPU-only** (invariante D10/D11): treinar na GPU, exportar modelo que roda em CPU.
+
+# 🔧 APLICADO (2026-06-12) — SELETOR DE SUBMISSÃO CALIBRADO (plano aprovado, 8 fases)
+
+> Liga deixou de emitir `recommended_candidate`. Pipeline novo (docs/SELECTOR.md):
+> ruler (VETO + features, painel-independente, scores split + normalização adv_2p/adv_4p,
+> buckets, gates 4p reais, latência, risk_penalty, perfil `selector` 48 seeds, seed splits
+> dev/validation/selector) → `league_selector_calibration.py` (7 âncoras LB, 5 checks,
+> Spearman≥0.6, reuso/resume de jogos) → `league_submission_selector.py` (preflight, 14
+> regras, decisão SUBMIT/KEEP/RUN_MORE/CALIBRATION_FAILED/NO_VALID/INVALID_POOL; empate
+> favorece incumbente). Baseline congelado `selector_baseline_2026_06_12` (36 tasks do
+> strong v11; docs/SELECTOR_BASELINE.md). drl_promotion_gate migrado. 60+ testes novos/
+> atualizados verdes (ruler 29, stats 5, calibração 8, selector 14, don'ts 3, freeze 3);
+> ruff limpo. ÂNCORAS refrescadas 2026-06-12: s100→1136.3; TENSÃO holdwave (2 resubmits
+> ~1145 vs original 1228.8, spread>ruído) registrada em LB_ANCHORS — não re-ancorado.
+
+- [ ] Acompanhar calibração OFICIAL (48 seeds, split validation, 7 âncoras, jobs=4, nohup
+  `/tmp/cal_official.log`, `--resume` interruption-safe; ~14-16h) e ler `calibration.json`
+  - [ ] verificar: `calibration_valid` computado com os 5 checks; se `false`, liga segue
+    VETO-only (resultado honesto) e decisão de submissão continua manual
+- [ ] DECIDIR (humano): tensão da âncora holdwave — manter 1228.8, re-ancorar para ~1145
+  (média dos resubmits) ou usar média das 3 medições; afeta o check `holdwave_top_or_tied`
+- [ ] Quando houver candidatos reais (ex.: pgs_v2): funil standard→strong→selector
+  (split selector 270k) → `league_submission_selector` → submission_decision.json
+  - [ ] verificar: decisão emitida com rules trace completo e seed_split=selector
+
+# 🔧 APLICADO (2026-06-12) — camada de MISSÃO no PGS (mission_mode, frente pgs_v2)
+
+> A pedido: busca por MISSÃO multi-source atrás de flag (`mission_mode=False` default; caminho
+> per-source intacto = baseline congelado). `MissionCandidate` (entries + replace_sources +
+> exclusive_targets); `_tensor_action_mission_mode` = greedy: começa em my_base, adiciona missão
+> só se melhora valor estático E passa o árbitro reativo no INCREMENTO; assemble remove do floor
+> as entradas das fontes substituídas e do alvo exclusivo (critério: fonte de missão não lança
+> 2x). Geradores v1: HOLD-por-fonte (desvio provado), RESCUE multi-source (defesa conjunta de
+> planeta que flipa em ≤rescue_hold_window, chega ANTES do flip, trim no excedente) e HAMMER
+> multi-source (onda consolidada ≥hammer_min_ships no alvo inimigo, estilo elite do LB; até
+> hammer_max_sources fontes, cada uma re-aimed com o send real). Contribuições limitadas ao
+> safe_drain por fonte; conflito fonte/alvo entre missões selecionadas é bloqueado. Budget:
+> aborto devolve a montagem já validada (contador `mission_budget_aborts` no runtime_stats).
+> Testes novos (3): default OFF (controle não opta), legalidade 2p/4p fim-a-fim, e o critério de
+> substituição com missão sintética de 2 fontes. Suíte PGS 29 passed; ruff limpo.
+
+- [ ] Medir pgs_v2 (mission_mode=True) vs baseline: triagem honesta (≥48 seeds, ambos
+  assentos, 500 steps) + E5-style 4p (win/morte vs holdwave) antes de qualquer conclusão
+  - [ ] verificar: margem ≥ 0 vs baseline E morte 4p ≤ holdwave (62%) na mesma régua
+
+# 🔧 APLICADO (2026-06-12) — passo "orçamento tático" da frente pgs_v2 (avail dos scripts = safe_drain)
+
+> A pedido: `tensor_action` agora calcula `source_spend_budget` por fonte via `safe_drain`
+> (recipe idêntica ao Producer, H=value_horizon) e os scripts recebem `available =
+> floor(safe_drain)` em vez do físico `ships-1`. Fonte DOOMED mantém available=ships
+> (safe_drain colapsa p/ source_ships sem turno held) — EVAC continua possível. Teste novo
+> `tests/test_pgs_tactical_budget.py`: espiona o `available` passado aos scripts em jogo real
+> producer-vs-rusher (fontes ameaçadas garantidas), exige available ≤ floor(drain), missão ≤
+> available, e ≥1 caso onde o teto morde (drain < ships-1) — discrimina do código antigo.
+> Suíte PGS 26 passed; ruff limpo. NOTA: muda seleção/ordenação de fontes de desvio também no
+> hold-only — o controle congelado deve ser re-gateado junto com o resto antes de re-embarcar.
+
+# 🔧 APLICADO (2026-06-11) — passos 1.1–1.3 da frente pgs_v2 (floor puro + wave sem mutação + instrumentação de budget)
+
+> Aplicado a pedido: floor de budget agora retorna o Producer BRUTO (nunca a base
+> wave-filtrada); `_wave_merge_filter` virou pura — commit do `_wave_pending` só no
+> retorno final (não em fallback de budget); `budget_floor_returns` contado no runtime,
+> exposto em `bots/pgs/agent.runtime_stats()`, acumulado por delta no wrapper do tarball
+> e proibido (>0 = FAIL) em `validate_pgs_tarball.FORBIDDEN_EXACT_STATS`. Regimes
+> intencionais (floor_in_4p, deviation_max_step) NÃO contam. 22 testes pgs/validate
+> passam; ruff limpo. SUBMISSION_CONFIG intacta (controle congelado).
+
+- [x] Re-empacotar `artifacts/submission_pgs.tar.gz` (template do wrapper mudou; tarball stale
+  — mesmo gotcha dos ids 175/176). Feito 2026-06-12: sha256 684d3e62…dbd121e1, 68.5KB.
+  - [x] verificar: `scripts/validate_pgs_tarball.py` → VALIDATION OK; `submission_stats` =
+    1507 calls, 0 fallbacks/timeouts, `budget_floor_returns: 0` (chave presente e proibida >0)
+  - [ ] OBS: variantes com `--pgs-config` (hold puro, wave_s100 etc.) seguem stale — re-empacotar
+    sob demanda antes de usar

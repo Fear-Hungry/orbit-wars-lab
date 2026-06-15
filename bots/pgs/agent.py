@@ -29,6 +29,12 @@ def notify_fallback_applied() -> None:
     _RUNTIME = None
 
 
+def runtime_stats() -> dict[str, int]:
+    if _RUNTIME is None:
+        return {}
+    return _RUNTIME.runtime_stats()
+
+
 def make_agent():
     """Isolated PGS agent (own runtime, operational config) for batched rollouts."""
     runtime = PGSRuntime(SUBMISSION_CONFIG)

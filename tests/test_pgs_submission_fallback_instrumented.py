@@ -65,6 +65,7 @@ def test_healthy_pgs_records_zero_fallbacks(monkeypatch):
     assert ns["SUBMISSION_STATS"] == {
         "calls": 5, "fallbacks": 0, "timeouts": 0,
         "timeout_thread_blocks": 0, "fallback_errors": 0,
+        "budget_floor_returns": 0,
     }
 
 
@@ -78,6 +79,7 @@ def test_dead_pgs_counts_every_fallback(monkeypatch):
     assert ns["SUBMISSION_STATS"] == {
         "calls": 10, "fallbacks": 10, "timeouts": 0,
         "timeout_thread_blocks": 0, "fallback_errors": 10,
+        "budget_floor_returns": 0,
     }
 
 
@@ -122,6 +124,7 @@ def test_timeout_blocks_until_thread_finishes_then_resumes_pgs(monkeypatch):
     assert ns["SUBMISSION_STATS"] == {
         "calls": 5, "fallbacks": 5, "timeouts": 1,
         "timeout_thread_blocks": 4, "fallback_errors": 0,
+        "budget_floor_returns": 0,
     }
 
     release.set()
@@ -131,7 +134,26 @@ def test_timeout_blocks_until_thread_finishes_then_resumes_pgs(monkeypatch):
     assert ns["SUBMISSION_STATS"] == {
         "calls": 6, "fallbacks": 5, "timeouts": 1,
         "timeout_thread_blocks": 4, "fallback_errors": 0,
+        "budget_floor_returns": 0,
     }
+
+
+def test_budget_floor_returns_accumulated_as_delta(monkeypatch):
+    """PGSRuntime counters are cumulative and reset with the runtime at step 0;
+    the wrapper must fold per-call DELTAS into SUBMISSION_STATS and treat a
+    counter drop as a reset (new game), never double-count."""
+    pgs_moves = [[1, 0.0, 2]]
+    counter = {"budget_floor_returns": 0}
+    agent, ns = _render_agent(monkeypatch, lambda obs: pgs_moves)
+    ns["_pgs_agent"].runtime_stats = lambda: dict(counter)
+
+    agent({"player": 0})                      # delta 0
+    counter["budget_floor_returns"] = 2
+    agent({"player": 0})                      # delta +2
+    agent({"player": 0})                      # unchanged -> delta 0
+    counter["budget_floor_returns"] = 1       # runtime rebuilt mid-episode
+    agent({"player": 0})                      # reset detected -> delta +1
+    assert ns["SUBMISSION_STATS"]["budget_floor_returns"] == 3
 
 
 def test_packager_rejects_unbundled_value_net_config(monkeypatch, tmp_path):

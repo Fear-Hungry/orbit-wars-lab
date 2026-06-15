@@ -257,9 +257,9 @@ def run_drl_promotion_gate(
     promotable = [
         {
             **prepared_by_name[row["candidate"]],
-            "overall_score": row["overall_score"],
-            "score_2p": row["score_2p"],
-            "score_4p": row["score_4p"],
+            "field_advantage": row["field_advantage"],
+            "score_2p_fixed": row["score_2p_fixed"],
+            "score_4p_fixed": row["score_4p_fixed"],
         }
         for row in report["ranking"]
         if row["verdict"] == "PASS_LOCAL"
@@ -347,7 +347,8 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(
             {
                 "out": str(out),
-                "recommended_candidate": report["recommended_candidate"],
+                "local_veto_passes": report["local_veto_passes"],
+                "selection_status": report["selection_status"],
                 "promotable": report["promotable"],
                 "ranking": report["ranking"],
             },
