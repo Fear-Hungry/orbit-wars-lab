@@ -5,7 +5,12 @@
 
 ---
 
-# 🐛 CONFIRMADO (2026-06-11, /diagnose) — seletor pode gastar acima do safe_drain (drenagem dupla)
+# ✅ RESOLVIDO (2026-06-14) — drenagem dupla no seletor guloso (CONFIRMADO 2026-06-11 via /diagnose)
+
+> **FIX APLICADO 2026-06-14** (branch `oep-search-and-submit-exploration`, patch canônico do usuário
+> `drenagem_dupla_fix.patch` = idêntico ao DB 200, que ficara só na outra worktree — NÃO existia aqui).
+> Suíte completa **465 passed**; probe ao vivo = **0 violações** nos regimes que disparavam (producer
+> 4p+rusher 0/1467; oep vs rusher 0/2091). Resta APENAS o gate H2H vs incumbente (último item, `[ ]`).
 
 > Achado do usuário, CONFIRMADO empiricamente. `_greedy_select` (`orbit_lite/planner_core.py:367`)
 > checa financiamento contra `source_budget` = `obs.ships` BRUTO; `used_src` só impede alvo↔fonte,
@@ -18,28 +23,24 @@
 > DEBUG-sd01): `/tmp/repro_safe_drain.py` (sintético) e `/tmp/probe_drain_live2.py` (ao vivo).
 > PGS não é afetado (não chama `_greedy_select`); artifacts/ são cópias congeladas.
 
-- [ ] **Fix de dois orçamentos em `_greedy_select`** (`orbit_lite/planner_core.py:367-440`): novo
+- [x] **Fix de dois orçamentos em `_greedy_select`** ✅ 2026-06-14 (`orbit_lite/planner_core.py`): novo
   param opcional `source_spend_budget` (default `None` → clone do `source_budget`, preserva
-  callers antigos); `can_fund` passa a checar o spend budget; ao selecionar, debitar OS DOIS;
-  continuar retornando `source_budget` como leftover real (contrato do `_plan_regroup` intacto).
-  **Atenção de shape**: `drain` é `[S]` (shortlist) e o budget é `[P]` (por slot de planeta) —
-  construir `spend = zeros(P); spend[source_idx] = drain.floor()` e passar isso, NÃO
-  `drain.floor()` direto como o parecer original sugeria.
-  - [ ] verificar: `pytest tests/test_planner_core_source_budget.py` passa (teste abaixo)
-- [ ] **Call sites**: producer `bots/producer/_upstream.py:256-273` (spend = scatter de
-  `drain.floor()`); OEP `bots/oep/planner.py:1028-1044` (chave `source_spend_budget` no built),
-  `:1080-1107` (repassar ao `_greedy_select`), `:1138-1209` (`_masked_score_after_prefix` mantém
-  e debita os dois orçamentos; o can-fund da linha ~1174 checa o spend) e `:1258` (segunda
-  chamada recebe os dois pós-prefixo).
-  - [ ] verificar: re-rodar `/tmp/probe_drain_live2.py` (producer 4p+rusher 8 seeds E oep vs
-    rusher) → 0 violações; suítes producer/oep existentes passam
-- [ ] **Teste de regressão** `tests/test_planner_core_source_budget.py`: 2 candidatos de alta
-  pontuação da mesma fonte, send=40 cada, `source_budget=100`, `source_spend_budget=40` → no
-  máximo 1 selecionado, total da fonte ≤ 40, leftover real = 60. Caso 2 (estilo OEP): sends
-  40 (frac 1.0) e 20 (frac 0.5) com spend 40 → só o de 40 dispara. Caso 3: spend default
-  (None) reproduz comportamento atual (2 waves) — trava o contrato de compat.
-  - [ ] verificar: teste falha no código atual (40→80) e passa com o fix
-- [ ] **Gate antes de promover**: o fix MUDA o producer (que é a submissão viva, LB 1228) — no
+  callers antigos); `can_fund` checa o spend budget; ao selecionar, debita OS DOIS; continua
+  retornando `source_budget` como leftover real (contrato do `_plan_regroup` intacto). Scatter
+  `[S]→[P]` com `drain.floor()` via helper `_scatter_drain_to_slots`.
+  - [x] verificar: `pytest tests/test_planner_core_source_budget.py` passa (3/3)
+- [x] **Call sites** ✅ 2026-06-14: producer `bots/producer/_upstream.py` (spend = scatter de
+  `drain.floor()`); OEP `bots/oep/planner.py` (chave `source_spend_budget` no built; repassada ao
+  `_greedy_select`; `_masked_score_after_prefix` mantém e debita os dois, can-fund checa o spend;
+  2ª chamada pós-prefixo + desempacote de 5-tupla no beam recebem os dois).
+  - [x] verificar: `/tmp/probe_drain_live2.py` → **0 violações** (producer 4p+rusher 0/1467; oep vs
+    rusher 0/2091, regimes que antes davam 2.0× e 1.5×); suíte completa **465 passed**
+- [x] **Teste de regressão** `tests/test_planner_core_source_budget.py` ✅ 2026-06-14: 3 casos —
+  (1) send=40×2, `source_budget=100`, `spend=40` → 1 wave, total ≤ 40, leftover 60; (2) estilo OEP
+  sends 40 (frac 1.0)+20 (frac 0.5), spend 40 → só o de 40 dispara; (3) spend `None` reproduz
+  comportamento antigo (2 waves, 80) — trava o contrato de compat.
+  - [x] verificar: caso 3 demonstra o legado (80) e os casos 1-2 o fix (40); 3 passed
+- [ ] **Gate antes de promover** ⬅ ÚNICO PENDENTE: o fix MUDA o producer (que é a submissão viva, LB 1228) — no
   producer todo candidato envia o drain inteiro, então o fix ⇒ no máx. 1 wave/fonte/turno.
   Violações são raras (~1/6647 turnos-assento), efeito esperado pequeno, mas medir mesmo assim:
   H2H fixado vs incumbente a 500 steps, ambos assentos, 96 seeds frozen + liga como VETO.
