@@ -30,6 +30,20 @@ artifacts/*
 !artifacts/kaggle_flow_1.png
 !artifacts/kaggle_home.png
 !artifacts/kaggle_signin.png
+# Top-5 proxy opponent pool (public LB kernels) — tracked so the src zip ships a
+# usable ruler; configs/eval_top5_proxy.yaml points here. Only top5_proxy is
+# un-ignored; artifacts/opponents/producer* stays ignored.
+!artifacts/opponents/
+artifacts/opponents/*
+!artifacts/opponents/top5_proxy/
+# Ship only the runnable agent.py + README, not the source notebooks.
+artifacts/opponents/top5_proxy/**/*.ipynb
+# Non-pool kernels excluded from the ruler (torch+weights, or crash-prone — see
+# top5_proxy README/memory). Present locally but NOT shipped: never loaded by the
+# 6-agent pool, and exp48/i-m-stronger need weights that aren't bundled.
+artifacts/opponents/top5_proxy/orbit-wars-exp48/
+artifacts/opponents/top5_proxy/orbit-wars-i-m-stronger/
+artifacts/opponents/top5_proxy/orbitbotnext/
 
 .todo
 autoresearch-*.json
