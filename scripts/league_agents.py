@@ -292,11 +292,38 @@ FACTORIES = {
     "rush": lambda: _heuristic("rush"),
     "pgs_hold": lambda: _pgs(scripts="hold"),
     "pgs_holdwave": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150),
+    # Drenagem-dupla (commit 8459f7b) seat-rotated promotion gate (scripts/
+    # gate_drain_h2h.py). pgs_hold_fix == the live pgs_holdwave submission (fix
+    # ON); pgs_hold_prefix == byte-identical config but with the fix DISABLED
+    # (source_spend_budget=None == pre-fix behaviour). disable_drain_fix is a
+    # per-instance PGSConfig knob, so the two play head-to-head in one process.
+    "pgs_hold_fix": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150),
+    "pgs_hold_prefix": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                    disable_drain_fix=True),
+    # G3.2 Phase 2: pgs_holdwave + decisive-wave concentration for even_attrition_2p
+    # (focus-fire enemy core in even 2p late-game). Candidate for the seat-rotated
+    # 2p ruler vs incumbent pgs_holdwave. Off-by-default knob; submission unchanged.
+    "pgs_decisive2p": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                   decisive_wave_2p=True),
+    # Item 5 (kingmaker/overextension 4p survival): pgs_holdwave + H9 threat-value
+    # 4p portfolio (auto-adds `reinforce` in 4p so the forward per-enemy threat
+    # value can SELECT survival plans; 2p frozen = scripts="hold"). Candidate for
+    # the 4p-HEAVY seat-rotated ruler vs incumbent pgs_holdwave — re-validating H9
+    # with the corrected death+margin verdict (the old h9_4p_gate was death-only).
+    "pgs_h9threat": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                 threat_value_4p=True),
     "pgs_holdwave_half2p": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
                                         half_in_2p=True),
     "pgs_allscripts": lambda: _pgs(),
     "ext_lb1050": _external("artifacts/opponents/top5_proxy/lb-1050-heuristic-simulation-agent-test-3/agent.py"),
     "ext_hellburner": _external("artifacts/opponents/top5_proxy/hellburner/agent.py"),
+    # Strong public LB proxies (the top-range of configs/eval_top5_proxy.yaml).
+    # Registered so the seat-rotated league can run them directly (top5_proxy
+    # separation probe), not only via the seat-0-pinned benchmark_submission path.
+    "ext_lb1224": _external("artifacts/opponents/top5_proxy/orbit-star-wars-lb-max-1224/agent.py"),
+    "ext_lb1110": _external("artifacts/opponents/top5_proxy/orbit-wars-heuristic-lb-1110/agent.py"),
+    "ext_lb1100": _external("artifacts/opponents/top5_proxy/distance-prioritized-agent-lb-max-score-1100/agent.py"),
+    "ext_rulebase_ml": _external("artifacts/opponents/top5_proxy/orbit-wars-rule-base-ml-shot-validator-hybrid/agent.py"),
     # H-P5 league-guided wave round (one round, pre-registered; /goal 2026-06-10)
     "pgs_wave_s100": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=100),
     "pgs_wave_s50": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=50),
