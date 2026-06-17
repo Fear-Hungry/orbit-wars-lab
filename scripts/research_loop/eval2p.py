@@ -1,5 +1,14 @@
 """2-player evaluation — the 2p mirror of scripts/h9_4p_gate.run_config.
 
+DEPRECATED AS A PROMOTION SIGNAL (2026-06-16). This pins the candidate to a
+single fixed seat (SEAT=0) versus an isolated opponent and never rotates seats,
+so any margin here can be a seat-0 advantage artifact. It is a research-loop
+fitness/diagnostic only — never a promotion gate. The seat-rotated,
+fault-checked promotion ruler is scripts/league_submit_ruler.py (rotates seats
+by seed index, validates the seat counter, requires zero faults). This module
+has no CLI by design; callers that use it for fitness inherit the seat bias and
+must not let it decide submission.
+
 The 4p gate collapsed the whole PGS hold-family to a tied floor (the falsified
 fitness, 2026-06-13). The six-hats decision picked 2p as the first route to test,
 because the project believes (unverified) that PGS SEPARATES in 2p where it

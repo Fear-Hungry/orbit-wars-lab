@@ -1,5 +1,13 @@
 from __future__ import annotations
 # ruff: noqa: E402,I001
+#
+# DEPRECATED AS A PROMOTION GATE for the 4p path (2026-06-16). The 2p path
+# rotates seats (submission_first in (True, False)), but _four_player_task pins
+# the submission to SEAT 0 with no rotation, so 4p win/margin here can be a
+# seat-0 artifact. The seat-rotated, fault-checked promotion ruler is
+# scripts/league_submit_ruler.py. When 4p is included the CLI now refuses to run
+# unless --ack-seat-biased (or OWL_ALLOW_SEAT_BIASED_GATE=1) is set; --skip-4p
+# (2p only) is unaffected. Library functions remain importable.
 
 import argparse
 import importlib.util
@@ -592,7 +600,25 @@ def main() -> None:
         help="also fail if the submission does not expose SUBMISSION_STATS instrumentation",
     )
     parser.add_argument("--out", default=None)
+    parser.add_argument("--ack-seat-biased", action="store_true",
+                        help="acknowledge the 4p path is seat-0-pinned, NOT a promotion gate")
     args = parser.parse_args()
+
+    if not args.skip_4p and not (args.ack_seat_biased
+                                 or os.environ.get("OWL_ALLOW_SEAT_BIASED_GATE") == "1"):
+        sys.stderr.write(
+            "\n[benchmark_submission] REFUSING TO RUN THE 4p PATH AS A PROMOTION GATE.\n"
+            "  _four_player_task pins the submission to seat 0 (no rotation); 4p\n"
+            "  win/margin here can be a seat-0 artifact. The seat-rotated, fault-\n"
+            "  checked promotion ruler is:\n"
+            "    python -m scripts.league_submit_ruler --candidates <name> "
+            "--incumbent <name> --seeds 96 --steps 500\n"
+            "  Options: pass --skip-4p (seat-rotated 2p only), or --ack-seat-biased\n"
+            "  (or OWL_ALLOW_SEAT_BIASED_GATE=1) to run 4p as a NON-promotion diagnostic.\n\n")
+        sys.exit(2)
+    if not args.skip_4p:
+        print("[benchmark_submission] WARNING: 4p path is seat-0-pinned (diagnostic only); "
+              "promote via scripts/league_submit_ruler.py.", file=sys.stderr, flush=True)
 
     submission_path = Path(args.submission)
     seeds = list(range(max(1, int(args.seeds))))
