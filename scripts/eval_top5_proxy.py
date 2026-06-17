@@ -77,8 +77,12 @@ def _run_candidate(entry: str, pool: list[dict], cfg: dict, tmp: Path, cid: str)
         rep = _bench(entry, [p["entry"]], cfg, tmp / f"{cid}__2p__{p['id']}.json", ["--skip-4p"])
         s = rep["formats"][0]["opponents"][0]["summary"]
         result["2p"][p["id"]] = {**_summ(s), "declared_lb": p.get("declared_lb")}
+    # This ruler is an explicit robustness VETO/diagnostic (see README + memory
+    # top5_proxy_ruler_t0), NOT a promotion gate, so the seat-biased 4p path of
+    # benchmark_submission is acknowledged here. (Promotion uses the seat-rotated
+    # scripts/league_submit_ruler.py instead.)
     rep4 = _bench(entry, [p["entry"] for p in pool], cfg,
-                  tmp / f"{cid}__4p.json", ["--skip-2p"])
+                  tmp / f"{cid}__4p.json", ["--skip-2p", "--ack-seat-biased"])
     fmt4 = next(f for f in rep4["formats"] if f["format"] == "4p")
     result["4p"] = {"pool": [p["id"] for p in pool], "summary": _summ(fmt4["summary"])}
     return result

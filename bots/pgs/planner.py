@@ -20,7 +20,7 @@ from __future__ import annotations
 import math
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dc_replace
 from typing import Any
 
 import torch
@@ -149,6 +149,38 @@ class PGSConfig:
     threat_first_loss_weight: float = 2.0
     threat_incoming_weight: float = 0.5
     threat_ships_weight: float = 0.01
+    # A/B harness for the "drenagem dupla" fix (commit 8459f7b). When True, the
+    # producer floor AND the 2-ply reply arbiter both run plan_lite_waves with
+    # the fix disabled (source_spend_budget=None == pre-fix single budget). Used
+    # only by the pgs_hold_prefix incumbent in the seat-rotated promotion gate
+    # (scripts/league_submit_ruler.py). Per-instance, so candidate (fix) and
+    # incumbent (pre-fix) play head-to-head in one process without leaking. The
+    # live submission pgs_holdwave keeps the default (fix ON).
+    disable_drain_fix: bool = False
+    # G3.2 Phase 2 — DECISIVE-WAVE conversion for even_attrition_2p (loss class #2,
+    # 125/382 real losses, ~all 2p; docs/LOSS_TAXONOMY.md). Phase 1
+    # (g32_even_attrition_2p_phase1) found the tell: LOSERS SPRAY (frac_ships_in_big
+    # 0.38 loss vs 0.60 win) — they dribble force across small waves and never
+    # convert parity into a kill. That is losing the Lanchester exchange (combat
+    # power ~ N^2, so one concentrated wave beats many small ones). The fix is
+    # ACTIVE force concentration, NOT better defence: in a roughly-even 2p
+    # late-game, FOCUS-FIRE the enemy CORE (max-production enemy planet we are
+    # already attacking), withholding attacks on every OTHER enemy target so
+    # garrisons accumulate into ONE decisive wave (hoard -> strike). Distinct from
+    # the rejected wave-v0 unconditional size veto (lost tempo on expansion/
+    # defence, id=139): this is decisive-2p-regime-only, ATTACK-only, and
+    # concentrates rather than merely vetoes. Off by default (live pgs_holdwave
+    # unchanged); A/B'd via the seat-rotated 2p ruler before any ship.
+    decisive_wave_2p: bool = False
+    decisive_wave_start_step: int = 200      # late-game only (attrition collapses late)
+    decisive_wave_even_band: float = 0.30    # active when |my_ship_share - 0.5| <= band/2
+    # Release threshold for the concentrated wave. Above holdwave's 60-ship merge
+    # (so it genuinely concentrates further) but reachable by 1-2 sources' summed
+    # safe_drain in a late-game hoard — set too high and the floor never proposes
+    # it, so the filter just withholds and turns passive (the H7 failure mode).
+    # Elite LB waves are ~50-80 ships (lb_elite_style_taxonomy).
+    decisive_wave_min: float = 80.0
+    decisive_wave_max_delay: int = 20        # force a release after this many held turns
 
 
 def _select_entries(entries: LaunchEntries, mask: Tensor) -> LaunchEntries:
@@ -184,6 +216,9 @@ class PGSRuntime:
         # wave v1 cross-turn state: target_slot -> step when its attack group
         # was first withheld (age gate). Reset at step 0.
         self._wave_pending: dict[int, int] = {}
+        # G3.2 decisive-wave (even_attrition_2p) hold state: core target_slot ->
+        # step first held. Separate from _wave_pending. Reset at step 0.
+        self._decisive_pending: dict[int, int] = {}
         # one PERSISTENT ProducerLiteRuntime per owner: the real Producer keeps
         # a rolling PlanetMovement memory (planned-launch ledger reconciled
         # against the next obs); a fresh runtime per turn re-estimates in-flight
@@ -210,6 +245,7 @@ class PGSRuntime:
         plan must not influence the next real turn.
         """
         self._wave_pending = {}
+        self._decisive_pending = {}
 
     # -- agent glue --------------------------------------------------------
     def act(self, obs: Any):
@@ -227,12 +263,24 @@ class PGSRuntime:
         return sparse_action_row_to_moves(row, obs, player_id=player_id)
 
     # -- producer base plan -------------------------------------------------
+    def _producer_cfg(self, player_count: int):
+        """Producer-floor config for this PGS instance, with the drenagem-dupla
+        fix toggled per PGSConfig.disable_drain_fix (pre-fix incumbent harness).
+        Returns None when the fix is ON so callers keep the unmodified default
+        path (byte-identical to the live submission)."""
+        if not self.config.disable_drain_fix:
+            return None
+        return _dc_replace(_producer_config_for(int(player_count)), disable_drain_fix=True)
+
     def _producer_entries(
         self, owner_id: int, obs_tensors: dict, movement: PlanetMovement
     ) -> LaunchEntries:
         # at most ONE tensor_action call per (owner, turn): run_turn mutates the
         # runtime's rolling memory, a second same-turn call would corrupt it
-        runtime = self._floor_runtimes.setdefault(int(owner_id), ProducerLiteRuntime())
+        runtime = self._floor_runtimes.setdefault(
+            int(owner_id),
+            ProducerLiteRuntime(config_override=self._producer_cfg(self._player_count)),
+        )
         with torch.no_grad():
             row = runtime.tensor_action(_with_tensor_player(obs_tensors, int(owner_id)))
         return _entries_from_sparse_row(
@@ -420,7 +468,7 @@ class PGSRuntime:
         Static 1-ply prediction inflates deviations (OEP diagnosis B); this is the
         2-ply correction, used as the final arbiter between the deviated plan and
         the all-PRODUCER floor."""
-        pcfg = _producer_config_for(player_count)
+        pcfg = self._producer_cfg(player_count) or _producer_config_for(player_count)
         h = int(pcfg.horizon)
         reply_movement = _clone_movement(movement)
         if bool(my_entries.valid.any()):
@@ -569,6 +617,58 @@ class PGSRuntime:
             return my_base
         return _select_entries(my_base, keep | ~valid)
 
+    def _decisive_wave_filter(
+        self, my_base: LaunchEntries, owner0: Tensor, ships: Tensor, prod: Tensor,
+        me: int, step_now: int,
+    ) -> LaunchEntries:
+        """G3.2 Phase 2 (even_attrition_2p): in a roughly-even 2p late-game,
+        FOCUS-FIRE the enemy CORE. Withhold attacks on every enemy target except
+        the highest-production one we are already attacking, so garrisons
+        accumulate into ONE decisive wave (hoard -> strike), raising
+        frac_ships_in_big. Defence (own targets) and expansion (neutral) are
+        never touched — this concentrates offence, it does not veto tempo."""
+        cfg = self.config
+        valid = my_base.valid
+        if not bool(valid.any()):
+            self._decisive_pending = {}
+            return my_base
+        # Regime gate: only an even ship-share. Don't hoard while losing badly
+        # (we must fight back with everything) or already winning (let the floor
+        # press). |share - 0.5| <= band/2.
+        my_ships = float(ships[owner0 == int(me)].sum().item())
+        enemy_ships = float(ships[(owner0 >= 0) & (owner0 != int(me))].sum().item())
+        total = my_ships + enemy_ships
+        if total <= 0.0 or abs(my_ships / total - 0.5) > float(cfg.decisive_wave_even_band) / 2.0:
+            self._decisive_pending = {}
+            return my_base
+        tgt = my_base.target_slots
+        tgt_owner = owner0[tgt]
+        attack = valid & (tgt_owner >= 0) & (tgt_owner != int(me))
+        attacked_slots = {int(t.item()) for t in tgt[attack]}
+        if not attacked_slots:
+            self._decisive_pending = {}
+            return my_base
+        # CORE = the enemy planet whose loss hurts most = max production among the
+        # targets we can already reach this turn.
+        core = max(attacked_slots, key=lambda s: float(prod[s].item()))
+        keep = valid.clone()
+        pending_next: dict[int, int] = {}
+        for t_slot in attacked_slots:
+            group = attack & (tgt == t_slot)
+            if t_slot != core:
+                keep &= ~group                       # concentrate: withhold non-core attacks
+                continue
+            total_t = float(my_base.ships[group].sum().item())
+            first = self._decisive_pending.get(t_slot, step_now)
+            if total_t >= float(cfg.decisive_wave_min) or (step_now - first) >= int(cfg.decisive_wave_max_delay):
+                continue                              # fire the decisive wave (or it aged out)
+            keep &= ~group                            # else hold and accumulate
+            pending_next[t_slot] = first
+        self._decisive_pending = pending_next
+        if bool((keep | ~valid).all()):
+            return my_base
+        return _select_entries(my_base, keep | ~valid)
+
     # -- main entry ----------------------------------------------------------
     def tensor_action(self, obs_tensors: dict) -> dict[str, Tensor]:
         t_start = time.perf_counter()
@@ -609,6 +709,7 @@ class PGSRuntime:
         step_now = int(obs_tensors["step"].item())
         if step_now == 0:
             self._wave_pending = {}
+            self._decisive_pending = {}
         if player_count != 2 and bool(cfg.floor_in_4p):
             return producer_floor_payload()
         if int(cfg.deviation_max_step) > 0 and step_now > int(cfg.deviation_max_step):
@@ -622,6 +723,13 @@ class PGSRuntime:
         owner0 = status.owner[:, 0]
         if float(cfg.wave_min_ships) > 0 and step_now >= int(cfg.wave_start_step):
             my_base = self._wave_merge_filter(my_base, owner0, me, step_now)
+            if budget_low():
+                return producer_floor_payload()
+        # G3.2 Phase 2: decisive-wave concentration for even_attrition_2p (2p only).
+        if (player_count == 2 and bool(cfg.decisive_wave_2p)
+                and step_now >= int(cfg.decisive_wave_start_step)):
+            my_base = self._decisive_wave_filter(
+                my_base, owner0, movement.planet_ships, movement.planet_prod, me, step_now)
             if budget_low():
                 return producer_floor_payload()
         opp_ids = sorted({int(o.item()) for o in owner0[(owner0 >= 0) & (owner0 != me)]})

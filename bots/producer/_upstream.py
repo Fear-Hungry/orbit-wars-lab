@@ -73,6 +73,16 @@ class ProducerLiteConfig:
     # does not help (within losses, more early PvP correlates with a better
     # state) — implemented to execute the goal as written and gate it at 96 seeds.
     opening_suppress_pvp: bool = False
+    # A/B harness for the "drenagem dupla" fix (commit 8459f7b). When True,
+    # plan_lite_waves passes ``source_spend_budget=None`` to _greedy_select, which
+    # the planner_core docstring documents reproduces the OLD single-budget
+    # behaviour EXACTLY (a source could fund several waves summing past its safe
+    # drain). This is the faithful pre-fix INCUMBENT used by the seat-rotated
+    # promotion gate (scripts/league_submit_ruler.py via the pgs_hold_prefix
+    # agent). Per-instance config only — never a global env — so candidate and
+    # incumbent can play head-to-head in the same process without contamination.
+    # False (default) == shipped fix, byte-identical to current behaviour.
+    disable_drain_fix: bool = False
 
 
 def _movement_config(config: ProducerLiteConfig, *, player_count: int) -> MovementConfig:
@@ -319,7 +329,10 @@ def plan_lite_waves(
         cand_tgt_short=cand_tgt_short,
         cand_is_def=cand_is_def,
         source_budget=obs.ships.to(dtype).clone(),
-        source_spend_budget=spend_budget,
+        # disable_drain_fix=True -> None reproduces the pre-fix single-budget
+        # behaviour exactly (the gate's pre-fix incumbent); see ProducerLiteConfig.
+        source_spend_budget=(None if getattr(config, "disable_drain_fix", False)
+                             else spend_budget),
         target_exists=target_exists,
         roi_threshold=float(config.roi_threshold),
     )

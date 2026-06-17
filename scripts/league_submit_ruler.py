@@ -190,12 +190,23 @@ def _run_task(task: MatchTask) -> dict[str, Any]:
     if task.chunk_size > 0:
         cmd += ["--chunk-size", str(task.chunk_size)]
     start = time.perf_counter()
+    # Pin BLAS/OMP threads to 1 (matching scripts.eval_top5_proxy) so jobs==cores
+    # and CPU oversubscription can't manufacture false per-move timeouts. The
+    # tarball league wrapper treats ANY fallback/timeout delta as a crash, so an
+    # unpinned, contended run inflates the fault count and masks the real H2H.
     proc = subprocess.run(
         cmd,
         cwd=ROOT,
         capture_output=True,
         text=True,
-        env={**os.environ, "PYTHONPATH": "."},
+        env={
+            **os.environ,
+            "PYTHONPATH": ".",
+            "OMP_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+            "OPENBLAS_NUM_THREADS": "1",
+            "NUMEXPR_NUM_THREADS": "1",
+        },
     )
     return {
         "label": task.label,

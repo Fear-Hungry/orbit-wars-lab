@@ -1,5 +1,17 @@
 """H9 4p death-rate gate — the real test of the threat-value 4p model.
 
+DEPRECATED AS A PROMOTION GATE (2026-06-16). This harness pins the candidate to
+SEAT 0 in every 4p game (seats 1..3 = isolated opponents) and never rotates it.
+A strong result here can therefore be a seat-0 advantage artifact, not real
+strength. Do NOT use it to decide promotion/submission. The seat-rotated,
+fault-checked promotion ruler is ``scripts/league_submit_ruler.py`` (rotates
+seats by seed index and validates the seat counter per task). The CLI now
+refuses to run unless you pass ``--ack-seat-biased`` (or set
+``OWL_ALLOW_SEAT_BIASED_GATE=1``), which marks the output as a non-promotion
+diagnostic. The library functions (``run_config``/``decide``) stay importable so
+research-loop fitness keeps working — but that fitness inherits the same seat
+bias and must not gate submission either.
+
 The probe (h9_threat_probe) only proved the threat features SEPARATE actions.
 This proves the bot built on them actually SURVIVES 4p better than the holdwave
 floor. Seat 0 = candidate PGS; seats 1..3 = isolated Producer. 500 steps (the
@@ -141,8 +153,34 @@ def decide(base: dict, h9: dict, *, margin_tol: float = 0.02) -> dict:
     }
 
 
+def _refuse_as_promotion_gate(ack: bool, *, tool: str, bias: str) -> None:
+    """Block CLI use as a promotion gate unless the seat bias is acknowledged.
+
+    Reversible and non-destructive: library imports are unaffected; only the
+    ``__main__`` path is guarded. Pass ``--ack-seat-biased`` or set
+    ``OWL_ALLOW_SEAT_BIASED_GATE=1`` to run it as a labelled diagnostic.
+    """
+    import os
+    if ack or os.environ.get("OWL_ALLOW_SEAT_BIASED_GATE") == "1":
+        print(f"[{tool}] WARNING: seat-biased diagnostic ({bias}); "
+              "NOT a promotion gate. Use scripts/league_submit_ruler.py to promote.",
+              file=sys.stderr, flush=True)
+        return
+    sys.stderr.write(
+        f"\n[{tool}] REFUSING TO RUN AS A PROMOTION GATE.\n"
+        f"  Seat bias: {bias}. Results can be a seat-0 advantage artifact.\n"
+        "  The seat-rotated, fault-checked promotion ruler is:\n"
+        "    python -m scripts.league_submit_ruler --candidates <name> "
+        "--incumbent <name> --seeds 96 --steps 500\n"
+        "  To run this anyway as a NON-promotion diagnostic, pass --ack-seat-biased\n"
+        "  (or set OWL_ALLOW_SEAT_BIASED_GATE=1).\n\n")
+    sys.exit(2)
+
+
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--ack-seat-biased", action="store_true",
+                    help="acknowledge this is a seat-0-pinned diagnostic, NOT a promotion gate")
     ap.add_argument("--seeds", type=int, default=12)
     ap.add_argument("--steps", type=int, default=500)
     ap.add_argument("--opponents", default="producer", help="comma list: producer,rush,greedy,oep")
@@ -151,6 +189,8 @@ def main():
     ap.add_argument("--out", type=Path, default=None, help="write verdict JSON here")
     ap.add_argument("--no-comets", action="store_true")
     args = ap.parse_args()
+    _refuse_as_promotion_gate(args.ack_seat_biased, tool="h9_4p_gate",
+                              bias="candidate pinned to seat 0 in all 4p games, no rotation")
     torch.set_num_threads(1)
     seeds = list(range(2000, 2000 + args.seeds))
     enable_comets = not args.no_comets
