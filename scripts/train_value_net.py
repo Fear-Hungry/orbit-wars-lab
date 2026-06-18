@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
-from python.agents.value_net import EntityValueNet
+from python.agents.value_net import build_value_net
 
 ROOT = Path(__file__).resolve().parent.parent
 DS = ROOT / "artifacts/h7/value_ds"
@@ -56,8 +56,12 @@ def main():
     ap.add_argument("--batch", type=int, default=4096)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--holdout", type=float, default=0.15)
+    ap.add_argument("--arch", default="mean", choices=("mean", "attn"),
+                    help="mean=EntityValueNet (H7 baseline); attn=AttnValueNet (H11 pairwise-threat fix)")
+    ap.add_argument("--out", default=str(OUT), help="checkpoint output path")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
+    out_path = Path(args.out)
 
     obs, lab = load_dataset()
     n = len(lab)
@@ -76,7 +80,8 @@ def main():
     print(f"BASELINE (ship-margin) holdout Spearman vs outcome: {base_rho:+.3f}")
 
     dev = args.device
-    net = EntityValueNet().to(dev)
+    net = build_value_net(args.arch).to(dev)
+    print(f"arch={args.arch} params={sum(p.numel() for p in net.parameters())}")
     opt = torch.optim.Adam(net.parameters(), lr=args.lr)
     loss_fn = nn.MSELoss()
     tr_o_t = torch.as_tensor(tr_o, device=dev)
@@ -95,15 +100,19 @@ def main():
             loss = loss_fn(pred, tr_l_t[b])
             loss.backward()
             opt.step()
-            tot += float(loss) * len(b)
+            tot += loss.item() * len(b)
         net.eval()
         with torch.no_grad():
-            ho_pred = net(ho_o_t).cpu().numpy()
+            # Batched holdout forward: the attn arch builds an (B, heads, N, N)
+            # attention tensor, so a single full-holdout pass OOMs the GPU. Chunk it.
+            ho_pred = torch.cat([
+                net(ho_o_t[i:i + args.batch]) for i in range(0, len(ho_o_t), args.batch)
+            ]).cpu().numpy()
         rho = spearman(ho_pred, ho_l)
         acc = float(((ho_pred > 0) == (ho_l > 0))[ho_l != 0].mean()) if (ho_l != 0).any() else 0.0
         if rho > best_rho:
             best_rho = rho
-            torch.save({"model": net.state_dict()}, OUT)
+            torch.save({"model": net.state_dict(), "arch": args.arch}, out_path)
         if ep % 5 == 0 or ep == args.epochs - 1:
             print(f"ep {ep:3d} mse={tot/len(tr_l_t):.4f} holdout: Spearman={rho:+.3f} "
                   f"sign-acc={acc:.3f} (best={best_rho:+.3f}) ({time.perf_counter()-t0:.0f}s)", flush=True)
@@ -111,7 +120,7 @@ def main():
     print("\n=== E3 VERDICT ===")
     print(f"value-net holdout Spearman = {best_rho:+.3f}  vs  baseline ship-margin = {base_rho:+.3f}")
     print(f"{'PASS' if best_rho > base_rho else 'FAIL'}: net {'>' if best_rho>base_rho else '<='} baseline")
-    print(f"saved best to {OUT}")
+    print(f"saved best to {out_path}")
 
 
 if __name__ == "__main__":

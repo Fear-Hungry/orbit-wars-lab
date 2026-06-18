@@ -306,6 +306,14 @@ FACTORIES = {
     # 2p ruler vs incumbent pgs_holdwave. Off-by-default knob; submission unchanged.
     "pgs_decisive2p": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
                                    decisive_wave_2p=True),
+    # Passo 5 tuning (even_attrition_2p): up to 3 sequential A/B cycles vs
+    # pgs_holdwave, NOT a grid. Each variant only changes ONE decisive_wave knob
+    # off the baseline (start_step=200, min=80, even_band=0.30, max_delay=20).
+    # Cycle 1 — wave start_step: earlier (more late-game to act) vs later.
+    "pgs_dw_s150": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                decisive_wave_2p=True, decisive_wave_start_step=150),
+    "pgs_dw_s250": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                decisive_wave_2p=True, decisive_wave_start_step=250),
     # Item 5 (kingmaker/overextension 4p survival): pgs_holdwave + H9 threat-value
     # 4p portfolio (auto-adds `reinforce` in 4p so the forward per-enemy threat
     # value can SELECT survival plans; 2p frozen = scripts="hold"). Candidate for
@@ -336,6 +344,17 @@ FACTORIES = {
     "pgs_valuenet": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
                                  defend_in_4p=True,
                                  value_net_path=str(ROOT / "artifacts/h7/value_net.pt")),
+    # H11 (2026-06-17): same as pgs_valuenet but the value net is the ATTENTION
+    # arch (AttnValueNet) — sees pairwise threat (which fleet threatens which
+    # planet), the structure mean-pool was blind to (E5 4p-death failure DB 166).
+    # load_value_net auto-builds the attn arch from the checkpoint's "arch" tag.
+    # CANONICAL path = artifacts/h7/value_net_attn.pt (goal.md "single path" rule);
+    # retrained fresh 2026-06-18 (train_value_net --arch attn --epochs 30, E3 PASS
+    # Spearman +0.653 > baseline +0.637). nash_gate._candidate_checkpoint hashes
+    # this same path so the gate report's hash matches the net that actually plays.
+    "pgs_valuenet_attn": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                      defend_in_4p=True,
+                                      value_net_path=str(ROOT / "artifacts/h7/value_net_attn.pt")),
     # style exploiters (league-only, NEVER submit): cover the field's loss axes
     # absent from the producer-lineage pool (2026-06-10 falsification).
     "rusher": lambda: _rusher(attack_from=50, cadence=4),       # early all-in (annihilates hold-family regime)
