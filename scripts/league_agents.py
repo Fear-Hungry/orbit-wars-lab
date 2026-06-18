@@ -13,6 +13,7 @@ import contextlib
 import fcntl
 import hashlib
 import importlib.util
+import json
 import os
 import py_compile
 import shutil
@@ -353,6 +354,22 @@ def _register_league_artifacts() -> None:
     for py in sorted((ROOT / "artifacts" / "league" / "submissions").glob("*.py")):
         if py.stem not in FACTORIES:
             register_submission_file(py.stem, py)
+
+    # ARL auto-research survivors: PGS-config genomes dropped as JSON by the
+    # Auto-Research Loop handoff (scripts/research_loop/arl.py --research). Each
+    # registers as a `_pgs(**genome)` factory so the seat-rotated ruler can run
+    # it by name. Per-file guard: a malformed/non-dict genome is skipped, never
+    # breaks this import (which would break the whole eval stack).
+    for cfg in sorted((ROOT / "artifacts" / "research_loop" / "candidates").glob("*.json")):
+        name = cfg.stem
+        if name in FACTORIES:
+            continue
+        try:
+            genome = json.loads(cfg.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(genome, dict):
+            FACTORIES[name] = (lambda g=dict(genome): _pgs(**g))
 
 
 _register_league_artifacts()
