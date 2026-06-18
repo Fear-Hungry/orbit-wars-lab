@@ -1,14 +1,24 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import importlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 from python.agents.registry import HEURISTIC_NAMES
+
+# Imports the lab cannot run without. orbit_wars_rs is the Rust backend; without
+# it every real measurement silently falls back or crashes. kaggle_environments
+# and duckdb back the official engine and the experiment tracker.
+REQUIRED_IMPORTS = ("orbit_wars_rs", "kaggle_environments", "duckdb")
+# Toolchain needed to (re)build the Rust backend.
+REQUIRED_TOOLS = ("maturin", "cargo", "rustc")
 
 ROOT = Path(__file__).resolve().parents[2]
 ARTIFACTS = ROOT / "artifacts"
@@ -80,13 +90,59 @@ def _benchmark_command(args: argparse.Namespace) -> list[str]:
         command.append("--skip-2p")
     if args.skip_4p:
         command.append("--skip-4p")
+    # Only ever set when an explicit diagnostic opt-in (quick --dirty-4p) wants the
+    # seat-0-pinned 4p path; never on a promotion route.
+    if getattr(args, "ack_seat_biased", False):
+        command.append("--ack-seat-biased")
     if args.disable_comets:
         command.append("--disable-comets")
     return command
 
 
+def _check_import(module: str) -> tuple[bool, str]:
+    """Actually import the module so a broken .so / missing dep is caught,
+    not just an absent spec."""
+    try:
+        importlib.import_module(module)
+        return True, "import ok"
+    except BaseException as exc:  # noqa: BLE001 - report any failure verbatim
+        return False, f"{type(exc).__name__}: {exc}".splitlines()[0][:200]
+
+
+def _find_tool(name: str) -> str | None:
+    """Locate a CLI on PATH, falling back to the venv bin dir next to the running
+    interpreter (where `maturin` lives when the venv is not activated)."""
+    found = shutil.which(name)
+    if found:
+        return found
+    candidate = Path(sys.executable).parent / name
+    if candidate.exists():
+        return str(candidate)
+    return None
+
+
+def _check_tool(name: str) -> tuple[bool, str]:
+    path = _find_tool(name)
+    if not path:
+        return False, "not found on PATH or venv bin"
+    try:
+        proc = subprocess.run(
+            [path, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"{type(exc).__name__}: {exc}"[:200]
+    if proc.returncode != 0:
+        return False, f"exit {proc.returncode}"
+    version = (proc.stdout or proc.stderr).strip().splitlines()
+    return True, version[0] if version else path
+
+
 def _cmd_doctor(_args: argparse.Namespace) -> int:
-    checks = {
+    files = {
         "root": ROOT.exists(),
         "submission_template": (ROOT / "python/submission/submission_template.py").exists(),
         "quick_eval_config": (ROOT / "configs/eval_quick.yaml").exists(),
@@ -94,8 +150,34 @@ def _cmd_doctor(_args: argparse.Namespace) -> int:
         "benchmark_script": (ROOT / "scripts/benchmark_submission.py").exists(),
         "rust_binding_crate": (ROOT / "crates/orbit_wars_py/Cargo.toml").exists(),
     }
-    print(json.dumps({"root": str(ROOT), "checks": checks}, indent=2, sort_keys=True))
-    return 0 if all(checks.values()) else 1
+    # Importing kaggle_environments emits INFO logs to stdout; keep them out of
+    # the doctor's own JSON report by routing import-time output to stderr.
+    with contextlib.redirect_stdout(sys.stderr):
+        imports = {name: _check_import(name) for name in REQUIRED_IMPORTS}
+    tools = {name: _check_tool(name) for name in REQUIRED_TOOLS}
+
+    report = {
+        "root": str(ROOT),
+        "python": sys.executable,
+        "files": files,
+        "imports": {name: {"ok": ok, "detail": detail} for name, (ok, detail) in imports.items()},
+        "tools": {name: {"ok": ok, "detail": detail} for name, (ok, detail) in tools.items()},
+    }
+    print(json.dumps(report, indent=2, sort_keys=True))
+
+    ok = (
+        all(files.values())
+        and all(ok for ok, _ in imports.values())
+        and all(ok for ok, _ in tools.values())
+    )
+    if not ok:
+        failed = (
+            [n for n, v in files.items() if not v]
+            + [n for n, (o, _) in imports.items() if not o]
+            + [n for n, (o, _) in tools.items() if not o]
+        )
+        print(f"doctor: FAIL ({', '.join(failed)})", file=sys.stderr)
+    return 0 if ok else 1
 
 
 def _cmd_heuristics(_args: argparse.Namespace) -> int:
@@ -114,6 +196,17 @@ def _cmd_benchmark(args: argparse.Namespace) -> int:
 
 
 def _cmd_quick(args: argparse.Namespace) -> int:
+    # quick is a crash/obvious-failure smoke check, NOT a promotion gate. It runs
+    # seat-rotated 2p only by default: the benchmark's 4p path pins the submission
+    # to seat 0 (no rotation), so 4p win/margin there can be a seat-0 artifact.
+    # The real, seat-rotated promotion ruler is scripts/league_submit_ruler.py.
+    # --dirty-4p opts into the seat-0-pinned 4p path as a DIAGNOSTIC ONLY.
+    if args.dirty_4p:
+        sys.stderr.write(
+            "[lab quick] --dirty-4p: running the SEAT-0-PINNED 4p path as a diagnostic "
+            "ONLY; this is NOT a promotion gate. Promote via "
+            "scripts/league_submit_ruler.py (seat-rotated).\n"
+        )
     export_args = argparse.Namespace(
         out=args.submission,
         checkpoint=args.checkpoint,
@@ -127,7 +220,8 @@ def _cmd_quick(args: argparse.Namespace) -> int:
         out=args.out,
         opponents=args.opponents,
         skip_2p=False,
-        skip_4p=False,
+        skip_4p=not args.dirty_4p,
+        ack_seat_biased=args.dirty_4p,
         disable_comets=args.disable_comets,
     )
     _repo_path(args.submission).parent.mkdir(parents=True, exist_ok=True)
@@ -227,7 +321,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     quick = sub.add_parser(
         "quick",
-        help="export and run a short Producer smoke benchmark; not a promotion gate",
+        help="export and run a short seat-rotated 2p smoke benchmark; "
+        "crash/failure check only, NOT a promotion gate (use scripts/league_submit_ruler.py)",
     )
     quick.add_argument("--checkpoint")
     quick.add_argument("--submission", default=str(DEFAULT_SUBMISSION))
@@ -236,6 +331,11 @@ def build_parser() -> argparse.ArgumentParser:
     quick.add_argument("--act-timeout", type=float, default=1.0)
     quick.add_argument("--jobs", type=int, default=DEFAULT_JOBS)
     quick.add_argument("--opponents", nargs="+", default=DEFAULT_BENCHMARK_OPPONENTS)
+    quick.add_argument(
+        "--dirty-4p",
+        action="store_true",
+        help="also run the seat-0-pinned 4p path as a DIAGNOSTIC ONLY (not a gate)",
+    )
     quick.add_argument("--disable-comets", action="store_true")
     quick.add_argument("--out", default=str(DEFAULT_BENCHMARK))
     quick.add_argument("--dry-run", action="store_true")
