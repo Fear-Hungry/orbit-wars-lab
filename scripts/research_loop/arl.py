@@ -44,11 +44,11 @@ from scripts.research_loop.evaluator import DEFAULT_POOL
 from scripts.research_loop.genome import baseline_genome, fitness, mutate, serialize
 from scripts.research_loop.policy import (
     build_promotion_command,
-    candidate_name,
     keep_or_discard,
     parse_metrics,
     select_survivors,
     status_for,
+    survivor_ruler_name,
 )
 from scripts.research_loop.search_space import SEARCH_SPACE
 
@@ -110,19 +110,21 @@ def _trust_line(calib) -> tuple[str, bool]:
     return (f"calibration Spearman(gate, LB) = {rho:+.3f} [{band}]", trusted)
 
 
-def _evaluate(genome: dict, *, seeds: int, steps: int, pool, seats, seed_base: int,
-              enable_comets: bool, verbose: bool) -> dict:
+def _evaluate(genome, *, seeds: int, steps: int, pool, seats, seed_base: int,
+              enable_comets: bool, verbose: bool, subject_factory=None) -> dict:
     """Run the fitness eval; ANY exception is captured as a fault payload.
 
     Returning ``{"error": ...}`` (rather than raising) is deliberate: it routes a
     crashed eval through ``parse_metrics`` -> ``technical_fail``, so a harness
-    problem never masquerades as a weak candidate (goal.md).
+    problem never masquerades as a weak candidate (goal.md). ``subject_factory``
+    (materialiser path) overrides ``genome`` as the seat-0 subject.
     """
     from scripts.research_loop.evaluator import evaluate  # lazy: pulls the Rust .so
 
     try:
         return evaluate(genome, seeds=seeds, steps=steps, pool=pool, seed_base=seed_base,
-                        enable_comets=enable_comets, verbose=verbose, seats=seats)
+                        enable_comets=enable_comets, verbose=verbose, seats=seats,
+                        subject_factory=subject_factory)
     except Exception as exc:  # noqa: BLE001 — we WANT to capture everything as a fault
         return {"error": f"{type(exc).__name__}: {exc}"}
 
@@ -137,13 +139,18 @@ def _record(contract: dict, *, db_path: Path, dry: bool) -> int | None:
     """
     dec = contract["decision"]
     fit = contract.get("fitness")
-    genome = contract["candidate"]["genome"]
+    cand = contract["candidate"]
     result = (f"fitness={fit:.4f} | " if isinstance(fit, (int, float)) else "fitness=na | ") + (
         f"decision={dec} | mode={contract['mode']} | "
         f"{json.dumps(contract['metrics_summary'], separators=(',', ':'))} | "
         f"faults={json.dumps(contract['faults'], separators=(',', ':'))}"
     )
-    idea = f"ARL[{contract['mode']}] {contract['hypothesis']} | genome={serialize(genome)}"
+    # genome candidates keep the `genome={...}` suffix so select_parents can recover
+    # them as parents; factory candidates use `factory=<name>` (never a genome parent).
+    if "genome" in cand:
+        idea = f"ARL[{contract['mode']}] {contract['hypothesis']} | genome={serialize(cand['genome'])}"
+    else:
+        idea = f"ARL[{contract['mode']}] {contract['hypothesis']} | factory={cand['factory']}"
     command = contract["commands"][0] if contract["commands"] else ""
     kwargs = dict(
         db_path=db_path, date=contract["date"], idea=idea, command=command,
@@ -174,20 +181,43 @@ def _metrics_summary(parsed) -> dict:
 def run_iteration(*, idx: int, mode: str, parent_genome: dict, parent_fitness: float | None,
                   parent_src: str, rng: random.Random, budget: dict, seats, seed_base: int,
                   enable_comets: bool, min_promotion_seeds: int, noise_band: float,
-                  trusted: bool, run_cmd: str, today: str, verbose: bool) -> dict:
-    """Propose -> (maybe) evaluate -> parse -> decide. Returns the iteration contract."""
-    child = mutate(parent_genome, rng)
-    diff = _knob_diff(parent_genome, child)
+                  trusted: bool, run_cmd: str, today: str, verbose: bool,
+                  factory_name: str | None = None) -> dict:
+    """Propose -> (maybe) evaluate -> parse -> decide. Returns the iteration contract.
+
+    Two candidate classes: a mutated PGS ``genome`` (default), or — when
+    ``factory_name`` is given — a named FACTORIES agent as the seat-0 subject (the
+    materialiser path: pgs_*, exported PPO, a new planner, exploiters).
+    """
     seeds_n = budget["seeds"]
     steps = budget["steps"]
     pool = budget["pool"]
     seed_list = list(range(seed_base, seed_base + seeds_n))
 
+    subject_factory = None
+    if factory_name is not None:
+        from scripts.league_agents import FACTORIES  # lazy: pulls the agent pool
+
+        subject_factory = FACTORIES.get(factory_name)  # fresh agent per call -> no cross-contam
+        child = None
+        candidate = {"factory": factory_name}
+        patch = {"kind": "factory", "name": factory_name}
+        hypothesis = f"factory candidate: {factory_name}"
+    else:
+        child = mutate(parent_genome, rng)
+        diff = _knob_diff(parent_genome, child)
+        candidate = {"genome": child, "knobs_changed": diff}
+        patch = {"kind": "config-mutation", "diff": diff}
+        hypothesis = _hypothesis(diff)
+
     if mode == "dry-run":
         raw = None  # Mode 0: no eval, no edits.
+    elif factory_name is not None and subject_factory is None:
+        raw = {"error": f"unknown factory '{factory_name}' (not in FACTORIES)"}
     else:
         raw = _evaluate(child, seeds=seeds_n, steps=steps, pool=pool, seats=seats,
-                        seed_base=seed_base, enable_comets=enable_comets, verbose=verbose)
+                        seed_base=seed_base, enable_comets=enable_comets, verbose=verbose,
+                        subject_factory=subject_factory)
 
     parsed = parse_metrics(raw, act_timeout_ms=ACT_TIMEOUT_MS, n_seeds=seeds_n)
     fit = fitness(parsed.raw) if parsed.valid else None
@@ -206,9 +236,9 @@ def run_iteration(*, idx: int, mode: str, parent_genome: dict, parent_fitness: f
         "mode": mode,
         "date": today,
         "parent": {"source": parent_src, "fitness": parent_fitness, "genome": parent_genome},
-        "hypothesis": _hypothesis(diff),
-        "candidate": {"genome": child, "knobs_changed": diff},
-        "patch": {"kind": "config-mutation", "diff": diff},  # no code patch in the MVP
+        "hypothesis": hypothesis,
+        "candidate": candidate,
+        "patch": patch,
         "commands": [run_cmd,
                      f"(eval) evaluator.evaluate(seats={seats}, pool={','.join(pool)}, "
                      f"seeds={seeds_n}, steps={steps})" if mode != "dry-run" else "(no eval — dry-run)"],
@@ -284,6 +314,11 @@ def main(argv: list[str] | None = None) -> int:
                       help="Mode 2: full-budget local research iterations.")
     ap.set_defaults(mode="dry-run")
     ap.add_argument("--iterations", type=int, default=1)
+    ap.add_argument("--candidate-factory", nargs="+", default=None, metavar="NAME",
+                    help="materialiser: evaluate these FACTORIES names as seat-0 subjects "
+                         "(families beyond PGS knobs: pgs_holdwave, pgs_bigwave, pgs_valuenet_*, "
+                         "exported PPO, a new planner, exploiters). One iteration per name; "
+                         "--iterations is ignored.")
     ap.add_argument("--seeds", type=int, default=None, help="eval seeds (smoke default 2; research 6)")
     ap.add_argument("--steps", type=int, default=None, help="eval horizon (smoke default 60; else 500)")
     ap.add_argument("--pool", default=None, help="comma list of opponents (smoke default producer)")
@@ -319,6 +354,16 @@ def main(argv: list[str] | None = None) -> int:
     today = datetime.now(timezone.utc).date().isoformat()
     ART.mkdir(parents=True, exist_ok=True)
 
+    # Materialiser: validate factory names up-front (fail fast, no wasted eval).
+    factories = list(dict.fromkeys(args.candidate_factory)) if args.candidate_factory else None
+    if factories:
+        from scripts.league_agents import FACTORIES
+        unknown = [n for n in factories if n not in FACTORIES]
+        if unknown:
+            print(f"ERROR: unknown --candidate-factory name(s): {unknown}. "
+                  f"Known: {sorted(FACTORIES)[:12]}…", flush=True)
+            return 2
+
     # Budget per mode (smoke is tiny; research/dry honest unless overridden).
     if m == "smoke":
         seeds = args.seeds or SMOKE_DEFAULTS["seeds"]
@@ -349,6 +394,8 @@ def main(argv: list[str] | None = None) -> int:
                f"--seeds {seeds} --steps {steps} --pool {','.join(pool)} --seats {args.seats} "
                f"--rng-seed {args.rng_seed} --seed-base {args.seed_base} "
                f"--min-promotion-seeds {args.min_promotion_seeds} --noise-band {args.noise_band}")
+    if factories:
+        run_cmd += " --candidate-factory " + " ".join(factories)
 
     print(f"=== Auto-Research Loop ({m}) ===", flush=True)
     print(f"TRUST: {trust_line}", flush=True)
@@ -382,14 +429,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"baseline eval did not produce a valid sample ({base_parsed.note}); "
                   "candidates will compare against no bar.", flush=True)
 
+    # One iteration per factory (materialiser) or per --iterations (genome mutation).
+    candidate_specs = factories if factories else [None] * args.iterations
     iters: list[dict] = []
-    for i in range(args.iterations):
+    for i, fac in enumerate(candidate_specs):
         rng = random.Random(args.rng_seed + i)
         it = run_iteration(idx=i, mode=m, parent_genome=parent_genome, parent_fitness=parent_fitness,
                            parent_src=parent_src, rng=rng, budget=budget, seats=seats,
                            seed_base=args.seed_base, enable_comets=enable_comets,
                            min_promotion_seeds=args.min_promotion_seeds, noise_band=args.noise_band,
-                           trusted=trusted, run_cmd=run_cmd, today=today, verbose=verbose)
+                           trusted=trusted, run_cmd=run_cmd, today=today, verbose=verbose,
+                           factory_name=fac)
         new_id = _record(it, db_path=args.db, dry=args.no_record or m == "dry-run")
         it["db_id"] = new_id
         fr = f"{it['fitness']:+.4f}" if isinstance(it["fitness"], (int, float)) else "na"
@@ -398,8 +448,9 @@ def main(argv: list[str] | None = None) -> int:
               f"({'validated-only' if (args.no_record or m == 'dry-run') else f'db id={new_id}'})", flush=True)
         if it["reason"]:
             print(f"  [{it['run_id']}] reason: {it['reason']}", flush=True)
-        # Elitist: promote the parent within the run only on a real promotion.
-        if it["decision"] == "promoted":
+        # Elitist: promote the parent within the run only on a real GENOME promotion
+        # (a factory candidate has no genome to carry forward as the next parent).
+        if it["decision"] == "promoted" and "genome" in it["candidate"]:
             parent_genome, parent_fitness, parent_src = it["candidate"]["genome"], it["fitness"], it["run_id"]
         iters.append(it)
 
@@ -425,9 +476,11 @@ def main(argv: list[str] | None = None) -> int:
         cand_dir.mkdir(parents=True, exist_ok=True)
         names = []
         for it in survivors:
-            name = candidate_name(it["run_id"])
-            (cand_dir / f"{name}.json").write_text(
-                json.dumps(it["candidate"]["genome"], sort_keys=True, indent=2), encoding="utf-8")
+            name = survivor_ruler_name(it)
+            cand = it["candidate"]
+            if "genome" in cand:  # genome survivor: drop JSON so league_agents auto-registers it
+                (cand_dir / f"{name}.json").write_text(
+                    json.dumps(cand["genome"], sort_keys=True, indent=2), encoding="utf-8")
             names.append(name)
         cmd = build_promotion_command(names, profile=args.ruler_profile)
         handoff = {

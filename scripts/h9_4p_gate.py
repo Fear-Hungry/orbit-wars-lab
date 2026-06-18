@@ -60,14 +60,17 @@ def _own_planets(state, seat):
     return sum(1 for p in state["planets"] if planet_owner(p) == seat)
 
 
-def run_config(name, pgs_config, seeds, steps, enable_comets, opponent="producer"):
+def run_config(name, pgs_config, seeds, steps, enable_comets, opponent="producer", subject_factory=None):
     n = len(seeds)
     backend = RustBatchBackend(num_envs=n, num_players=4, seed=int(seeds[0]),
                                config=RustConfig(enable_comets=enable_comets, episode_steps=steps,
                                                  act_timeout=ACT_TIMEOUT))
     backend.reset(int(seeds[0]))
     states = backend.states()
-    agents = [make_runtime(PGSConfig(**pgs_config)) for _ in range(n)]
+    # Subject (seat 0) as an official-obs callable: a factory agent (materialiser
+    # path, FACTORIES[name]()) or the PGS(genome) runtime's .act. Same interface.
+    agents = ([subject_factory() for _ in range(n)] if subject_factory is not None
+              else [make_runtime(PGSConfig(**pgs_config)).act for _ in range(n)])
     others = [1, 2, 3]
     opp = get_isolated_opponents(opponent, n * len(others))
     timeouts = 0
@@ -77,7 +80,7 @@ def run_config(name, pgs_config, seeds, steps, enable_comets, opponent="producer
         for i in range(n):
             obs = to_official_observation(states[i], SEAT)
             ts = time.perf_counter()
-            moves = agents[i].act(obs)
+            moves = agents[i](obs)
             if time.perf_counter() - ts > ACT_TIMEOUT:
                 timeouts += 1
                 moves = []

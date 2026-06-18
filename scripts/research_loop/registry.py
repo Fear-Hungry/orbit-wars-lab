@@ -71,6 +71,12 @@ def select_parents(top_n: int, *, db_path: Path = DEFAULT_DB) -> list[tuple[dict
 
     scored: list[tuple[dict, float]] = []
     for idea, result in rows:
+        # smoke/dry-run rows are WIRING checks measured at a tiny budget (e.g. 2
+        # seeds, producer-only). Their fitness is NOT comparable to a full research
+        # eval, so they must never become a promotion bar — else a 24-seed/500-step
+        # candidate is judged against an apples-to-oranges smoke parent (id 253).
+        if idea and ("ARL[smoke]" in idea or "ARL[dry-run]" in idea):
+            continue
         m = _FITNESS_RE.search(result or "")
         gm = re.search(r"genome=(\{.*\})\s*$", idea or "")
         if not m or not gm:

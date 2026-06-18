@@ -31,15 +31,16 @@ from python.orbit_wars_gym.observation import to_official_observation
 from scripts.h9_4p_gate import SEAT, ACT_TIMEOUT, _own_enemy_ships, _own_planets
 
 
-def run_config_2p(name, pgs_config, seeds, steps, enable_comets, opponent="producer"):
-    """1v1: seat 0 = candidate PGS(genome); seat 1 = isolated opponent. 500 steps."""
+def run_config_2p(name, pgs_config, seeds, steps, enable_comets, opponent="producer", subject_factory=None):
+    """1v1: seat 0 = candidate (PGS genome or factory agent); seat 1 = isolated opponent."""
     n = len(seeds)
     backend = RustBatchBackend(num_envs=n, num_players=2, seed=int(seeds[0]),
                                config=RustConfig(enable_comets=enable_comets, episode_steps=steps,
                                                  act_timeout=ACT_TIMEOUT))
     backend.reset(int(seeds[0]))
     states = backend.states()
-    agents = [make_runtime(PGSConfig(**pgs_config)) for _ in range(n)]
+    agents = ([subject_factory() for _ in range(n)] if subject_factory is not None
+              else [make_runtime(PGSConfig(**pgs_config)).act for _ in range(n)])
     others = [1]
     opp = get_isolated_opponents(opponent, n * len(others))
     timeouts = 0
@@ -49,7 +50,7 @@ def run_config_2p(name, pgs_config, seeds, steps, enable_comets, opponent="produ
         for i in range(n):
             obs = to_official_observation(states[i], SEAT)
             ts = time.perf_counter()
-            moves = agents[i].act(obs)
+            moves = agents[i](obs)
             if time.perf_counter() - ts > ACT_TIMEOUT:
                 timeouts += 1
                 moves = []

@@ -10,6 +10,7 @@ from scripts.research_loop.policy import (
     build_promotion_command,
     candidate_name,
     select_survivors,
+    survivor_ruler_name,
 )
 
 
@@ -59,3 +60,28 @@ def test_build_promotion_command_for_survivors():
 def test_build_promotion_command_empty_when_no_survivors():
     assert build_promotion_command([], profile="strong") == ""
     assert build_promotion_command([None, ""], profile="quick") == ""
+
+
+# --------------------------------------------------------------------------- #
+# survivor_ruler_name — genome vs factory (materialiser) candidates
+# --------------------------------------------------------------------------- #
+def test_ruler_name_for_genome_candidate_is_synthetic():
+    it = {"run_id": "20260618-research-i0", "candidate": {"genome": {"scripts": "hold"}}}
+    assert survivor_ruler_name(it) == "arl_20260618_research_i0"
+
+
+def test_ruler_name_for_factory_candidate_is_the_factory_name():
+    # a factory candidate is ALREADY a FACTORIES name → used directly, no arl_ prefix,
+    # no genome JSON to drop. This is what lets the materialiser hand families to the ruler.
+    it = {"run_id": "20260618-research-i0", "candidate": {"factory": "pgs_bigwave"}}
+    assert survivor_ruler_name(it) == "pgs_bigwave"
+
+
+def test_promotion_command_mixes_genome_and_factory_survivors():
+    survs = [
+        {"run_id": "r-i0", "candidate": {"genome": {"scripts": "hold"}}},
+        {"run_id": "r-i1", "candidate": {"factory": "pgs_valuenet_attn"}},
+    ]
+    names = [survivor_ruler_name(s) for s in survs]
+    cmd = build_promotion_command(names, profile="strong")
+    assert "--candidates arl_r_i0 pgs_valuenet_attn" in cmd

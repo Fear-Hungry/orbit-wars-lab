@@ -340,3 +340,23 @@ promoção continua humano + governado (1/dia). O dir de staging é gitignored e
 > honesto, não bug: o bridge só pré-filtra quem MERECE a régua cara. Para ver o caminho de
 > survivors hoje, force com `--noise-band` baixo; o ganho real virá de **consertar o sinal**
 > (eval 2p / exploiters de estilo / cross-regime), não de afrouxar a banda.
+
+### Materializador por factory name (`--candidate-factory`, 2026-06-18)
+
+O gerador de knobs PGS está em **platô** (baseline 2026-06-18, `--iterations 6 --seeds 24`: 5 rejected +
+1 technical_fail + **0 survivors** vs parent −0.5000; o technical_fail foi um timeout transitório vs greedy,
+classificado como técnico, não rejeição). O gargalo competitivo passou a ser **qual CLASSE de candidato** o
+loop propõe.
+
+`arl --candidate-factory NAME [NAME...]` abre a superfície: avalia **famílias nomeadas** (`FACTORIES` de
+`scripts/league_agents.py` — `pgs_holdwave`, `pgs_bigwave`, `pgs_valuenet_*`, PPO exportado, novo planner,
+exploiters) como **sujeito do seat 0**, com a MESMA fitness/pool/horizonte dos candidatos-genoma. Mecânica:
+`run_config`/`run_config_2p`/`evaluator.evaluate` ganharam `subject_factory` opcional (callable official-obs;
+backward-compatible quando `None` — passado só quando setado). 1 iteração/nome; `--iterations` ignorado;
+fail-fast (exit 2) em nome desconhecido; fresh agent por env. Provado ao vivo: `pgs_bigwave`/`pgs_holdwave`
+vs producer, métricas válidas, zero faults. Invariante CPU/`actTimeout` vale p/ o sujeito (PPO/valuenet que
+estoure 1s → `technical_fail`). No handoff, survivor-factory entra na régua pelo **próprio nome**
+(`policy.survivor_ruler_name`); survivor-genoma vira `arl_<runid>.json`.
+
+Fix relacionado (`registry.select_parents`): linhas `ARL[smoke]`/`ARL[dry-run]` são **excluídas do frontier
+de parent** — senão um candidato 24-seed/500-step é julgado contra um parent smoke (2 seeds), apples-to-oranges.

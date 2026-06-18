@@ -300,6 +300,19 @@ def candidate_name(run_id: str) -> str:
     return ("arl_" + safe).strip("_")
 
 
+def survivor_ruler_name(iteration: dict) -> str:
+    """Ruler candidate name for a survivor (pure; no filesystem writes).
+
+    A factory candidate is ALREADY a FACTORIES name → use it directly. A genome
+    candidate needs a synthetic ``arl_<run_id>`` name (the caller drops its genome
+    JSON in the staging dir so league_agents auto-registers it).
+    """
+    cand = iteration.get("candidate", {}) or {}
+    if "factory" in cand:
+        return cand["factory"]
+    return candidate_name(iteration.get("run_id", ""))
+
+
 def build_promotion_command(names, *, profile: str = "strong") -> str:
     """The seat-rotated ruler command for the survivors (empty string if none)."""
     names = [n for n in names if n]
