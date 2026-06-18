@@ -191,26 +191,71 @@ ou em `artifacts/league/tarballs/<nome>.tar.gz`, use H2H contra o pool:
 rtk .venv/bin/python scripts/league_challenger.py --candidate candidate --seeds 20 --workers 4
 ```
 
-Para escolher submissão entre candidatos, use a régua pareada forte. Ela não usa
-BT/ranking aleatório: roda cada candidato contra as mesmas âncoras 2p, lineups
-4p fixas, H2H direto contra o incumbente e contra os outros candidatos do mesmo
-comando, e só recomenda `PASS_LOCAL` se todos os gates técnicos e competitivos
-passarem. O `overall_score` usa o split de campo medido (46% 2p / 54% 4p), conta
-empates 2p como não-vitórias no score bruto, e o ranking é ordenado primeiro por
-veredito: `PASS_LOCAL` > `INCONCLUSIVE` > `REJECT_LOCAL`. Os mapas 2p sao
-derivados do nome do adversario, entao `vs producer` usa o mesmo slice mesmo que
-voce rode um candidato sozinho ou dentro de um painel maior.
-Em 4p, cada seed da regua decisora e jogada nas quatro rotacoes de assento; isso
-evita confundir sorte de mapa com posicao inicial e tambem impede JSON parcial
-de registrar seeds que o backend nao executou.
+### A régua real de decisão (3 níveis)
+
+A decisão de promover um candidato passa por **três níveis em sequência**. Cada um
+mata mais barato que o seguinte; nenhum prova top-5 sozinho.
+
+**Nível A — Triage barato.** Serve para matar hipótese cedo, não para promover.
+`16`–`24` seeds, 2p ambos os seats + sanity 4p pequena, oponentes
+`pgs_holdwave producer oep pgs_bigwave`. Aceita para a próxima fase **só se**: sem
+crash, sem timeout, sem ação inválida, sem regressão gritante e com sinal positivo
+claro na classe-alvo. É o mesmo `league_submit_ruler` com `--profile quick`/poucos
+seeds (não o `lab quick`, que é só smoke 2p de crash — ver "Primeiro check").
 
 ```bash
-rtk .venv/bin/python scripts/league_submit_ruler.py \
-  --candidates pgs_hold pgs_holdwave pgs_wave_s100 \
-  --incumbent pgs_holdwave \
-  --seeds 24 --steps 500 --jobs 2 \
-  --match-chunk-size 8 \
-  --out artifacts/league/submit_ruler/report.json
+PYTHONPATH=. .venv/bin/python -m scripts.league_submit_ruler \
+  --candidates pgs_decisive2p --incumbent pgs_holdwave \
+  --references producer,oep,pgs_bigwave \
+  --seeds 24 --steps 500 --jobs 4 --out-dir artifacts/rulers/triage_decisive2p
+```
+
+**Nível B — Decisão local.** Aqui começa a importar: `96` seeds, 2p com ambos os
+seats, 4p com rotação de assento, `steps 500`, comets on, `--jobs` controlado. A
+régua não usa BT/ranking aleatório: roda cada candidato contra as mesmas âncoras
+2p, lineups 4p fixas, H2H direto contra o incumbente e contra os outros candidatos
+do mesmo comando, e só recomenda `PASS_LOCAL` se **todos** os gates técnicos e
+competitivos passarem. O `overall_score` usa o split de campo medido (46% 2p /
+54% 4p), conta empates 2p como não-vitórias no score bruto, e o ranking é ordenado
+primeiro por veredito: `PASS_LOCAL` > `INCONCLUSIVE` > `REJECT_LOCAL`. Os mapas 2p
+são derivados do nome do adversário, então `vs producer` usa o mesmo slice mesmo
+que você rode um candidato sozinho ou dentro de um painel maior. Em 4p, cada seed
+é jogada nas quatro rotações de assento; isso evita confundir sorte de mapa com
+posição inicial e impede JSON parcial de registrar seeds que o backend não rodou.
+
+Critério mínimo do Nível B (cada um é um check explícito no `report.json`):
+
+- margem média (decisive winrate) `>= 0.5` contra o incumbente — `beats_or_ties_incumbent_h2h`;
+- **seat0 e seat1 cada um `>= 0.5`** contra o incumbente — `incumbent_h2h_seat0/seat1`.
+  Se melhora só um seat e destrói o outro, é **falso ganho** (a agregação esconde,
+  o split pega); o piso por-seat usa `--min-incumbent-seat-winrate` (default = piso
+  agregado);
+- **4p aggregate `>=` fair-share** (`~0.25` em FFA de 4) — `four_player_fair_share`
+  (`--min-4p-decisive-winrate`), além de `survives_4p` (annihilation `<= 0.35`);
+- `faults` = `timeouts` = `invalid_moves` = `0` — `no_faults` + `all_status_done`;
+- **p95 de decisão dentro do limite** (`<= 900ms` sob o `actTimeout` de 1s da
+  Kaggle) — `p95_within_limit` (`--max-p95-ms`).
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.league_submit_ruler \
+  --candidates pgs_decisive2p --incumbent pgs_holdwave \
+  --seeds 96 --steps 500 --jobs 4 --profile strong \
+  --out-dir artifacts/rulers/pgs_decisive2p_96
+
+# e o candidato 4p threat:
+PYTHONPATH=. .venv/bin/python -m scripts.league_submit_ruler \
+  --candidates pgs_h9threat --incumbent pgs_holdwave \
+  --seeds 96 --steps 500 --jobs 4 --profile strong \
+  --out-dir artifacts/rulers/pgs_h9threat_96
+```
+
+**Nível C — Veto top5-proxy.** Use `configs/eval_top5_proxy.yaml`, mas **como veto,
+não como prova**: passar não prova top-5 (Producer/OEP saturam o 2p; o sinal
+discriminativo está no 4p e precisa de `>=48` seeds), mas falhar mata o candidato.
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.eval_top5_proxy \
+  --config configs/eval_top5_proxy.yaml
 ```
 
 Em runs longos, mantenha `--match-chunk-size` ligado. Os JSONs parciais sao
@@ -233,9 +278,13 @@ arquivo reempacotado no mesmo caminho.
 Interpretação:
 
 - `PASS_LOCAL`: candidato passou faults/status, cobriu H2H mínimo, empatou/bateu
-  Producer e incumbente, limpou o floor rejeitado e não morreu demais em 4p;
-- `INCONCLUSIVE`: a amostra não tem decisivos suficientes; aumente `--seeds`;
-- `REJECT_LOCAL`: há falha técnica ou gate competitivo local ruim.
+  Producer e incumbente **de ambos os seats**, limpou o floor rejeitado, puxou a
+  fair-share em 4p sem morrer demais e ficou dentro do p95;
+- `INCONCLUSIVE`: a amostra não tem decisivos suficientes (inclui seat ou 4p sem
+  jogo decisivo para julgar); aumente `--seeds`;
+- `REJECT_LOCAL`: há falha técnica (fault/timeout/invalid/p95) ou gate competitivo
+  local ruim — inclui **falso ganho por seat** (`incumbent_h2h_seatN` falha mesmo
+  com o agregado passando).
 
 Regra operacional: a liga é **veto-only**. Ela é boa para detectar crash, timeout,
 ação inválida, perda H2H clara, fragilidade 4p e estilos exploradores. Ela não

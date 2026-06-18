@@ -352,9 +352,36 @@ def _load_games(path: Path, result: dict[str, Any] | None = None) -> list[dict[s
     games = payload["games"]
     if result is not None and _task_has_strict_metadata(result):
         _validate_task_payload(path, payload, games, result)
+    # league_match writes the per-agent p95 decision latency at payload level
+    # (decision_ms_p95). Attach it to each game so the candidate's worst-case
+    # latency can be gated alongside win-rate (Kaggle enforces a 1s actTimeout;
+    # a fast local win that p95-blows the budget is a false promotion).
+    p95 = payload.get("decision_ms_p95") or {}
     for game in games:
         game["mode"] = payload["mode"]
+        game["payload_p95"] = p95
     return games
+
+
+def _games_for_seat(games: list[dict[str, Any]], name: str, seat_index: int) -> list[dict[str, Any]]:
+    """The subset of games where `name` occupies a specific seat. With balanced
+    rotation each 2p seat gets ~half the games, so a candidate that only wins from
+    one seat (a false gain) splits cleanly here."""
+    return [
+        game for game in games
+        if name in game["seats"] and game["seats"].index(name) == seat_index
+    ]
+
+
+def _candidate_p95(games: list[dict[str, Any]], name: str) -> float | None:
+    """Worst (max) p95 decision latency the candidate hit across all its payloads,
+    or None when no payload carried latency instrumentation."""
+    values = [
+        float(game["payload_p95"][name])
+        for game in games
+        if isinstance(game.get("payload_p95"), dict) and name in game["payload_p95"]
+    ]
+    return max(values) if values else None
 
 
 def _fault_totals(games: list[dict[str, Any]], name: str) -> dict[str, int]:
@@ -438,8 +465,16 @@ def summarize_candidate(
     max_annihilation_rate_4p: float,
     required_2p_winrates: dict[str, float] | None = None,
     weight_2p: float,
+    min_incumbent_seat_winrate: float | None = None,
+    min_4p_decisive_winrate: float = 0.25,
+    max_p95_ms: float = 900.0,
 ) -> dict[str, Any]:
+    # The per-seat H2H floor defaults to the aggregate incumbent floor: a real
+    # gain must hold from BOTH seats, not average a seat-0 win against a seat-1 loss.
+    if min_incumbent_seat_winrate is None:
+        min_incumbent_seat_winrate = min_incumbent_winrate
     pairwise: dict[str, dict[str, Any]] = {}
+    pairwise_games: dict[str, list[dict[str, Any]]] = {}
     four_player_games: list[dict[str, Any]] = []
     all_games: list[dict[str, Any]] = []
     failed_runs = [r for r in task_results if r["candidate"] == candidate and r["returncode"] != 0]
@@ -450,7 +485,8 @@ def summarize_candidate(
         all_games.extend(games)
         if result["mode"] == "2p":
             opponent = [name for name in result["names"] if name != candidate][0]
-            pairwise[opponent] = _score_games(games, candidate)
+            pairwise_games.setdefault(opponent, []).extend(games)
+            pairwise[opponent] = _score_games(pairwise_games[opponent], candidate)
         else:
             four_player_games.extend(games)
 
@@ -520,6 +556,35 @@ def summarize_candidate(
             {"decisive_win_rate": wr, "required": min_incumbent_winrate},
         )
 
+    # Per-seat H2H floor vs the incumbent. A candidate that wins from seat 0 but
+    # bleeds from seat 1 averages to a positive aggregate yet is a FALSE GAIN:
+    # the seat-rotated field would punish it. Require BOTH seats to clear the
+    # floor (inconclusive only when a seat has no decisive game to judge).
+    if candidate != incumbent:
+        inc_games = pairwise_games.get(incumbent, [])
+        for seat_index in (0, 1):
+            seat = _score_games(_games_for_seat(inc_games, candidate, seat_index), candidate)
+            seat_wr = seat["decisive_win_rate"]
+            if inc is None:
+                continue  # missing-opponent already failed above
+            if seat["decisive"] == 0:
+                add_check(
+                    f"incumbent_h2h_seat{seat_index}",
+                    False,
+                    {"decisive": 0, "required": min_incumbent_seat_winrate},
+                    severity="inconclusive",
+                )
+            else:
+                add_check(
+                    f"incumbent_h2h_seat{seat_index}",
+                    seat_wr is not None and seat_wr >= min_incumbent_seat_winrate,
+                    {
+                        "decisive_win_rate": seat_wr,
+                        "decisive": seat["decisive"],
+                        "required": min_incumbent_seat_winrate,
+                    },
+                )
+
     floor = pairwise.get("pgs_allscripts")
     if floor is None and candidate != "pgs_allscripts":
         add_check(
@@ -564,6 +629,36 @@ def summarize_candidate(
         },
     )
 
+    # 4p aggregate >= fair share. In a 4-player FFA the fair decisive share is
+    # ~0.25; a candidate pulling below that is net-negative in the 4p regime that
+    # is the majority of the field. Survives_4p (annihilation) guards being wiped
+    # out; this guards being a passenger. Inconclusive when no 4p decisive game.
+    fp_wr = four_player["decisive_win_rate"]
+    if four_player["appearances"] == 0:
+        add_check("four_player_fair_share", True,
+                  {"appearances": 0}, severity="info")
+    elif four_player["decisive"] == 0:
+        add_check("four_player_fair_share", False,
+                  {"decisive": 0, "required": min_4p_decisive_winrate},
+                  severity="inconclusive")
+    else:
+        add_check(
+            "four_player_fair_share",
+            fp_wr is not None and fp_wr >= min_4p_decisive_winrate,
+            {"decisive_win_rate": fp_wr, "decisive": four_player["decisive"],
+             "required": min_4p_decisive_winrate},
+        )
+
+    # p95 decision latency under the Kaggle actTimeout budget. No p95 in the
+    # payload (older runs / unit fixtures) => not judged, reported as info.
+    p95 = _candidate_p95(all_games, candidate)
+    if p95 is None:
+        add_check("p95_within_limit", True, {"p95_ms": None, "limit_ms": max_p95_ms},
+                  severity="info")
+    else:
+        add_check("p95_within_limit", p95 <= max_p95_ms,
+                  {"p95_ms": p95, "limit_ms": max_p95_ms})
+
     hard_failures = [c for c in checks if not c["passed"] and c["severity"] == "fail"]
     inconclusive = [c for c in checks if not c["passed"] and c["severity"] == "inconclusive"]
     if hard_failures:
@@ -582,6 +677,7 @@ def summarize_candidate(
         "overall": overall,
         "four_player": four_player,
         "pairwise": pairwise,
+        "p95_ms": p95,
         "checks": checks,
     }
 
@@ -598,6 +694,9 @@ def build_report(
     max_annihilation_rate_4p: float,
     required_2p_winrates: dict[str, float] | None = None,
     weight_2p: float,
+    min_incumbent_seat_winrate: float | None = None,
+    min_4p_decisive_winrate: float = 0.25,
+    max_p95_ms: float = 900.0,
 ) -> dict[str, Any]:
     summaries = [
         summarize_candidate(
@@ -606,6 +705,9 @@ def build_report(
             incumbent=incumbent,
             min_decisive_2p=min_decisive_2p,
             min_producer_winrate=min_producer_winrate,
+            min_incumbent_seat_winrate=min_incumbent_seat_winrate,
+            min_4p_decisive_winrate=min_4p_decisive_winrate,
+            max_p95_ms=max_p95_ms,
             min_incumbent_winrate=min_incumbent_winrate,
             min_floor_winrate=min_floor_winrate,
             max_annihilation_rate_4p=max_annihilation_rate_4p,
@@ -704,6 +806,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--min-floor-winrate", type=float, default=0.60)
     parser.add_argument("--max-annihilation-rate-4p", type=float, default=0.35)
     parser.add_argument(
+        "--min-incumbent-seat-winrate", type=float, default=None,
+        help="per-seat decisive winrate floor vs the incumbent (default: "
+        "--min-incumbent-winrate); guards seat-split false gains")
+    parser.add_argument(
+        "--min-4p-decisive-winrate", type=float, default=0.25,
+        help="4p aggregate decisive-winrate fair-share floor (FFA fair share ~0.25)")
+    parser.add_argument(
+        "--max-p95-ms", type=float, default=900.0,
+        help="max candidate p95 decision latency (ms) under the 1s Kaggle actTimeout")
+    parser.add_argument(
         "--required-2p-winrate",
         action="append",
         help="extra required 2p decisive winrate, as opponent=threshold or opponent for 0.50",
@@ -789,6 +901,9 @@ def main(argv: list[str] | None = None) -> int:
         max_annihilation_rate_4p=args.max_annihilation_rate_4p,
         required_2p_winrates=required_2p_winrates,
         weight_2p=args.weight_2p,
+        min_incumbent_seat_winrate=args.min_incumbent_seat_winrate,
+        min_4p_decisive_winrate=args.min_4p_decisive_winrate,
+        max_p95_ms=args.max_p95_ms,
     )
     report.update({
         "incumbent": args.incumbent,
@@ -806,6 +921,9 @@ def main(argv: list[str] | None = None) -> int:
             "max_annihilation_rate_4p": args.max_annihilation_rate_4p,
             "required_2p_winrates": required_2p_winrates,
             "weight_2p": args.weight_2p,
+            "min_incumbent_seat_winrate": args.min_incumbent_seat_winrate,
+            "min_4p_decisive_winrate": args.min_4p_decisive_winrate,
+            "max_p95_ms": args.max_p95_ms,
         },
     })
     out = args.out or (out_dir / "report.json")

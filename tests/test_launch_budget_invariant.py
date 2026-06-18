@@ -28,15 +28,40 @@ import pytest
 torch = pytest.importorskip("torch")
 
 
+def _greedy_select_modules() -> list:
+    """Every live module whose namespace owns a ``_greedy_select`` function.
+
+    Scans ``sys.modules``, then ALSO reaches the Producer's upstream module held
+    in ``bots.producer.agent._UPSTREAM``. That instance is loaded via bare
+    importlib and a packaging/tarball test can orphan it from ``sys.modules``
+    (it stays referenced only by ``_UPSTREAM``), so a plain ``sys.modules`` scan
+    misses the exact ``_greedy_select`` the Producer calls — which is why the
+    producer scenarios saw "planner never ran" ONLY in the full suite (order
+    contamination), never in isolation. Reaching the held instance makes the
+    probe hermetic to test ordering."""
+    sys_mod = __import__("sys")
+    mods: list = []
+    seen: set[int] = set()
+
+    def consider(mod) -> None:
+        if mod is None or id(mod) in seen:
+            return
+        fn = getattr(mod, "__dict__", {}).get("_greedy_select")
+        if isinstance(fn, types.FunctionType):
+            seen.add(id(mod))
+            mods.append(mod)
+
+    for mod in list(sys_mod.modules.values()):
+        consider(mod)
+    consider(getattr(sys_mod.modules.get("bots.producer.agent"), "_UPSTREAM", None))
+    return mods
+
+
 def _install_invariant_probe(stats: dict) -> list:
     """Patch every loaded module exposing ``_greedy_select`` with a wrapper that
     audits the per-source send budget. Returns the patched modules so the caller
     can restore them."""
-    targets = []
-    for _name, mod in list(__import__("sys").modules.items()):
-        fn = getattr(mod, "__dict__", {}).get("_greedy_select")
-        if isinstance(fn, types.FunctionType):
-            targets.append(mod)
+    targets = _greedy_select_modules()
     assert targets, "no module exposes _greedy_select; load the agents first"
 
     def make_wrapped(orig):

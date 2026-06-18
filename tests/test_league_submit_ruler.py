@@ -31,12 +31,15 @@ def _game(seats, winner, *, mode="2p", faults=None, status=None, died=None, seed
     }
 
 
-def _write(tmp_path, label, mode, games, *, candidate="cand"):
+def _write(tmp_path, label, mode, games, *, candidate="cand", p95=None):
     path = tmp_path / f"{label}.json"
     names = list(games[0]["seats"])
     for game in games:
         game.pop("mode", None)
-    path.write_text(json.dumps({"mode": mode, "games": games}))
+    payload = {"mode": mode, "games": games}
+    if p95 is not None:
+        payload["decision_ms_p95"] = p95
+    path.write_text(json.dumps(payload))
     return {
         "label": label,
         "mode": mode,
@@ -61,9 +64,11 @@ def _passing_results(tmp_path, *, candidate="cand", label_prefix=""):
             _game([candidate, "producer"], candidate),
             _game(["producer", candidate], "producer"),
         ], candidate=candidate),
+        # Seat-balanced incumbent H2H: the candidate clears the per-seat floor from
+        # BOTH seats (seat0 2/2, seat1 1/2), so it is a real gain, not a seat-split.
         _write(tmp_path, label("inc"), "2p", [
             _game([candidate, "inc"], candidate),
-            _game(["inc", candidate], "inc"),
+            _game(["inc", candidate], candidate),
             _game([candidate, "inc"], candidate),
             _game(["inc", candidate], "inc"),
         ], candidate=candidate),
@@ -95,8 +100,12 @@ def test_submit_ruler_passes_clean_candidate(tmp_path):
 
     assert summary["verdict"] == "PASS_LOCAL"
     assert summary["pairwise"]["producer"]["decisive_win_rate"] == 0.75
-    assert summary["pairwise"]["inc"]["decisive_win_rate"] == 0.5
+    assert summary["pairwise"]["inc"]["decisive_win_rate"] == 0.75
     assert summary["four_player"]["win_rate"] == 0.5
+    # The clean candidate clears BOTH per-seat incumbent floors.
+    seat_checks = {c["name"]: c for c in summary["checks"]}
+    assert seat_checks["incumbent_h2h_seat0"]["passed"] is True
+    assert seat_checks["incumbent_h2h_seat1"]["passed"] is True
 
 
 def test_submit_ruler_rejects_faults(tmp_path):
@@ -631,3 +640,100 @@ def test_run_tasks_writes_incremental_results(monkeypatch, tmp_path):
 
     assert progress_path.exists()
     assert json.loads(progress_path.read_text()) == results
+
+
+def _summary(results, **overrides):
+    kwargs = dict(
+        incumbent="inc",
+        min_decisive_2p=4,
+        min_producer_winrate=0.5,
+        min_incumbent_winrate=0.5,
+        min_floor_winrate=0.6,
+        max_annihilation_rate_4p=0.35,
+        weight_2p=0.5,
+    )
+    kwargs.update(overrides)
+    return summarize_candidate("cand", results, **kwargs)
+
+
+def _checks_by_name(summary):
+    return {c["name"]: c for c in summary["checks"]}
+
+
+def test_submit_ruler_rejects_seat_split_false_gain(tmp_path):
+    # Candidate wins BOTH seat-0 games vs the incumbent but loses BOTH seat-1
+    # games: aggregate decisive winrate is exactly 0.5 (clears the aggregate
+    # floor) yet it is a false gain. The per-seat guard must reject it.
+    results = _passing_results(tmp_path)
+    results[1] = _write(tmp_path, "inc", "2p", [
+        _game(["cand", "inc"], "cand"),     # seat0 win
+        _game(["inc", "cand"], "inc"),      # seat1 loss
+        _game(["cand", "inc"], "cand"),     # seat0 win
+        _game(["inc", "cand"], "inc"),      # seat1 loss
+    ])
+
+    summary = _summary(results)
+    checks = _checks_by_name(summary)
+
+    assert checks["beats_or_ties_incumbent_h2h"]["passed"] is True  # aggregate 0.5
+    assert checks["incumbent_h2h_seat0"]["passed"] is True
+    assert checks["incumbent_h2h_seat1"]["passed"] is False
+    assert summary["verdict"] == "REJECT_LOCAL"
+
+
+def test_submit_ruler_rejects_p95_over_budget(tmp_path):
+    # A candidate that is otherwise clean but blows the p95 latency budget on any
+    # payload must be rejected: Kaggle enforces a 1s actTimeout at inference.
+    results = _passing_results(tmp_path)
+    results[0] = _write(tmp_path, "producer", "2p", [
+        _game(["cand", "producer"], "cand"),
+        _game(["producer", "cand"], "cand"),
+        _game(["cand", "producer"], "cand"),
+        _game(["producer", "cand"], "producer"),
+    ], p95={"cand": 1500.0, "producer": 120.0})
+
+    summary = _summary(results, max_p95_ms=900.0)
+    checks = _checks_by_name(summary)
+
+    assert summary["p95_ms"] == 1500.0
+    assert checks["p95_within_limit"]["passed"] is False
+    assert summary["verdict"] == "REJECT_LOCAL"
+
+
+def test_submit_ruler_rejects_below_4p_fair_share(tmp_path):
+    # Survives 4p (not annihilated) but pulls below the FFA fair share (~0.25):
+    # a passenger in the 4p regime that is the majority of the field.
+    results = _passing_results(tmp_path)
+    lineup = ["cand", "producer", "inc", "pgs_allscripts"]
+    results[3] = _write(tmp_path, "line0", "4p", [
+        _game(lineup, "producer", mode="4p"),
+        _game(lineup, "inc", mode="4p"),
+        _game(lineup, "pgs_allscripts", mode="4p"),
+        _game(lineup, "producer", mode="4p"),
+    ])
+
+    summary = _summary(results)
+    checks = _checks_by_name(summary)
+
+    assert summary["four_player"]["decisive_win_rate"] == 0.0
+    assert checks["survives_4p"]["passed"] is True
+    assert checks["four_player_fair_share"]["passed"] is False
+    assert summary["verdict"] == "REJECT_LOCAL"
+
+
+def test_submit_ruler_p95_within_budget_passes(tmp_path):
+    # p95 present and under the limit on every payload => the latency guard passes.
+    results = _passing_results(tmp_path)
+    results[0] = _write(tmp_path, "producer", "2p", [
+        _game(["cand", "producer"], "cand"),
+        _game(["producer", "cand"], "cand"),
+        _game(["cand", "producer"], "cand"),
+        _game(["producer", "cand"], "producer"),
+    ], p95={"cand": 410.0, "producer": 120.0})
+
+    summary = _summary(results, max_p95_ms=900.0)
+    checks = _checks_by_name(summary)
+
+    assert summary["p95_ms"] == 410.0
+    assert checks["p95_within_limit"]["passed"] is True
+    assert summary["verdict"] == "PASS_LOCAL"
