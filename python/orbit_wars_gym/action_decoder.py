@@ -30,6 +30,14 @@ class DecoderConfig:
     max_moves_per_turn: int = 8
     min_ships_to_launch: int = 2
     reserve_home_ships: int = 8
+    # When set, OVERRIDE the policy's target_rank with this constant. The BC/PPO
+    # target head is unlearnable (invert_moves labels target_rank by a per-state
+    # re-sorted continuous target_score -> near-uniform ~4.6-bit label; measured
+    # val top1-acc 0.085 ~ random over 32 ranks). force_target_rank=0 instead aims
+    # every wave at the decoder's own highest-target_score candidate (prod/enemy/
+    # near), which lifts a learned source/frac/offset policy from annihilation
+    # (-1.0 vs producer) to winning. None = use the policy's emitted target_rank.
+    force_target_rank: int | None = None
 
 
 DEFAULT_DECODER_CONFIG = DecoderConfig()
@@ -126,6 +134,9 @@ def decode_discrete_action(
         source_rank, target_rank, fraction_idx, offset_idx = a[:4]
     else:
         return []
+
+    if cfg.force_target_rank is not None:
+        target_rank = int(cfg.force_target_rank)
 
     planets = state.get("planets", [])
     own = [p for p in planets if planet_owner(p) == player and planet_ships(p) >= cfg.min_ships_to_launch]

@@ -262,6 +262,7 @@ def run_campaign(
     decoder_max_moves_per_turn: int | None = None,
     decoder_min_ships_to_launch: int | None = None,
     decoder_reserve_home_ships: int | None = None,
+    decoder_force_target_rank: int | None = None,
     inherit_checkpoint_decoder: bool = True,
     min_decoder_max_moves_per_turn: int = 1,
 ) -> dict[str, Any]:
@@ -339,6 +340,8 @@ def run_campaign(
                 cfg_kwargs["decoder_min_ships_to_launch"] = int(decoder_min_ships_to_launch)
             if decoder_reserve_home_ships is not None:
                 cfg_kwargs["decoder_reserve_home_ships"] = int(decoder_reserve_home_ships)
+            if decoder_force_target_rank is not None:
+                cfg_kwargs["decoder_force_target_rank"] = int(decoder_force_target_rank)
             cfg = _build_training_config(stage["track"], cfg_kwargs)
             stage_summary = _train_stage(stage["track"], cfg)
             stage_records.append(
@@ -637,6 +640,9 @@ def run_campaign(
         "decoder_reserve_home_ships": (
             int(decoder_reserve_home_ships) if decoder_reserve_home_ships is not None else None
         ),
+        "decoder_force_target_rank": (
+            int(decoder_force_target_rank) if decoder_force_target_rank is not None else None
+        ),
         "inherit_checkpoint_decoder": bool(inherit_checkpoint_decoder),
         "min_decoder_max_moves_per_turn": max(1, int(min_decoder_max_moves_per_turn)),
         "require_terminal_reward": bool(require_terminal_reward),
@@ -721,6 +727,13 @@ def main() -> None:
     parser.add_argument("--decoder-min-ships-to-launch", type=int, default=None)
     parser.add_argument("--decoder-reserve-home-ships", type=int, default=None)
     parser.add_argument(
+        "--decoder-force-target-rank",
+        type=int,
+        default=None,
+        help="override the policy target_rank during rollout/eval (0 = decoder's highest target_score; "
+             "the learned target head is unlearnable/random, this is the BC-cliff fix)",
+    )
+    parser.add_argument(
         "--no-inherit-checkpoint-decoder",
         action="store_false",
         dest="inherit_checkpoint_decoder",
@@ -796,6 +809,7 @@ def main() -> None:
         decoder_max_moves_per_turn=args.decoder_max_moves_per_turn,
         decoder_min_ships_to_launch=args.decoder_min_ships_to_launch,
         decoder_reserve_home_ships=args.decoder_reserve_home_ships,
+        decoder_force_target_rank=args.decoder_force_target_rank,
         inherit_checkpoint_decoder=bool(args.inherit_checkpoint_decoder),
         min_decoder_max_moves_per_turn=int(args.min_decoder_max_moves_per_turn),
         require_terminal_reward=bool(args.require_terminal_reward),
