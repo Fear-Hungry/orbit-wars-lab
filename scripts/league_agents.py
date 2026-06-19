@@ -336,6 +336,17 @@ FACTORIES = {
     # H-P5 league-guided wave round (one round, pre-registered; /goal 2026-06-10)
     "pgs_wave_s100": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=100),
     "pgs_wave_s50": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=50),
+    # Wave-timing search (goal/seat-rotated branch 2026-06-19). The ONLY lever with
+    # a real LB signal is wave timing (monotone on LB: nowave 1057 < s100 1146 <
+    # s150 1228). These probe LATER starts / BIGGER waves around the holdwave
+    # optimum (s150,min60). Off-by-default factories; submission unchanged. Promote
+    # only if a variant DOMINATES holdwave vs the external field proxies.
+    "pgs_wave_s120": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=120),
+    "pgs_wave_s175": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=175),
+    "pgs_wave_s200": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=200),
+    "pgs_wave_min45_s150": lambda: _pgs(scripts="hold", wave_min_ships=45.0, wave_start_step=150),
+    "pgs_wave_min80_s150": lambda: _pgs(scripts="hold", wave_min_ships=80.0, wave_start_step=150),
+    "pgs_wave_min80_s175": lambda: _pgs(scripts="hold", wave_min_ships=80.0, wave_start_step=175),
     "pgs_wave_4pfloor": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
                                      floor_in_4p=True),
     # H7 E4: holdwave base + learned value net plugged into the search (scores the
