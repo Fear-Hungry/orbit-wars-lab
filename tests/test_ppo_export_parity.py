@@ -108,3 +108,32 @@ def test_dual_checkpoint_export_matches_2p_and_4p_policies(tmp_path: Path):
     assert report["passed"]
     assert report["checkpoint_4p"] == str(checkpoint_4p)
     assert report["four_player_policy"] == "neural"
+
+
+def test_dual_entity_checkpoint_export_matches_2p_and_4p_policies(tmp_path: Path):
+    # Regression guard for the `_entity_pool` name-collision bug: the entity action
+    # template defines a top-level `_entity_pool` that closes over the policy weights;
+    # rendering a 2p AND a separate 4p entity policy made the two defs collide so the
+    # 4p forward pooled with the 2p weights, flipping near-tied argmaxes in 4p. The
+    # existing dual test above uses FLAT arch (no `_entity_pool`) so it stayed green
+    # even with the bug. DIFFERENT seeds => different weights => the collision matters.
+    torch.manual_seed(23)
+    checkpoint_2p = tmp_path / "entity_2p.pt"
+    _write_checkpoint(checkpoint_2p, EntityActorCritic(observation_dim()), arch="entity")
+    torch.manual_seed(29)
+    checkpoint_4p = tmp_path / "entity_4p.pt"
+    _write_checkpoint(checkpoint_4p, EntityActorCritic(observation_dim()), arch="entity")
+
+    report = check_checkpoint_export_parity(
+        checkpoint_2p,
+        submission_path=tmp_path / "dual_entity_submission.py",
+        checkpoint_4p_path=checkpoint_4p,
+        seeds=[0, 1, 2],
+        steps=24,
+        player_counts=(2, 4),
+        four_player_policy="neural",
+    )
+
+    assert report["passed"], report.get("mismatches", [])[:1]
+    assert report["checkpoint_4p"] == str(checkpoint_4p)
+    assert report["four_player_policy"] == "neural"
