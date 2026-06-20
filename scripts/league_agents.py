@@ -363,6 +363,21 @@ FACTORIES = {
                              reactive_reinforce_margin=1.5, weakest_enemy_4p_mult=1.5),
     "pgs_we20": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
                              reactive_reinforce_margin=1.5, weakest_enemy_4p_mult=2.0),
+    # Exposed-target (kvatsa5 snipe) + full stack on the LB-PROVEN threat-aware b22.
+    "pgs_exp": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                            reactive_reinforce_margin=2.2, exposed_target_mult=2.0),
+    "pgs_b22_we": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                               reactive_reinforce_margin=2.2, weakest_enemy_4p_mult=1.5),
+    "pgs_fullstack": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                  reactive_reinforce_margin=2.2, weakest_enemy_4p_mult=1.5,
+                                  exposed_target_mult=2.0),
+    # Threat-aware DEFENSE on the nowave threat-aware base (top-5 lever): margin sweep.
+    "pgs_nowave_ta": lambda: _pgs(scripts="hold", reactive_reinforce_margin=2.2),
+    "pgs_def03": lambda: _pgs(scripts="hold", reactive_reinforce_margin=2.2, reactive_defense_margin=0.3),
+    "pgs_def05": lambda: _pgs(scripts="hold", reactive_reinforce_margin=2.2, reactive_defense_margin=0.5),
+    "pgs_def08": lambda: _pgs(scripts="hold", reactive_reinforce_margin=2.2, reactive_defense_margin=0.8),
+    "pgs_def12": lambda: _pgs(scripts="hold", reactive_reinforce_margin=2.2, reactive_defense_margin=1.2),
+    "pgs_def16": lambda: _pgs(scripts="hold", reactive_reinforce_margin=2.2, reactive_defense_margin=1.6),
     # Wave-timing search (goal/seat-rotated branch 2026-06-19). The ONLY lever with
     # a real LB signal is wave timing (monotone on LB: nowave 1057 < s100 1146 <
     # s150 1228). These probe LATER starts / BIGGER waves around the holdwave

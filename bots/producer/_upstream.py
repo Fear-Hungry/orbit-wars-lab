@@ -226,9 +226,12 @@ def plan_lite_waves(
     # garrison at sources the enemy could ATTACK. cheap_enemy_pressure is the same
     # distance-decayed reachable-enemy-mass used for the regroup gradient; subtract a
     # margin * that pressure from what we're willing to shed, so a planet under enemy
-    # pressure overextends less. Default margin 0.0 => no-op (byte-identical).
+    # pressure overextends less. 4p-ONLY: local seat-rotated H2H showed a flat defense
+    # margin makes us too PASSIVE in 2p (loses 0.27 vs the aggressive base) but a HIGH
+    # margin HELPS 4p (def08: win 0.33 / death 0.56 vs base 0.25 / 0.75) — 4p is where
+    # overextension actually kills. Default margin 0.0 => no-op (byte-identical).
     rdm = float(getattr(config, "reactive_defense_margin", 0.0))
-    if rdm > 0.0:
+    if rdm > 0.0 and int(player_count) >= 4:
         pressure = cheap_enemy_pressure(obs, cache, horizon=float(K_eta), player_id=pid)  # [P]
         src_pressure = pressure[source_idx.clamp(0, P - 1)]                                # [S]
         drain = (drain - rdm * src_pressure).clamp(min=0.0)
