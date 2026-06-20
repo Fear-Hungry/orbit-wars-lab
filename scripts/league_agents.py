@@ -378,6 +378,11 @@ FACTORIES = {
     "pgs_def08": lambda: _pgs(scripts="hold", reactive_reinforce_margin=2.2, reactive_defense_margin=0.8),
     "pgs_def12": lambda: _pgs(scripts="hold", reactive_reinforce_margin=2.2, reactive_defense_margin=1.2),
     "pgs_def16": lambda: _pgs(scripts="hold", reactive_reinforce_margin=2.2, reactive_defense_margin=1.6),
+    # Wave AMPLIFICATION toward the elite "few BIG waves + hoard 2-5x" style (the PROVEN
+    # lever +178). Bigger wave_min_ships = bigger waves / more hoard. holdwave base = w60.
+    "pgs_w80":  lambda: _pgs(scripts="hold", wave_min_ships=80.0,  wave_start_step=150),
+    "pgs_w100": lambda: _pgs(scripts="hold", wave_min_ships=100.0, wave_start_step=150),
+    "pgs_w120": lambda: _pgs(scripts="hold", wave_min_ships=120.0, wave_start_step=150),
     # Wave-timing search (goal/seat-rotated branch 2026-06-19). The ONLY lever with
     # a real LB signal is wave timing (monotone on LB: nowave 1057 < s100 1146 <
     # s150 1228). These probe LATER starts / BIGGER waves around the holdwave
