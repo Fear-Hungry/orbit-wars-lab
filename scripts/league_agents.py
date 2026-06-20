@@ -352,6 +352,17 @@ FACTORIES = {
                                      reactive_reinforce_margin=2.2),
     "pgs_reactive_b30": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
                                      reactive_reinforce_margin=3.0),
+    # No-wave threat-aware (closer to bare Producer V2/1443, which has no wave). Test
+    # whether our wave helps or is redundant with the threat-aware discipline.
+    "pgs_nowave_b15": lambda: _pgs(scripts="hold", reactive_reinforce_margin=1.5),
+    "pgs_nowave_b22": lambda: _pgs(scripts="hold", reactive_reinforce_margin=2.2),
+    # Weakest-enemy 4p targeting (kvatsa5) stacked on threat-aware b15. Sweep the mult.
+    "pgs_we13": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                             reactive_reinforce_margin=1.5, weakest_enemy_4p_mult=1.3),
+    "pgs_we15": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                             reactive_reinforce_margin=1.5, weakest_enemy_4p_mult=1.5),
+    "pgs_we20": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                             reactive_reinforce_margin=1.5, weakest_enemy_4p_mult=2.0),
     # Wave-timing search (goal/seat-rotated branch 2026-06-19). The ONLY lever with
     # a real LB signal is wave timing (monotone on LB: nowave 1057 < s100 1146 <
     # s150 1228). These probe LATER starts / BIGGER waves around the holdwave

@@ -161,6 +161,9 @@ class PGSConfig:
     # captures whose target the enemy can reinforce after our launch (general, all
     # game). 0.0 == holdwave's byte-identical behaviour. See _upstream.py.
     reactive_reinforce_margin: float = 0.0
+    # Weakest-enemy 4p targeting (kvatsa5 lever) passed to the Producer floor: gang up
+    # on the weakest opponent in 4p. 1.0 == holdwave byte-identical. See _upstream.py.
+    weakest_enemy_4p_mult: float = 1.0
     # G3.2 Phase 2 — DECISIVE-WAVE conversion for even_attrition_2p (loss class #2,
     # 125/382 real losses, ~all 2p; docs/LOSS_TAXONOMY.md). Phase 1
     # (g32_even_attrition_2p_phase1) found the tell: LOSERS SPRAY (frac_ships_in_big
@@ -273,10 +276,11 @@ class PGSRuntime:
         Returns None when the fix is ON so callers keep the unmodified default
         path (byte-identical to the live submission)."""
         rrm = float(self.config.reactive_reinforce_margin)
-        if not self.config.disable_drain_fix and rrm <= 0.0:
+        wem = float(self.config.weakest_enemy_4p_mult)
+        if not self.config.disable_drain_fix and rrm <= 0.0 and wem == 1.0:
             return None
         cfg = _producer_config_for(int(player_count))
-        repl: dict = {"reactive_reinforce_margin": rrm}
+        repl: dict = {"reactive_reinforce_margin": rrm, "weakest_enemy_4p_mult": wem}
         if self.config.disable_drain_fix:
             repl["disable_drain_fix"] = True
         return _dc_replace(cfg, **repl)

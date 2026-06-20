@@ -79,6 +79,14 @@ class ProducerLiteConfig:
     # So fast/near captures aren't over-penalized (faithful to the rank-19 ρ(eta) term).
     reactive_reinforce_eta_free: float = 3.0
     reactive_reinforce_eta_scale: float = 12.0
+    # Weakest-enemy 4p targeting (kvatsa5 lever, addresses our biggest loss bucket =
+    # 4p kingmaker/overextension): in 4p, multiply the offense score of targets owned
+    # by the WEAKEST opponent (lowest total ships) by this factor (gang up / eliminate
+    # the weak first), plus a flat elimination bonus when that opponent is near death.
+    # 1.0 == off (byte-identical). 4p-only by construction.
+    weakest_enemy_4p_mult: float = 1.0
+    weakest_enemy_elim_ships: float = 110.0
+    weakest_enemy_elim_bonus: float = 50.0
     # G3.1a literal Phase-2 rule: during the opening, suppress attacks on enemy
     # PLAYERS while the source still has a viable neutral capture in range
     # ("deixar os outros se desgastarem"). Off by default. Phase-1 predicts this
@@ -338,6 +346,31 @@ def plan_lite_waves(
         player_id=pid,
     )  # [C]
     score = torch.where(cand_valid, score, torch.full_like(score, float("-inf")))
+
+    # Weakest-enemy 4p targeting (kvatsa5): bias offense toward the weakest opponent
+    # (gang up; finish off the weak before they're farmed by stronger rivals — the
+    # 4p kingmaker/overextension loss bucket). 4p-only; mult==1.0 => no-op.
+    wem = float(getattr(config, "weakest_enemy_4p_mult", 1.0))
+    if wem != 1.0 and int(player_count) >= 4:
+        owner0 = garrison_status.owner[:, 0]                                    # [P]
+        ships0 = obs.ships.to(dtype).view(-1)                                   # [P]
+        per_player = torch.zeros(int(player_count), dtype=dtype, device=device)
+        own_ok = (owner0 >= 0) & (owner0 < int(player_count))
+        per_player.scatter_add_(
+            0, owner0.clamp(0, int(player_count) - 1).long(),
+            torch.where(own_ok, ships0, torch.zeros_like(ships0)),
+        )
+        is_opp = torch.ones(int(player_count), dtype=torch.bool, device=device)
+        is_opp[int(pid)] = False
+        opp_ships = torch.where(is_opp, per_player, torch.full_like(per_player, float("inf")))
+        weakest = torch.argmin(opp_ships)                                       # 0-dim
+        tgt_owner = owner0[cand_tgt_slot.clamp(0, P - 1)]                       # [C]
+        is_weakest = (tgt_owner == weakest) & cand_valid & (score > 0.0)        # [C]
+        boost = torch.where(is_weakest, score * (wem - 1.0), torch.zeros_like(score))
+        elim = (per_player[weakest] < float(config.weakest_enemy_elim_ships)).to(dtype)
+        boost = boost + (tgt_owner == weakest).to(dtype) * cand_valid.to(dtype) * elim * float(
+            config.weakest_enemy_elim_bonus)
+        score = score + boost
 
     # Offensive spend budget per planet = scattered safe_drain (see "drenagem
     # dupla", todo.md 2026-06-11). Padded shortlist slots contribute zero.
