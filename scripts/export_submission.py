@@ -112,12 +112,10 @@ _FLAT_ACTION_SRC = '''def _neural_action(obs, player):
     n_launchable = sum(1 for planet in planets if _planet_owner(planet) == player and _planet_ships(planet) >= min_ships)
     planet_count = len(planets)
     launch = _argmax(_linear(hidden, weights["launch.weight"], weights["launch.bias"])) if n_launchable > 0 else 0
-    _ftr = _NEURAL_POLICY["decoder"].get("force_target_rank")
-    target_rank = int(_ftr) if _ftr is not None else _masked_argmax(_linear(hidden, weights["target.weight"], weights["target.bias"]), max(planet_count - 1, 0))
     return [
         launch,
         _masked_argmax(_linear(hidden, weights["source.weight"], weights["source.bias"]), n_launchable),
-        target_rank,
+        _masked_argmax(_linear(hidden, weights["target.weight"], weights["target.bias"]), max(planet_count - 1, 0)),
         _argmax(_linear(hidden, weights["frac.weight"], weights["frac.bias"])),
         _argmax(_linear(hidden, weights["offset.weight"], weights["offset.bias"])),
     ]'''
@@ -156,12 +154,10 @@ def _neural_action(obs, player):
     n_launchable = sum(1 for planet in planets if _planet_owner(planet) == player and _planet_ships(planet) >= min_ships)
     planet_count = len(planets)
     launch = _argmax(_linear(hidden, weights["heads.launch.weight"], weights["heads.launch.bias"])) if n_launchable > 0 else 0
-    _ftr = _NEURAL_POLICY["decoder"].get("force_target_rank")
-    target_rank = int(_ftr) if _ftr is not None else _masked_argmax(_linear(hidden, weights["heads.target.weight"], weights["heads.target.bias"]), max(planet_count - 1, 0))
     return [
         launch,
         _masked_argmax(_linear(hidden, weights["heads.source.weight"], weights["heads.source.bias"]), n_launchable),
-        target_rank,
+        _masked_argmax(_linear(hidden, weights["heads.target.weight"], weights["heads.target.bias"]), max(planet_count - 1, 0)),
         _argmax(_linear(hidden, weights["heads.frac.weight"], weights["heads.frac.bias"])),
         _argmax(_linear(hidden, weights["heads.offset.weight"], weights["heads.offset.bias"])),
     ]'''
@@ -363,6 +359,9 @@ def _neural_decode_with_policy(policy, obs, player, action):
     if int(action[0]) == 0:
         return []
     source_rank, target_rank, fraction_idx, offset_idx = [int(value) for value in action[1:5]]
+    _ftr = decoder.get("force_target_rank")
+    if _ftr is not None:
+        target_rank = int(_ftr)
     own.sort(key=lambda planet: (_planet_ships(planet), _planet_production(planet)), reverse=True)
     offset = source_rank % len(own)
     ranked_sources = own[offset:] + own[:offset]
