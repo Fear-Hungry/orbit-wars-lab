@@ -161,6 +161,10 @@ class PGSConfig:
     # captures whose target the enemy can reinforce after our launch (general, all
     # game). 0.0 == holdwave's byte-identical behaviour. See _upstream.py.
     reactive_reinforce_margin: float = 0.0
+    # Threat-aware DEFENSE (mirror of the offense term) passed to the Producer floor:
+    # don't drain sources the enemy can attack (counters 4p overextension). See
+    # _upstream.py. 0.0 == holdwave byte-identical.
+    reactive_defense_margin: float = 0.0
     # Weakest-enemy 4p targeting (kvatsa5 lever) passed to the Producer floor: gang up
     # on the weakest opponent in 4p. 1.0 == holdwave byte-identical. See _upstream.py.
     weakest_enemy_4p_mult: float = 1.0
@@ -279,13 +283,15 @@ class PGSRuntime:
         Returns None when the fix is ON so callers keep the unmodified default
         path (byte-identical to the live submission)."""
         rrm = float(self.config.reactive_reinforce_margin)
+        rdm = float(self.config.reactive_defense_margin)
         wem = float(self.config.weakest_enemy_4p_mult)
         exm = float(self.config.exposed_target_mult)
-        if not self.config.disable_drain_fix and rrm <= 0.0 and wem == 1.0 and exm == 1.0:
+        if (not self.config.disable_drain_fix and rrm <= 0.0 and rdm <= 0.0
+                and wem == 1.0 and exm == 1.0):
             return None
         cfg = _producer_config_for(int(player_count))
-        repl: dict = {"reactive_reinforce_margin": rrm, "weakest_enemy_4p_mult": wem,
-                      "exposed_target_mult": exm}
+        repl: dict = {"reactive_reinforce_margin": rrm, "reactive_defense_margin": rdm,
+                      "weakest_enemy_4p_mult": wem, "exposed_target_mult": exm}
         if self.config.disable_drain_fix:
             repl["disable_drain_fix"] = True
         return _dc_replace(cfg, **repl)

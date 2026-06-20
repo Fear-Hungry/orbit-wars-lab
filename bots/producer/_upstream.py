@@ -79,6 +79,12 @@ class ProducerLiteConfig:
     # So fast/near captures aren't over-penalized (faithful to the rank-19 ρ(eta) term).
     reactive_reinforce_eta_free: float = 3.0
     reactive_reinforce_eta_scale: float = 12.0
+    # Threat-aware DEFENSE (the MIRROR of the offense term above): don't drain a source
+    # the enemy could ATTACK. Reduces safe_drain by margin * cheap_enemy_pressure[source]
+    # (the same distance-decayed reachable enemy mass used for the regroup gradient), so
+    # a planet under enemy pressure keeps more garrison. Directly counters our #1 loss
+    # bucket (4p overextension). 0.0 == today's behaviour (byte-identical).
+    reactive_defense_margin: float = 0.0
     # Weakest-enemy 4p targeting (kvatsa5 lever, addresses our biggest loss bucket =
     # 4p kingmaker/overextension): in 4p, multiply the offense score of targets owned
     # by the WEAKEST opponent (lowest total ships) by this factor (gang up / eliminate
@@ -215,6 +221,17 @@ def plan_lite_waves(
         H_eff=H_eff,
         player_id=pid,
     )  # [S]
+
+    # Threat-aware DEFENSE (mirror of the offense reactive_reinforce term): keep more
+    # garrison at sources the enemy could ATTACK. cheap_enemy_pressure is the same
+    # distance-decayed reachable-enemy-mass used for the regroup gradient; subtract a
+    # margin * that pressure from what we're willing to shed, so a planet under enemy
+    # pressure overextends less. Default margin 0.0 => no-op (byte-identical).
+    rdm = float(getattr(config, "reactive_defense_margin", 0.0))
+    if rdm > 0.0:
+        pressure = cheap_enemy_pressure(obs, cache, horizon=float(K_eta), player_id=pid)  # [P]
+        src_pressure = pressure[source_idx.clamp(0, P - 1)]                                # [S]
+        drain = (drain - rdm * src_pressure).clamp(min=0.0)
 
     # Uniform reach cap = K_eta (= horizon).
     eta_cap = torch.full((T,), float(K_eta), dtype=dtype, device=device)  # [T]
