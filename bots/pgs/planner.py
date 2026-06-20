@@ -164,6 +164,9 @@ class PGSConfig:
     # Weakest-enemy 4p targeting (kvatsa5 lever) passed to the Producer floor: gang up
     # on the weakest opponent in 4p. 1.0 == holdwave byte-identical. See _upstream.py.
     weakest_enemy_4p_mult: float = 1.0
+    # Exposed-target bonus (kvatsa5 lever) passed to the Producer floor: snipe enemy
+    # planets with a low garrison (2p+4p). 1.0 == holdwave byte-identical. See _upstream.py.
+    exposed_target_mult: float = 1.0
     # G3.2 Phase 2 — DECISIVE-WAVE conversion for even_attrition_2p (loss class #2,
     # 125/382 real losses, ~all 2p; docs/LOSS_TAXONOMY.md). Phase 1
     # (g32_even_attrition_2p_phase1) found the tell: LOSERS SPRAY (frac_ships_in_big
@@ -277,10 +280,12 @@ class PGSRuntime:
         path (byte-identical to the live submission)."""
         rrm = float(self.config.reactive_reinforce_margin)
         wem = float(self.config.weakest_enemy_4p_mult)
-        if not self.config.disable_drain_fix and rrm <= 0.0 and wem == 1.0:
+        exm = float(self.config.exposed_target_mult)
+        if not self.config.disable_drain_fix and rrm <= 0.0 and wem == 1.0 and exm == 1.0:
             return None
         cfg = _producer_config_for(int(player_count))
-        repl: dict = {"reactive_reinforce_margin": rrm, "weakest_enemy_4p_mult": wem}
+        repl: dict = {"reactive_reinforce_margin": rrm, "weakest_enemy_4p_mult": wem,
+                      "exposed_target_mult": exm}
         if self.config.disable_drain_fix:
             repl["disable_drain_fix"] = True
         return _dc_replace(cfg, **repl)
