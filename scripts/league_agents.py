@@ -336,6 +336,14 @@ FACTORIES = {
     # H-P5 league-guided wave round (one round, pre-registered; /goal 2026-06-10)
     "pgs_wave_s100": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=100),
     "pgs_wave_s50": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=50),
+    # Rank-19 threat-aware targeting (general + ρ(eta) ramp) — margin sweep for the
+    # daily LB submission choice, ranked by the +0.80 diverse-pool survival gate.
+    "pgs_reactive_m4": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                    reactive_reinforce_margin=0.4),
+    "pgs_reactive_m6": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                    reactive_reinforce_margin=0.6),
+    "pgs_reactive_m8": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                    reactive_reinforce_margin=0.8),
     # Wave-timing search (goal/seat-rotated branch 2026-06-19). The ONLY lever with
     # a real LB signal is wave timing (monotone on LB: nowave 1057 < s100 1146 <
     # s150 1228). These probe LATER starts / BIGGER waves around the holdwave

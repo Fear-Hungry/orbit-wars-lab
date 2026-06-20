@@ -157,6 +157,10 @@ class PGSConfig:
     # incumbent (pre-fix) play head-to-head in one process without leaking. The
     # live submission pgs_holdwave keeps the default (fix ON).
     disable_drain_fix: bool = False
+    # Rank-19 threat-aware OFFENSE targeting passed to the Producer floor: gate out
+    # captures whose target the enemy can reinforce after our launch (general, all
+    # game). 0.0 == holdwave's byte-identical behaviour. See _upstream.py.
+    reactive_reinforce_margin: float = 0.0
     # G3.2 Phase 2 — DECISIVE-WAVE conversion for even_attrition_2p (loss class #2,
     # 125/382 real losses, ~all 2p; docs/LOSS_TAXONOMY.md). Phase 1
     # (g32_even_attrition_2p_phase1) found the tell: LOSERS SPRAY (frac_ships_in_big
@@ -268,9 +272,14 @@ class PGSRuntime:
         fix toggled per PGSConfig.disable_drain_fix (pre-fix incumbent harness).
         Returns None when the fix is ON so callers keep the unmodified default
         path (byte-identical to the live submission)."""
-        if not self.config.disable_drain_fix:
+        rrm = float(self.config.reactive_reinforce_margin)
+        if not self.config.disable_drain_fix and rrm <= 0.0:
             return None
-        return _dc_replace(_producer_config_for(int(player_count)), disable_drain_fix=True)
+        cfg = _producer_config_for(int(player_count))
+        repl: dict = {"reactive_reinforce_margin": rrm}
+        if self.config.disable_drain_fix:
+            repl["disable_drain_fix"] = True
+        return _dc_replace(cfg, **repl)
 
     def _producer_entries(
         self, owner_id: int, obs_tensors: dict, movement: PlanetMovement

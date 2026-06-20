@@ -30,6 +30,7 @@ from orbit_lite.planner_core import (
     largest_initial_player_count,
     make_launch_set,
     reachable_mask,
+    reinforcement_timing_factor,
     safe_drain,
     score_candidates,
 )
@@ -67,6 +68,17 @@ class ProducerLiteConfig:
     # (docs/LOSS_TAXONOMY.md + opening_detector). 0.0 == today's behaviour.
     opening_hold_margin: float = 0.0
     opening_hold_until_step: int = 50
+    # Rank-19-style THREAT-AWARE targeting (general, all-game): penalize a capture
+    # whose target the enemy can reinforce after our launch, by inflating the capture
+    # floor by cheap_enemy_pressure * margin for ALL enemy/neutral targets every step
+    # (the public top agent's `β·ρ(eta)·enemy_mass` ROI term, generalized from the
+    # opening-only G3.1a hook). 0.0 == today's behaviour (byte-identical).
+    reactive_reinforce_margin: float = 0.0
+    # ρ(eta) reaction ramp for the reactive margin: enemy needs >= eta_free turns of
+    # our fleet's flight to react, then reaction likelihood ramps to 1 over eta_scale.
+    # So fast/near captures aren't over-penalized (faithful to the rank-19 ρ(eta) term).
+    reactive_reinforce_eta_free: float = 2.0
+    reactive_reinforce_eta_scale: float = 8.0
     # G3.1a literal Phase-2 rule: during the opening, suppress attacks on enemy
     # PLAYERS while the source still has a viable neutral capture in range
     # ("deixar os outros se desgastarem"). Off by default. Phase-1 predicts this
@@ -197,7 +209,29 @@ def plan_lite_waves(
     # opening, inflate the capture floor by projected enemy counter-pressure so a
     # contestable neutral we can't capture-and-hold is gated out of `clears_floor`.
     reinforcement = None
-    if float(config.opening_hold_margin) > 0.0:
+    rrm = float(getattr(config, "reactive_reinforce_margin", 0.0))
+    if rrm > 0.0:
+        # Rank-19 threat-aware targeting (general): inflate the capture floor by the
+        # enemy mass that can reach the target, for EVERY enemy/neutral target every
+        # step, so contestable captures the enemy can over-reinforce are gated out.
+        pressure = cheap_enemy_pressure(obs, cache, horizon=float(K_eta), player_id=pid)  # [P]
+        tgt_c = target_idx.clamp(0, P - 1)
+        attackable = obs.is_neutral[tgt_c] | obs.is_enemy[tgt_c]
+        margin_t = torch.where(
+            attackable,
+            pressure[tgt_c] * rrm,
+            torch.zeros((), dtype=dtype, device=device).expand(T),
+        )  # [T]
+        # ρ(k): the enemy can only reinforce by arrival-step k with enough flight time,
+        # so don't over-penalize fast/near captures (the rank-19 ρ(eta) timing ramp).
+        ks = torch.arange(K_eta, dtype=dtype, device=device)  # [K_eta]
+        rho_k = reinforcement_timing_factor(
+            ks,
+            eta_free=float(config.reactive_reinforce_eta_free),
+            eta_scale=float(config.reactive_reinforce_eta_scale),
+        )  # [K_eta]
+        reinforcement = (margin_t.view(T, 1) * rho_k.view(1, K_eta)).contiguous()  # [T, K_eta]
+    elif float(config.opening_hold_margin) > 0.0:
         cur_step = float(obs.step.flatten()[0])
         if cur_step < float(config.opening_hold_until_step):
             pressure = cheap_enemy_pressure(obs, cache, horizon=float(K_eta), player_id=pid)  # [P]
