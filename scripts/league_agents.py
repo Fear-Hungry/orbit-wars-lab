@@ -344,6 +344,14 @@ FACTORIES = {
                                     reactive_reinforce_margin=0.6),
     "pgs_reactive_m8": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
                                     reactive_reinforce_margin=0.8),
+    # Beta sweep at the rank-19-proven eta (3/12, 1-indexed). reinforce_size_beta=2.2
+    # is The Producer V2's published value; we validate around it on the +0.80 gate.
+    "pgs_reactive_b15": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                     reactive_reinforce_margin=1.5),
+    "pgs_reactive_b22": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                     reactive_reinforce_margin=2.2),
+    "pgs_reactive_b30": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                     reactive_reinforce_margin=3.0),
     # Wave-timing search (goal/seat-rotated branch 2026-06-19). The ONLY lever with
     # a real LB signal is wave timing (monotone on LB: nowave 1057 < s100 1146 <
     # s150 1228). These probe LATER starts / BIGGER waves around the holdwave

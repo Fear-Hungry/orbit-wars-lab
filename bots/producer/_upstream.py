@@ -77,8 +77,8 @@ class ProducerLiteConfig:
     # ρ(eta) reaction ramp for the reactive margin: enemy needs >= eta_free turns of
     # our fleet's flight to react, then reaction likelihood ramps to 1 over eta_scale.
     # So fast/near captures aren't over-penalized (faithful to the rank-19 ρ(eta) term).
-    reactive_reinforce_eta_free: float = 2.0
-    reactive_reinforce_eta_scale: float = 8.0
+    reactive_reinforce_eta_free: float = 3.0
+    reactive_reinforce_eta_scale: float = 12.0
     # G3.1a literal Phase-2 rule: during the opening, suppress attacks on enemy
     # PLAYERS while the source still has a viable neutral capture in range
     # ("deixar os outros se desgastarem"). Off by default. Phase-1 predicts this
@@ -224,7 +224,7 @@ def plan_lite_waves(
         )  # [T]
         # ρ(k): the enemy can only reinforce by arrival-step k with enough flight time,
         # so don't over-penalize fast/near captures (the rank-19 ρ(eta) timing ramp).
-        ks = torch.arange(K_eta, dtype=dtype, device=device)  # [K_eta]
+        ks = torch.arange(1, K_eta + 1, dtype=dtype, device=device)  # [K_eta], 1-indexed (rank-19)
         rho_k = reinforcement_timing_factor(
             ks,
             eta_free=float(config.reactive_reinforce_eta_free),
