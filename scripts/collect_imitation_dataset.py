@@ -70,11 +70,24 @@ from python.orbit_wars_gym.rules import moves_are_legal
 from python.orbit_wars_gym.symmetry import reflect_state_x, rotate_state_180
 
 Policy = Callable[[dict[str, Any], int], list[list[float]]]
+_ROOT = Path(__file__).resolve().parents[1]
 _EXPERT_FILES = {
     "producer": ["bots/producer/agent.py", "bots/producer/_upstream.py"],
     "oep": ["bots/oep/agent.py", "bots/oep/planner.py"],
     # PGS rides on the Producer floor, so its behaviour hash covers both.
     "pgs": [
+        "bots/pgs/agent.py",
+        "bots/pgs/planner.py",
+        "bots/producer/agent.py",
+        "bots/producer/_upstream.py",
+    ],
+    "pgs_holdwave": [
+        "bots/pgs/agent.py",
+        "bots/pgs/planner.py",
+        "bots/producer/agent.py",
+        "bots/producer/_upstream.py",
+    ],
+    "pgs_bigwave": [
         "bots/pgs/agent.py",
         "bots/pgs/planner.py",
         "bots/producer/agent.py",
@@ -87,8 +100,21 @@ _EXPERT_FILES = {
         "bots/producer/_upstream.py",
     ],
 }
-_EXPERT_IDS = {"producer": 0, "oep": 1, "pgs": 2, "mahoraga": 3}
+_EXTERNAL_EXPERT_FILES = {
+    "brep": Path.home() / "projects/Kaggle/orbit-wars-lab-B/artifacts/submission_brep.tar.gz",
+}
+_EXPERT_IDS = {
+    "producer": 0,
+    "oep": 1,
+    "pgs": 2,
+    "mahoraga": 3,
+    "pgs_holdwave": 4,
+    "pgs_bigwave": 5,
+    "brep": 6,
+}
 _SPLIT_IDS = {"train": 0, "val": 1, "test": 2}
+STRONG_EXPERT_POOL = ("producer", "pgs_holdwave", "brep", "pgs_bigwave", "oep", "rush", "greedy")
+ELITE_EXPERT_POOL = ("producer", "pgs_holdwave", "brep", "pgs_bigwave", "oep")
 DATASETS = (
     "producer_only",
     "oep_only",
@@ -99,6 +125,8 @@ DATASETS = (
     "oep_pgs_mix",
     "hard_states",
     "hard_states_pgs",
+    "league_strong_mix",
+    "league_elite_mix",
 )
 
 # Single-expert datasets -> expert; pair datasets -> (even seats, odd seats).
@@ -205,6 +233,10 @@ def _player_experts(dataset: str, num_players: int, *, seed: int = 0) -> dict[in
     """Map each player index to the expert that drives it for a dataset."""
     if dataset in _SINGLE:
         return {p: _SINGLE[dataset] for p in range(num_players)}
+    if dataset in ("league_strong_mix", "league_elite_mix"):
+        pool = STRONG_EXPERT_POOL if dataset == "league_strong_mix" else ELITE_EXPERT_POOL
+        offset = int(seed) % len(pool)
+        return {p: pool[(offset + p) % len(pool)] for p in range(num_players)}
     even, odd = _PAIRS[dataset]
     return {p: (even if p % 2 == 0 else odd) for p in range(num_players)}
 
@@ -345,12 +377,10 @@ def collect_dataset(
                 flat_rows.extend(_flat_rows(player, moves))
 
                 if not is_hard_dataset:
-                    examples.extend(
-                        _example(
-                            state=state, player=player, step=step, expert=expert,
-                            moves=moves, seed=int(seed), is_hard=False,
-                            decoder_cfg=decoder_cfg, inverse_cfg=inverse_cfg, augment=augment,
-                        )
+                    rows = _example(
+                        state=state, player=player, step=step, expert=expert,
+                        moves=moves, seed=int(seed), is_hard=False,
+                        decoder_cfg=decoder_cfg, inverse_cfg=inverse_cfg, augment=augment,
                     )
                     train_split = split_for_seed(int(seed)) == "train"
                     repeats = max(1, int(launch_oversample)) if moves and train_split else 1

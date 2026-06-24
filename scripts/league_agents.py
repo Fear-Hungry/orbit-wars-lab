@@ -331,6 +331,17 @@ def register_submission_file(name: str, path: str | Path) -> None:
     FACTORIES[str(name)] = (lambda f=p, n=str(name): _fresh_module(f, n).agent)
 
 
+def register_submission_tarball(name: str, path: str | Path) -> None:
+    """Register a Kaggle-format tarball as a league bot."""
+
+    p = Path(path)
+    if not p.is_absolute():
+        p = ROOT / p
+    if not p.exists():
+        raise FileNotFoundError(p)
+    FACTORIES[str(name)] = (lambda f=p, n=str(name): _tarball_agent(f, n))
+
+
 FACTORIES = {
     "producer": lambda: _producer(),
     "oep": lambda: _oep(),

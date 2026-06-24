@@ -22,7 +22,7 @@ import math
 import os
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dc_replace
 from typing import Any
 
 import torch
@@ -136,21 +136,113 @@ class PGSConfig:
     # selects them). A real 4p fix needs a LEARNED value (H7) or a 4p-aware multi-turn
     # threat model — not a flag. Left off by default.
     defend_in_4p: bool = False
+    # H9 4p threat-value and Producer-floor targeting knobs. Defaults preserve
+    # the shipped holdwave behavior; league variants opt in explicitly.
+    threat_value_4p: bool = False
+    threat_planet_weight: float = 100.0
+    threat_first_loss_weight: float = 2.0
+    threat_incoming_weight: float = 0.5
+    threat_ships_weight: float = 0.01
+    disable_drain_fix: bool = False
+    reactive_reinforce_margin: float = 0.0
+    reactive_defense_margin: float = 0.0
+    weakest_enemy_4p_mult: float = 1.0
+    exposed_target_mult: float = 1.0
+    # G3.2 decisive-wave concentration for even_attrition_2p. Off by default.
+    decisive_wave_2p: bool = False
+    decisive_wave_start_step: int = 200
+    decisive_wave_even_band: float = 0.30
+    decisive_wave_min: float = 80.0
+    decisive_wave_max_delay: int = 20
+    # PGS v3 adaptive hooks. Defaults are inert: profiling may observe state when
+    # enabled, but reply models/missions/value changes are opt-in.
+    adaptive_mode: bool = False
+    profile_min_step: int = 8
+    profile_ewma_alpha: float = 0.12
+    profile_switch_confidence: float = 0.65
+    profile_min_role_age: int = 8
+    adaptive_reply_models: bool = False
+    reply_models_default: str = "producer"
+    reply_models_vs_rusher: str = "producer,rush,hold"
+    reply_models_vs_expander: str = "producer,expand"
+    reply_models_vs_sprayer: str = "producer,hold"
+    reply_models_vs_wave: str = "producer,wave,rush"
+    reply_models_vs_turtle: str = "producer,expand"
+    reply_worst_case: bool = True
     # -- mission layer (pgs_v2). OFF by default: the per-source portfolio path
     # is the frozen baseline; mission_mode switches tensor_action to a search
     # over multi-source MISSIONS (a per-source choice can never express "3
     # planets jointly hammer one target" — strong field play is coordinated).
     mission_mode: bool = False
+    enabled_missions: str = ""
     max_mission_candidates: int = 32
     max_selected_missions: int = 3
+    mission_min_advantage: float = 15.0
     # HAMMER: pooled multi-source strike (LB-elite style: few BIG waves)
     hammer_min_ships: float = 50.0
     hammer_max_sources: int = 3
+    hammer_top_targets: int = 4
+    hammer_top_sources: int = 6
+    hammer_min_total_ships: float = 50.0
+    hammer_hold_window: int = 12
     # RESCUE: joint defense of own planets that flip within this window in the
     # opponent-aware projection
     rescue_hold_window: int = 12
+    punish_recent_window: int = 24
+    punish_min_enemy_launch: float = 35.0
+    evac_max_fraction: float = 0.75
+    evac_min_send: float = 8.0
+    recapture_max_targets: int = 4
+    recapture_min_send: float = 8.0
     # reply model used by the mission arbiter ("producer" is the only one today)
     reply_models: str = "producer"
+    value_mode: str = "scalar"
+    timeline_horizon: int = 80
+    timeline_discount: float = 0.985
+    timeline_prod_weight: float = 2.5
+    timeline_min_ship_weight: float = 1.5
+    timeline_terminal_ship_weight: float = 1.0
+    timeline_death_penalty: float = 100000.0
+    timeline_capture_hold_weight: float = 8.0
+    timeline_capture_hold_turns: int = 10
+    hoard_min_step: int = 80
+    hoard_small_attack_max: float = 25.0
+    wave_release_on_age: bool = True
+    wave_discard_after: int = 12
+
+
+@dataclass
+class OpponentOnlineStats:
+    owner_id: int
+    launches_seen: int = 0
+    ships_seen: float = 0.0
+    launches_to_me: int = 0
+    ships_to_me: float = 0.0
+    launches_to_neutral: int = 0
+    ships_to_neutral: float = 0.0
+    launches_to_enemy: int = 0
+    ships_to_enemy: float = 0.0
+    big_launches: int = 0
+    small_launches: int = 0
+    last_launch_step: int = -1
+    launch_rate_ewma: float = 0.0
+    avg_size_ewma: float = 0.0
+    aggression_ewma: float = 0.0
+    neutral_ratio_ewma: float = 0.0
+    big_ratio_ewma: float = 0.0
+    role: str = "unknown"
+    confidence: float = 0.0
+    role_age: int = 0
+
+
+@dataclass(frozen=True)
+class RecentEnemyLaunch:
+    step: int
+    owner_id: int
+    source_pid: int
+    target_slot: int
+    ships: float
+    eta: int
 
 
 @dataclass(frozen=True)
@@ -204,6 +296,8 @@ class PGSRuntime:
         # wave v1 cross-turn state: target_slot -> step when its attack group
         # was first withheld (age gate). Reset at step 0.
         self._wave_pending: dict[int, int] = {}
+        # G3.2 decisive-wave hold state, separate from the generic wave ledger.
+        self._decisive_pending: dict[int, int] = {}
         # internal degradation counters. Only budget-driven floor returns count;
         # floor_in_4p / deviation_max_step are intentional regimes, not degradation.
         # mission_budget_aborts = mission selection stopped early on budget (the
@@ -221,10 +315,6 @@ class PGSRuntime:
         self._last_strategy_mode: str = "unknown"
         self._mode_age: int = 0
         self._recent_enemy_launches: deque[RecentEnemyLaunch] = deque(maxlen=64)
-        # internal degradation counters (NOT regime gates like floor_in_4p):
-        # budget_floor_returns counts turns where the in-planner deadline forced
-        # the Producer floor — the silent self-deception channel the gates watch.
-        self._stats: dict[str, int] = {"budget_floor_returns": 0}
         # H7 E4: learned value net (loaded once; CPU inference)
         self._value_net = None
         self._cur_planets: list = []
@@ -252,6 +342,7 @@ class PGSRuntime:
         plan must not influence the next real turn.
         """
         self._wave_pending = {}
+        self._decisive_pending = {}
         self._reset_adaptive_state()
 
     def runtime_stats(self) -> dict[str, int]:
@@ -268,9 +359,6 @@ class PGSRuntime:
             int(owner): (str(stat.role), float(stat.confidence))
             for owner, stat in self._opp_profiles.items()
         }
-
-    def runtime_stats(self) -> dict[str, int]:
-        return dict(self._stats)
 
     # -- agent glue --------------------------------------------------------
     def act(self, obs: Any):
@@ -1950,9 +2038,10 @@ class PGSRuntime:
                 continue                              # fire the decisive wave (or it aged out)
             keep &= ~group                            # else hold and accumulate
             pending_next[t_slot] = first
+        self._decisive_pending = pending_next
         if bool((keep | ~valid).all()):
-            return my_base, pending_next
-        return _select_entries(my_base, keep), pending_next
+            return my_base
+        return _select_entries(my_base, keep | ~valid)
 
     # -- mission layer (mission_mode) -----------------------------------------
     def _gather_strike(
@@ -2289,6 +2378,16 @@ class PGSRuntime:
         if float(cfg.wave_min_ships) > 0 and step_now >= int(cfg.wave_start_step):
             my_base, wave_pending_next = self._wave_merge_filter(my_base, owner0, me, step_now)
             used_wave_filter = True
+            if budget_low():
+                return budget_floor_payload()
+        if (
+            player_count == 2
+            and bool(cfg.decisive_wave_2p)
+            and step_now >= int(cfg.decisive_wave_start_step)
+        ):
+            my_base = self._decisive_wave_filter(
+                my_base, owner0, movement.planet_ships, movement.planet_prod, me, step_now
+            )
             if budget_low():
                 return budget_floor_payload()
         opp_ids = sorted({int(o.item()) for o in owner0[(owner0 >= 0) & (owner0 != me)]})

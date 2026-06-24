@@ -31,13 +31,15 @@ def _game(seats, winner, *, mode="2p", faults=None, status=None, died=None, seed
     }
 
 
-def _write(tmp_path, label, mode, games, *, candidate="cand", role=None, latency_ms=100.0):
+def _write(tmp_path, label, mode, games, *, candidate="cand", role=None, latency_ms=100.0, p95=None):
     path = tmp_path / f"{label}.json"
     names = list(games[0]["seats"])
     for game in games:
         game.pop("mode", None)
     payload = {"mode": mode, "games": games}
-    if latency_ms is not None:
+    if p95 is not None:
+        payload["decision_ms_p95"] = p95
+    elif latency_ms is not None:
         payload["decision_ms_p95"] = {name: float(latency_ms) for name in names}
         payload["decision_ms_max"] = {name: float(latency_ms) * 2 for name in names}
     path.write_text(json.dumps(payload))
@@ -104,7 +106,7 @@ def test_submit_ruler_passes_clean_candidate(tmp_path):
 
     assert summary["verdict"] == "PASS_LOCAL"
     assert summary["pairwise_fixed"]["producer"]["decisive_win_rate"] == 0.75
-    assert summary["pairwise_fixed"]["inc"]["decisive_win_rate"] == 0.5
+    assert summary["pairwise_fixed"]["inc"]["decisive_win_rate"] == 0.75
     assert summary["four_player"]["win_rate"] == 0.5
     assert "overall_score" not in summary  # raw 2p/4p mixing is dead (etapa 20)
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -21,7 +22,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.export_submission import render_submission
-from scripts.league_agents import FACTORIES, INCUMBENT, register_submission_file
+from scripts.league_agents import FACTORIES, INCUMBENT, register_submission_file, register_submission_tarball
 from scripts.league_submit_ruler import (
     FIELD_2P_WEIGHT,
     PROFILE_DEFAULTS,
@@ -65,7 +66,10 @@ class PreparedCandidate:
     name: str
     kind: str
     checkpoint: str | None = None
+    checkpoint_4p: str | None = None
+    four_player_policy: str = "neural"
     submission: str | None = None
+    tarball: str | None = None
     export_parity: dict[str, Any] | None = None
 
 
@@ -81,21 +85,37 @@ def _export_checkpoint(
     skip_parity: bool,
     parity_seeds: int,
     parity_steps: int,
+    checkpoint_4p: Path | None = None,
+    four_player_policy: str = "neural",
 ) -> PreparedCandidate:
-    candidate_id = f"ppo_{checkpoint_candidate_id(checkpoint)}"
+    if four_player_policy not in {"neural", "template"}:
+        raise ValueError("four_player_policy must be 'neural' or 'template'")
+    base_id = f"ppo_{checkpoint_candidate_id(checkpoint)}"
+    if checkpoint_4p is not None:
+        candidate_id = f"{base_id}_4p_{checkpoint_candidate_id(checkpoint_4p)}"
+    elif four_player_policy == "template":
+        candidate_id = f"{base_id}_4p_template"
+    else:
+        candidate_id = base_id
     submission_path = submissions_dir / f"{candidate_id}.py"
     template = Path("python/submission/submission_template.py").read_text(encoding="utf-8")
-    rendered = render_submission(template, checkpoint=str(checkpoint))
+    rendered = render_submission(
+        template,
+        checkpoint=str(checkpoint),
+        checkpoint_4p=str(checkpoint_4p) if checkpoint_4p is not None else None,
+        four_player_policy=four_player_policy,
+    )
     submission_path.parent.mkdir(parents=True, exist_ok=True)
     submission_path.write_text(rendered, encoding="utf-8")
     league_submission_path = ROOT / "artifacts" / "league" / "submissions" / f"{candidate_id}.py"
-    league_submission_path.parent.mkdir(parents=True, exist_ok=True)
-    league_submission_path.write_text(rendered, encoding="utf-8")
+    league_tarball_path = ROOT / "artifacts" / "league" / "tarballs" / f"{candidate_id}.tar.gz"
     parity_report: dict[str, Any] | None = None
     if not skip_parity:
         parity_report = check_checkpoint_export_parity(
             checkpoint,
             submission_path=submission_path,
+            checkpoint_4p_path=checkpoint_4p,
+            four_player_policy=four_player_policy,
             seeds=list(range(max(1, int(parity_seeds)))),
             steps=int(parity_steps),
             player_counts=(2, 4),
@@ -107,12 +127,22 @@ def _export_checkpoint(
         )
         if not parity_report["passed"]:
             raise ValueError(f"PPO export parity failed for {checkpoint}: {parity_report['mismatches'][:1]}")
-    register_submission_file(candidate_id, league_submission_path)
+    if parity_report is not None:
+        league_tarball_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(Path(parity_report["tarball"]), league_tarball_path)
+        register_submission_tarball(candidate_id, league_tarball_path)
+    else:
+        league_submission_path.parent.mkdir(parents=True, exist_ok=True)
+        league_submission_path.write_text(rendered, encoding="utf-8")
+        register_submission_file(candidate_id, league_submission_path)
     return PreparedCandidate(
         name=candidate_id,
         kind="ppo_checkpoint",
         checkpoint=str(checkpoint),
-        submission=str(league_submission_path),
+        checkpoint_4p=str(checkpoint_4p) if checkpoint_4p is not None else None,
+        four_player_policy=four_player_policy,
+        submission=str(submission_path),
+        tarball=str(league_tarball_path) if parity_report is not None else None,
         export_parity=parity_report,
     )
 
@@ -126,6 +156,8 @@ def prepare_candidates(
     skip_parity: bool,
     parity_seeds: int,
     parity_steps: int,
+    checkpoint_4p: str | None = None,
+    four_player_policy: str = "neural",
 ) -> list[PreparedCandidate]:
     prepared: list[PreparedCandidate] = []
     seen: set[str] = set()
@@ -137,6 +169,7 @@ def prepare_candidates(
             seen.add(name)
 
     if checkpoint_patterns:
+        checkpoint_4p_path = Path(checkpoint_4p) if checkpoint_4p else None
         for checkpoint in _expand_checkpoints(checkpoint_patterns):
             item = _export_checkpoint(
                 checkpoint,
@@ -145,6 +178,8 @@ def prepare_candidates(
                 skip_parity=skip_parity,
                 parity_seeds=parity_seeds,
                 parity_steps=parity_steps,
+                checkpoint_4p=checkpoint_4p_path,
+                four_player_policy=four_player_policy,
             )
             if item.name in seen:
                 raise ValueError(f"duplicate prepared candidate name: {item.name}")
@@ -199,6 +234,8 @@ def run_drl_promotion_gate(
     skip_parity: bool = False,
     parity_seeds: int = 2,
     parity_steps: int = 16,
+    checkpoint_4p: str | None = None,
+    four_player_policy: str = "neural",
 ) -> dict[str, Any]:
     if profile not in PROFILE_DEFAULTS:
         raise ValueError(f"unknown profile: {profile}")
@@ -221,6 +258,8 @@ def run_drl_promotion_gate(
         skip_parity=skip_parity,
         parity_seeds=parity_seeds,
         parity_steps=parity_steps,
+        checkpoint_4p=checkpoint_4p,
+        four_player_policy=four_player_policy,
     )
     candidates = [item.name for item in prepared]
     tasks = build_tasks(
@@ -286,6 +325,8 @@ def run_drl_promotion_gate(
                 "skip_parity": skip_parity,
                 "parity_seeds": parity_seeds,
                 "parity_steps": parity_steps,
+                "checkpoint_4p": checkpoint_4p,
+                "four_player_policy": four_player_policy,
             },
             "tasks": task_results,
         }
@@ -309,6 +350,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skip-parity", action="store_true")
     parser.add_argument("--parity-seeds", type=int, default=2)
     parser.add_argument("--parity-steps", type=int, default=16)
+    parser.add_argument("--checkpoint-4p", default=None, help="optional separate checkpoint for 4p")
+    parser.add_argument(
+        "--four-player-policy",
+        choices=("neural", "template"),
+        default="neural",
+        help="use neural checkpoint or template fallback for 4p when exporting PPO",
+    )
     parser.add_argument("--required-2p-threshold", type=float, default=0.50)
     parser.add_argument("--min-decisive-2p", type=int, default=None)
     parser.add_argument("--min-producer-winrate", type=float, default=0.50)
@@ -339,6 +387,8 @@ def main(argv: list[str] | None = None) -> int:
         skip_parity=bool(args.skip_parity),
         parity_seeds=int(args.parity_seeds),
         parity_steps=int(args.parity_steps),
+        checkpoint_4p=args.checkpoint_4p,
+        four_player_policy=str(args.four_player_policy),
     )
     out = args.out or (args.out_dir / "report.json")
     out.parent.mkdir(parents=True, exist_ok=True)

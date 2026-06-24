@@ -442,6 +442,8 @@ def _load_task_payload(
     p95 = payload.get("decision_ms_p95") or {}
     for game in games:
         game["mode"] = payload["mode"]
+        if isinstance(p95, dict):
+            game["payload_p95"] = p95
     meta = {
         "decision_ms_p95": payload.get("decision_ms_p95"),
         "decision_ms_max": payload.get("decision_ms_max"),
@@ -604,6 +606,7 @@ def summarize_candidate(
     max_p95_ms: float = 900.0,
 ) -> dict[str, Any]:
     pairwise_fixed: dict[str, dict[str, Any]] = {}
+    pairwise_fixed_games: dict[str, list[dict[str, Any]]] = {}
     pairwise_peer: dict[str, dict[str, Any]] = {}
     four_player_games: list[dict[str, Any]] = []
     four_player_templates: dict[str, dict[str, Any]] = {}
@@ -633,6 +636,7 @@ def summarize_candidate(
         if role == "peer_2p":
             pairwise_peer[opponent] = _score_games(games, candidate)
         elif result["mode"] == "2p":
+            pairwise_fixed_games.setdefault(opponent, []).extend(games)
             pairwise_fixed[opponent] = _score_games(games, candidate)
         else:
             four_player_games.extend(games)
@@ -728,6 +732,29 @@ def summarize_candidate(
             wr is not None and wr >= min_incumbent_winrate,
             {"decisive_win_rate": wr, "required": min_incumbent_winrate},
         )
+        if min_incumbent_seat_winrate is None:
+            min_incumbent_seat_winrate = min_incumbent_winrate
+        inc_games = pairwise_fixed_games.get(incumbent, [])
+        for seat_index in (0, 1):
+            seat = _score_games(_games_for_seat(inc_games, candidate, seat_index), candidate)
+            seat_wr = seat["decisive_win_rate"]
+            if seat["decisive"] == 0:
+                add_check(
+                    f"incumbent_h2h_seat{seat_index}",
+                    False,
+                    {"decisive": 0, "required": min_incumbent_seat_winrate},
+                    severity="inconclusive",
+                )
+            else:
+                add_check(
+                    f"incumbent_h2h_seat{seat_index}",
+                    seat_wr is not None and seat_wr >= min_incumbent_seat_winrate,
+                    {
+                        "decisive_win_rate": seat_wr,
+                        "decisive": seat["decisive"],
+                        "required": min_incumbent_seat_winrate,
+                    },
+                )
 
     floor = pairwise_fixed.get("pgs_allscripts")
     if floor is None and candidate != "pgs_allscripts":
@@ -870,6 +897,7 @@ def summarize_candidate(
         "pairwise_peer": pairwise_peer,
         "buckets": buckets,
         "worst_bucket_score": worst_bucket_score,
+        "p95_ms": p95,
         "latency_p95_max": latency_p95_max,
         "latency_audited": latency_audited,
         "checks": checks,

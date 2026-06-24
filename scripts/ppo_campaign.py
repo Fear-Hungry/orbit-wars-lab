@@ -189,7 +189,19 @@ def run_campaign(
     policy_arch: str = "flat",
     base_agent: str = "producer",
     league: bool = False,
-    eval_jobs: int = 1,
+    kl_to_ref_coef: float = 0.0,
+    ref_checkpoint: str | None = None,
+    bc_anchor_coef: float = 0.0,
+    bc_anchor_coef_end: float | None = None,
+    bc_anchor_teacher: str | None = None,
+    bc_anchor_max_quant_error: float = float("inf"),
+    decoder_max_moves_per_turn: int | None = None,
+    decoder_min_ships_to_launch: int | None = None,
+    decoder_reserve_home_ships: int | None = None,
+    decoder_force_target_rank: int | None = None,
+    inherit_checkpoint_decoder: bool = True,
+    min_decoder_max_moves_per_turn: int = 1,
+    require_terminal_reward: bool = False,
     eval_include_4p: bool = False,
 ) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -240,7 +252,7 @@ def run_campaign(
             seeds=eval_seeds,
             episode_steps=eval_episode_steps,
             include_4p=eval_include_4p,
-            jobs=eval_jobs,
+            jobs=resolved_eval_jobs,
             policy_arch=policy_arch,
             base_agent=base_agent,
         )
@@ -567,7 +579,6 @@ def main() -> None:
         policy_arch=args.policy_arch,
         base_agent=args.base_agent,
         league=args.league,
-        eval_jobs=max(1, args.eval_jobs),
         eval_include_4p=args.eval_include_4p,
     )
     print(json.dumps({k: v for k, v in report.items() if k != "history"}, indent=2))
