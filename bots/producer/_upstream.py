@@ -30,6 +30,7 @@ from orbit_lite.planner_core import (
     largest_initial_player_count,
     make_launch_set,
     reachable_mask,
+    reinforcement_timing_factor,
     safe_drain,
     score_candidates,
 )
@@ -67,6 +68,37 @@ class ProducerLiteConfig:
     # (docs/LOSS_TAXONOMY.md + opening_detector). 0.0 == today's behaviour.
     opening_hold_margin: float = 0.0
     opening_hold_until_step: int = 50
+    # Rank-19-style THREAT-AWARE targeting (general, all-game): penalize a capture
+    # whose target the enemy can reinforce after our launch, by inflating the capture
+    # floor by cheap_enemy_pressure * margin for ALL enemy/neutral targets every step
+    # (the public top agent's `β·ρ(eta)·enemy_mass` ROI term, generalized from the
+    # opening-only G3.1a hook). 0.0 == today's behaviour (byte-identical).
+    reactive_reinforce_margin: float = 0.0
+    # ρ(eta) reaction ramp for the reactive margin: enemy needs >= eta_free turns of
+    # our fleet's flight to react, then reaction likelihood ramps to 1 over eta_scale.
+    # So fast/near captures aren't over-penalized (faithful to the rank-19 ρ(eta) term).
+    reactive_reinforce_eta_free: float = 3.0
+    reactive_reinforce_eta_scale: float = 12.0
+    # Threat-aware DEFENSE (the MIRROR of the offense term above): don't drain a source
+    # the enemy could ATTACK. Reduces safe_drain by margin * cheap_enemy_pressure[source]
+    # (the same distance-decayed reachable enemy mass used for the regroup gradient), so
+    # a planet under enemy pressure keeps more garrison. Directly counters our #1 loss
+    # bucket (4p overextension). 0.0 == today's behaviour (byte-identical).
+    reactive_defense_margin: float = 0.0
+    # Weakest-enemy 4p targeting (kvatsa5 lever, addresses our biggest loss bucket =
+    # 4p kingmaker/overextension): in 4p, multiply the offense score of targets owned
+    # by the WEAKEST opponent (lowest total ships) by this factor (gang up / eliminate
+    # the weak first), plus a flat elimination bonus when that opponent is near death.
+    # 1.0 == off (byte-identical). 4p-only by construction.
+    weakest_enemy_4p_mult: float = 1.0
+    weakest_enemy_elim_ships: float = 110.0
+    weakest_enemy_elim_bonus: float = 50.0
+    # Exposed-target bonus (kvatsa5 2.0x "just-captured"): boost the offense score of
+    # ENEMY targets with a LOW garrison (recently captured / drained = cheap to snipe),
+    # complementing threat-aware (which avoids contestable targets) by preferring
+    # vulnerable ones. 1.0 == off. Applies in 2p and 4p.
+    exposed_target_mult: float = 1.0
+    exposed_ships_threshold: float = 25.0
     # G3.1a literal Phase-2 rule: during the opening, suppress attacks on enemy
     # PLAYERS while the source still has a viable neutral capture in range
     # ("deixar os outros se desgastarem"). Off by default. Phase-1 predicts this
@@ -190,6 +222,20 @@ def plan_lite_waves(
         player_id=pid,
     )  # [S]
 
+    # Threat-aware DEFENSE (mirror of the offense reactive_reinforce term): keep more
+    # garrison at sources the enemy could ATTACK. cheap_enemy_pressure is the same
+    # distance-decayed reachable-enemy-mass used for the regroup gradient; subtract a
+    # margin * that pressure from what we're willing to shed, so a planet under enemy
+    # pressure overextends less. 4p-ONLY: local seat-rotated H2H showed a flat defense
+    # margin makes us too PASSIVE in 2p (loses 0.27 vs the aggressive base) but a HIGH
+    # margin HELPS 4p (def08: win 0.33 / death 0.56 vs base 0.25 / 0.75) — 4p is where
+    # overextension actually kills. Default margin 0.0 => no-op (byte-identical).
+    rdm = float(getattr(config, "reactive_defense_margin", 0.0))
+    if rdm > 0.0 and int(player_count) >= 4:
+        pressure = cheap_enemy_pressure(obs, cache, horizon=float(K_eta), player_id=pid)  # [P]
+        src_pressure = pressure[source_idx.clamp(0, P - 1)]                                # [S]
+        drain = (drain - rdm * src_pressure).clamp(min=0.0)
+
     # Uniform reach cap = K_eta (= horizon).
     eta_cap = torch.full((T,), float(K_eta), dtype=dtype, device=device)  # [T]
 
@@ -197,7 +243,29 @@ def plan_lite_waves(
     # opening, inflate the capture floor by projected enemy counter-pressure so a
     # contestable neutral we can't capture-and-hold is gated out of `clears_floor`.
     reinforcement = None
-    if float(config.opening_hold_margin) > 0.0:
+    rrm = float(getattr(config, "reactive_reinforce_margin", 0.0))
+    if rrm > 0.0:
+        # Rank-19 threat-aware targeting (general): inflate the capture floor by the
+        # enemy mass that can reach the target, for EVERY enemy/neutral target every
+        # step, so contestable captures the enemy can over-reinforce are gated out.
+        pressure = cheap_enemy_pressure(obs, cache, horizon=float(K_eta), player_id=pid)  # [P]
+        tgt_c = target_idx.clamp(0, P - 1)
+        attackable = obs.is_neutral[tgt_c] | obs.is_enemy[tgt_c]
+        margin_t = torch.where(
+            attackable,
+            pressure[tgt_c] * rrm,
+            torch.zeros((), dtype=dtype, device=device).expand(T),
+        )  # [T]
+        # ρ(k): the enemy can only reinforce by arrival-step k with enough flight time,
+        # so don't over-penalize fast/near captures (the rank-19 ρ(eta) timing ramp).
+        ks = torch.arange(1, K_eta + 1, dtype=dtype, device=device)  # [K_eta], 1-indexed (rank-19)
+        rho_k = reinforcement_timing_factor(
+            ks,
+            eta_free=float(config.reactive_reinforce_eta_free),
+            eta_scale=float(config.reactive_reinforce_eta_scale),
+        )  # [K_eta]
+        reinforcement = (margin_t.view(T, 1) * rho_k.view(1, K_eta)).contiguous()  # [T, K_eta]
+    elif float(config.opening_hold_margin) > 0.0:
         cur_step = float(obs.step.flatten()[0])
         if cur_step < float(config.opening_hold_until_step):
             pressure = cheap_enemy_pressure(obs, cache, horizon=float(K_eta), player_id=pid)  # [P]
@@ -304,6 +372,48 @@ def plan_lite_waves(
         player_id=pid,
     )  # [C]
     score = torch.where(cand_valid, score, torch.full_like(score, float("-inf")))
+
+    # Offense-bias levers (kvatsa5), both keyed off current ownership/garrison at t0.
+    wem = float(getattr(config, "weakest_enemy_4p_mult", 1.0))
+    exm = float(getattr(config, "exposed_target_mult", 1.0))
+    if (wem != 1.0 and int(player_count) >= 4) or exm != 1.0:
+        owner0 = garrison_status.owner[:, 0]                                    # [P]
+        ships0 = obs.ships.to(dtype).view(-1)                                   # [P]
+        tgt_slot = cand_tgt_slot.clamp(0, P - 1)                                # [C]
+        tgt_owner = owner0[tgt_slot]                                            # [C]
+
+        # Exposed-target bonus (kvatsa5 2.0x "just-captured"): snipe ENEMY planets with
+        # a LOW garrison (recently captured / drained for attacks = cheap to take).
+        # Complements threat-aware (avoids contestable targets) by preferring vulnerable
+        # ones. Applies in 2p and 4p; exm==1.0 => no-op.
+        if exm != 1.0:
+            is_exposed = (
+                (tgt_owner >= 0) & (tgt_owner != int(pid))
+                & (ships0[tgt_slot] < float(config.exposed_ships_threshold))
+                & cand_valid & (score > 0.0)
+            )                                                                  # [C]
+            score = score + torch.where(is_exposed, score * (exm - 1.0), torch.zeros_like(score))
+
+        # Weakest-enemy 4p targeting: gang up on the weakest opponent (finish off the
+        # weak before they're farmed by stronger rivals — the 4p kingmaker/overextension
+        # loss bucket). 4p-only; mult==1.0 => no-op.
+        if wem != 1.0 and int(player_count) >= 4:
+            per_player = torch.zeros(int(player_count), dtype=dtype, device=device)
+            own_ok = (owner0 >= 0) & (owner0 < int(player_count))
+            per_player.scatter_add_(
+                0, owner0.clamp(0, int(player_count) - 1).long(),
+                torch.where(own_ok, ships0, torch.zeros_like(ships0)),
+            )
+            is_opp = torch.ones(int(player_count), dtype=torch.bool, device=device)
+            is_opp[int(pid)] = False
+            opp_ships = torch.where(is_opp, per_player, torch.full_like(per_player, float("inf")))
+            weakest = torch.argmin(opp_ships)                                   # 0-dim
+            is_weakest = (tgt_owner == weakest) & cand_valid & (score > 0.0)    # [C]
+            boost = torch.where(is_weakest, score * (wem - 1.0), torch.zeros_like(score))
+            elim = (per_player[weakest] < float(config.weakest_enemy_elim_ships)).to(dtype)
+            boost = boost + (tgt_owner == weakest).to(dtype) * cand_valid.to(dtype) * elim * float(
+                config.weakest_enemy_elim_bonus)
+            score = score + boost
 
     # Offensive spend budget per planet = scattered safe_drain (see "drenagem
     # dupla", todo.md 2026-06-11). Padded shortlist slots contribute zero.

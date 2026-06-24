@@ -28,10 +28,15 @@ DEFAULT_POOL = ("producer", "oep", "rush", "greedy")
 FIELD_4P, FIELD_2P = 0.54, 0.46
 
 
-def evaluate(genome: dict, *, seeds: int, steps: int, pool=DEFAULT_POOL,
+def evaluate(genome: dict | None, *, seeds: int, steps: int, pool=DEFAULT_POOL,
              seed_base: int = 2000, enable_comets: bool = True, verbose: bool = True,
-             seats=4) -> dict:
-    """Evaluate one genome over the opponent pool. Returns pool-averaged metrics.
+             seats=4, subject_factory=None) -> dict:
+    """Evaluate one candidate over the opponent pool. Returns pool-averaged metrics.
+
+    The subject (seat 0) is either a PGS ``genome`` (mutated knobs) or a
+    ``subject_factory`` callable returning a fresh official-obs agent (the
+    materialiser path — any FACTORIES entry: pgs_*, producer, exported PPO, a new
+    planner, exploiters). Exactly one of ``genome`` / ``subject_factory`` is used.
 
     ``seats`` selects the harness:
       4     → the 4p gate (run_config) — collapses the hold-family to a tied floor.
@@ -42,9 +47,11 @@ def evaluate(genome: dict, *, seeds: int, steps: int, pool=DEFAULT_POOL,
     """
     if seats == "mix":
         r4 = evaluate(genome, seeds=seeds, steps=steps, pool=pool, seed_base=seed_base,
-                      enable_comets=enable_comets, verbose=verbose, seats=4)
+                      enable_comets=enable_comets, verbose=verbose, seats=4,
+                      subject_factory=subject_factory)
         r2 = evaluate(genome, seeds=seeds, steps=steps, pool=pool, seed_base=seed_base,
-                      enable_comets=enable_comets, verbose=verbose, seats=2)
+                      enable_comets=enable_comets, verbose=verbose, seats=2,
+                      subject_factory=subject_factory)
         keys = ("death_rate", "mean_margin", "mean_final_planets")
         mixed = {k: FIELD_4P * r4[k] + FIELD_2P * r2[k] for k in keys}
         mixed["per_opponent"] = {
@@ -63,12 +70,15 @@ def evaluate(genome: dict, *, seeds: int, steps: int, pool=DEFAULT_POOL,
         return mixed
 
     _run = run_config if seats == 4 else run_config_2p
-    pgs_config = to_pgs_config(genome)
+    pgs_config = to_pgs_config(genome) if genome is not None else {}
     seed_list = list(range(seed_base, seed_base + seeds))
+    # Pass subject_factory ONLY when set: keeps the genome path byte-identical to
+    # the pre-materialiser signature (any run_config-shaped callable still works).
+    sf_kw = {"subject_factory": subject_factory} if subject_factory is not None else {}
     per_opp: dict[str, dict] = {}
     t0 = time.perf_counter()
     for opp in pool:
-        r = _run(opp, pgs_config, seed_list, steps, enable_comets, opponent=opp)
+        r = _run(opp, pgs_config, seed_list, steps, enable_comets, opponent=opp, **sf_kw)
         per_opp[opp] = {
             "death_rate": r["death_rate"],
             "mean_margin": r["mean_margin"],

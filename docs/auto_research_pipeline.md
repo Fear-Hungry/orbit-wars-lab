@@ -250,3 +250,113 @@ discriminar o topo. Candidatos:
 
 Sem um desses, o pipeline é uma máquina de overfit mais rápida — então o gate fica como
 **VETO** (descarta floors) até (2) se sustentar.
+
+## 11 — Runner MVP `arl.py` (Auto-Research Loop governado, 2026-06-18)
+
+O MVP do loop do `goal.md` vive em **`scripts/research_loop/arl.py`** + o núcleo puro
+**`scripts/research_loop/policy.py`**. Ele formaliza o que `runner.py`/`self_research.py`
+faziam de forma ad-hoc, adicionando o **contrato de iteração**, o **vocabulário de 5
+decisões** e os **modos** exigidos pelo objetivo. Reusa as peças existentes
+(`genome`/`evaluator`/`registry`) — não duplica avaliação.
+
+**Modos (1 comando cada):**
+
+```bash
+# Modo 0 — dry-run: seleciona parent, monta hipótese/comando, NÃO avalia, NÃO edita,
+#          valida que o registro no DB funcionaria. Não precisa do .so.
+.venv/bin/python -m scripts.research_loop.arl --dry-run  --iterations 1
+# Modo 1 — smoke: avaliação minúscula (2 seeds, 60 steps, producer) só p/ validar wiring.
+#          NUNCA promove (o piso de seeds garante no máximo needs_more_seeds).
+.venv/bin/python -m scripts.research_loop.arl --smoke    --iterations 1
+# Modo 2 — research: orçamento honesto (default 6 seeds/500 steps; use --seeds 24 p/ permitir
+#          promoção, pois o piso é 16). Mantém patch só localmente; não submete.
+.venv/bin/python -m scripts.research_loop.arl --research --iterations 6 --seeds 24
+```
+
+**Contrato de iteração** (em `artifacts/research_loop/arl_report.json` e no DuckDB):
+`run_id, parent, hypothesis, candidate, patch, commands, seeds, metrics, faults, decision`
+(+ `fitness`, `delta`, `reason`, `mode`, `db_id`). O relatório Markdown
+(`arl_report.md`) lidera com a **trust line** da calibração.
+
+**Decisões** (`policy.keep_or_discard`, pura e testada — `tests/test_arl_policy.py`):
+`promoted | rejected | inconclusive | needs_more_seeds | technical_fail`. Ordem dos
+checks É a garantia:
+1. **Falha técnica domina** → `technical_fail` (timeout/invalid/bad_status/fallback/
+   exceção/p95>budget). **Nunca** vira `rejected` competitivo — `status_for` mapeia para
+   `logged`. Uma avaliação que estoura é capturada como `{"error": ...}` e roteada por aqui.
+2. Sem amostra válida → `needs_more_seeds` (abaixo do piso) ou `inconclusive`.
+3. Sem bar do parent → `inconclusive`.
+4. Abaixo do piso de seeds (`--min-promotion-seeds`, default 16; memória "never decide by
+   12-16 seeds") → `needs_more_seeds`. **É isto que impede o smoke de promover.**
+5. `delta = fitness − parent` fora da banda de ruído (`--noise-band`, default 0.10) →
+   `promoted`/`rejected`; dentro da banda (topo plano) → `inconclusive`.
+
+**Guardrail de honestidade:** se a calibração não for confiável (rho<0.3 ou FALSE PASS),
+qualquer `promoted` é **rebaixado para `inconclusive`** com o motivo registrado — coerente
+com a §10 (hoje a calibração é FALSE PASS, então o loop é exploratório por design).
+
+**Off-limits respeitados:** o runner não altera gates/seeds/thresholds/critérios/pool de
+validação; só lê a calibração e usa o gate existente. Sem submit Kaggle em lugar nenhum.
+
+**Como deixar rodando e interromper sem perder rastreabilidade:** o `--research` é
+idempotente por iteração — cada candidato é gravado no DuckDB assim que avaliado (tag
+`ARL`), então `Ctrl-C` entre iterações não perde nada já registrado; o parent da próxima
+execução é relido do frontier do DB (`registry.select_parents`), de modo que o progresso
+**compõe** entre runs. Para o daemon contínuo budget-bounded, use `self_research.py`.
+
+**Iteração smoke executada (2026-06-18, registrada):**
+`--smoke --iterations 1` rodou a avaliação real (producer, 2 seeds, 60 steps, 11s),
+produziu amostra válida (`death=0.000 margin=−0.500 fitness=−0.4995`, `timeouts=0`),
+decidiu **`needs_more_seeds`** (2 < piso 16 — smoke não promove), gravou a linha
+**id=253** no `experiments.duckdb` (`status=logged`) e escreveu
+`artifacts/research_loop/arl_report.{json,md}`. O caminho `technical_fail` foi validado
+em integração (`--pool nonexistent_bot_xyz` → exceção capturada → `technical_fail`, não
+`rejected`).
+
+**Modo 3 — handoff de promoção (bridge p/ a régua seat-rotacionada, 2026-06-18).** No fim
+de um `--research`, a ARL seleciona os **sobreviventes do veto local** (`select_survivors`:
+decisão não-vetada **e** `delta > noise_band` — bate o parent no fitness local, ainda que
+NÃO-verificado) e **emite** (não roda) o comando da régua real:
+
+```
+.venv/bin/python scripts/league_submit_ruler.py --candidates arl_<runid> ... --profile strong
+```
+
+Mecânica: cada genoma sobrevivente é gravado em `artifacts/research_loop/candidates/<name>.json`;
+`scripts/league_agents.py::_register_league_artifacts()` faz **auto-registro file-drop**
+desses JSON como fábricas `_pgs(**genome)` (mesmo idioma dos tarballs/submissions), então
+o `league_submit_ruler --candidates <name>` **resolve e roda de verdade** (provado: FACTORIES
+constrói o agente — sem fallback silencioso). O comando também vai p/ `promote_survivors.sh`,
+p/ o manifesto consolidado `survivors.json` (lista + comando exato) e p/ o bloco `handoff` do
+`arl_report.json`/`.md`. Flags: `--ruler-profile {quick,standard,strong}` (default `strong` =
+24 seeds/500 steps), `--no-handoff`, `--survivors-json <path>`, e `--run-ruler` (opt-in
+explícito que EXECUTA a régua via subprocess; **default OFF = só emite, nunca roda sozinho**
+→ `ruler_executed=false` no manifesto). **A ARL nunca submete** ao Kaggle; o veredito de
+promoção continua humano + governado (1/dia). O dir de staging é gitignored e não é auto-podado.
+
+> ⚠ **Realidade do sinal plano (§10):** no `--noise-band` default (0.10) sobre o gate H9, a
+> fitness local é PLANA (candidatos colapsam p/ ~−0.5000 idêntico), então `select_survivors`
+> tende a devolver **0 survivors** → "nothing to hand off", sem comando. Isso é o sinal
+> honesto, não bug: o bridge só pré-filtra quem MERECE a régua cara. Para ver o caminho de
+> survivors hoje, force com `--noise-band` baixo; o ganho real virá de **consertar o sinal**
+> (eval 2p / exploiters de estilo / cross-regime), não de afrouxar a banda.
+
+### Materializador por factory name (`--candidate-factory`, 2026-06-18)
+
+O gerador de knobs PGS está em **platô** (baseline 2026-06-18, `--iterations 6 --seeds 24`: 5 rejected +
+1 technical_fail + **0 survivors** vs parent −0.5000; o technical_fail foi um timeout transitório vs greedy,
+classificado como técnico, não rejeição). O gargalo competitivo passou a ser **qual CLASSE de candidato** o
+loop propõe.
+
+`arl --candidate-factory NAME [NAME...]` abre a superfície: avalia **famílias nomeadas** (`FACTORIES` de
+`scripts/league_agents.py` — `pgs_holdwave`, `pgs_bigwave`, `pgs_valuenet_*`, PPO exportado, novo planner,
+exploiters) como **sujeito do seat 0**, com a MESMA fitness/pool/horizonte dos candidatos-genoma. Mecânica:
+`run_config`/`run_config_2p`/`evaluator.evaluate` ganharam `subject_factory` opcional (callable official-obs;
+backward-compatible quando `None` — passado só quando setado). 1 iteração/nome; `--iterations` ignorado;
+fail-fast (exit 2) em nome desconhecido; fresh agent por env. Provado ao vivo: `pgs_bigwave`/`pgs_holdwave`
+vs producer, métricas válidas, zero faults. Invariante CPU/`actTimeout` vale p/ o sujeito (PPO/valuenet que
+estoure 1s → `technical_fail`). No handoff, survivor-factory entra na régua pelo **próprio nome**
+(`policy.survivor_ruler_name`); survivor-genoma vira `arl_<runid>.json`.
+
+Fix relacionado (`registry.select_parents`): linhas `ARL[smoke]`/`ARL[dry-run]` são **excluídas do frontier
+de parent** — senão um candidato 24-seed/500-step é julgado contra um parent smoke (2 seeds), apples-to-oranges.

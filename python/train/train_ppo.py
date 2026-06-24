@@ -192,6 +192,12 @@ class Phase0TrainingConfig:
     decoder_max_moves_per_turn: int = 8
     decoder_min_ships_to_launch: int = 2
     decoder_reserve_home_ships: int = 8
+    # Override the policy's target_rank during rollout/eval decode. The learned
+    # target head is unlearnable (invert_moves -> near-uniform target_rank label;
+    # measured BC val acc 0.085 ~ random/32). 0 = always aim at the decoder's own
+    # highest target_score candidate. Set 0 so PPO does NOT explore a random target
+    # head (which annihilates the policy in training, the recorded "DRL cliff").
+    decoder_force_target_rank: int | None = None
     decoder_fractions: tuple[float, ...] = (0.10, 0.25, 0.50, 0.75)
     decoder_angle_offsets: tuple[float, ...] = (-0.261799, -0.130899, 0.0, 0.130899, 0.261799)
     inherit_checkpoint_decoder: bool = True
@@ -429,6 +435,8 @@ def decoder_config(training_cfg: Phase0TrainingConfig) -> DecoderConfig:
         max_moves_per_turn=int(training_cfg.decoder_max_moves_per_turn),
         min_ships_to_launch=int(training_cfg.decoder_min_ships_to_launch),
         reserve_home_ships=int(training_cfg.decoder_reserve_home_ships),
+        force_target_rank=(None if training_cfg.decoder_force_target_rank is None
+                           else int(training_cfg.decoder_force_target_rank)),
     )
 
 
@@ -440,6 +448,7 @@ def decoder_payload(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
         "max_moves_per_turn": cfg.max_moves_per_turn,
         "min_ships_to_launch": cfg.min_ships_to_launch,
         "reserve_home_ships": cfg.reserve_home_ships,
+        "force_target_rank": cfg.force_target_rank,
     }
 
 

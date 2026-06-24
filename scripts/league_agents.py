@@ -13,6 +13,7 @@ import contextlib
 import fcntl
 import hashlib
 import importlib.util
+import json
 import os
 import py_compile
 import shutil
@@ -305,6 +306,14 @@ FACTORIES = {
     # 2p ruler vs incumbent pgs_holdwave. Off-by-default knob; submission unchanged.
     "pgs_decisive2p": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
                                    decisive_wave_2p=True),
+    # Passo 5 tuning (even_attrition_2p): up to 3 sequential A/B cycles vs
+    # pgs_holdwave, NOT a grid. Each variant only changes ONE decisive_wave knob
+    # off the baseline (start_step=200, min=80, even_band=0.30, max_delay=20).
+    # Cycle 1 — wave start_step: earlier (more late-game to act) vs later.
+    "pgs_dw_s150": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                decisive_wave_2p=True, decisive_wave_start_step=150),
+    "pgs_dw_s250": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                decisive_wave_2p=True, decisive_wave_start_step=250),
     # Item 5 (kingmaker/overextension 4p survival): pgs_holdwave + H9 threat-value
     # 4p portfolio (auto-adds `reinforce` in 4p so the forward per-enemy threat
     # value can SELECT survival plans; 2p frozen = scripts="hold"). Candidate for
@@ -327,6 +336,64 @@ FACTORIES = {
     # H-P5 league-guided wave round (one round, pre-registered; /goal 2026-06-10)
     "pgs_wave_s100": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=100),
     "pgs_wave_s50": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=50),
+    # Rank-19 threat-aware targeting (general + ρ(eta) ramp) — margin sweep for the
+    # daily LB submission choice, ranked by the +0.80 diverse-pool survival gate.
+    "pgs_reactive_m4": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                    reactive_reinforce_margin=0.4),
+    "pgs_reactive_m6": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                    reactive_reinforce_margin=0.6),
+    "pgs_reactive_m8": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                    reactive_reinforce_margin=0.8),
+    # Beta sweep at the rank-19-proven eta (3/12, 1-indexed). reinforce_size_beta=2.2
+    # is The Producer V2's published value; we validate around it on the +0.80 gate.
+    "pgs_reactive_b15": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                     reactive_reinforce_margin=1.5),
+    "pgs_reactive_b22": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                     reactive_reinforce_margin=2.2),
+    "pgs_reactive_b30": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                     reactive_reinforce_margin=3.0),
+    # No-wave threat-aware (closer to bare Producer V2/1443, which has no wave). Test
+    # whether our wave helps or is redundant with the threat-aware discipline.
+    "pgs_nowave_b15": lambda: _pgs(scripts="hold", reactive_reinforce_margin=1.5),
+    "pgs_nowave_b22": lambda: _pgs(scripts="hold", reactive_reinforce_margin=2.2),
+    # Weakest-enemy 4p targeting (kvatsa5) stacked on threat-aware b15. Sweep the mult.
+    "pgs_we13": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                             reactive_reinforce_margin=1.5, weakest_enemy_4p_mult=1.3),
+    "pgs_we15": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                             reactive_reinforce_margin=1.5, weakest_enemy_4p_mult=1.5),
+    "pgs_we20": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                             reactive_reinforce_margin=1.5, weakest_enemy_4p_mult=2.0),
+    # Exposed-target (kvatsa5 snipe) + full stack on the LB-PROVEN threat-aware b22.
+    "pgs_exp": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                            reactive_reinforce_margin=2.2, exposed_target_mult=2.0),
+    "pgs_b22_we": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                               reactive_reinforce_margin=2.2, weakest_enemy_4p_mult=1.5),
+    "pgs_fullstack": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                  reactive_reinforce_margin=2.2, weakest_enemy_4p_mult=1.5,
+                                  exposed_target_mult=2.0),
+    # Threat-aware DEFENSE on the nowave threat-aware base (top-5 lever): margin sweep.
+    "pgs_nowave_ta": lambda: _pgs(scripts="hold", reactive_reinforce_margin=2.2),
+    "pgs_def03": lambda: _pgs(scripts="hold", reactive_reinforce_margin=2.2, reactive_defense_margin=0.3),
+    "pgs_def05": lambda: _pgs(scripts="hold", reactive_reinforce_margin=2.2, reactive_defense_margin=0.5),
+    "pgs_def08": lambda: _pgs(scripts="hold", reactive_reinforce_margin=2.2, reactive_defense_margin=0.8),
+    "pgs_def12": lambda: _pgs(scripts="hold", reactive_reinforce_margin=2.2, reactive_defense_margin=1.2),
+    "pgs_def16": lambda: _pgs(scripts="hold", reactive_reinforce_margin=2.2, reactive_defense_margin=1.6),
+    # Wave AMPLIFICATION toward the elite "few BIG waves + hoard 2-5x" style (the PROVEN
+    # lever +178). Bigger wave_min_ships = bigger waves / more hoard. holdwave base = w60.
+    "pgs_w80":  lambda: _pgs(scripts="hold", wave_min_ships=80.0,  wave_start_step=150),
+    "pgs_w100": lambda: _pgs(scripts="hold", wave_min_ships=100.0, wave_start_step=150, reactive_reinforce_margin=2.2),
+    "pgs_w120": lambda: _pgs(scripts="hold", wave_min_ships=120.0, wave_start_step=150, reactive_reinforce_margin=2.2),
+    # Wave-timing search (goal/seat-rotated branch 2026-06-19). The ONLY lever with
+    # a real LB signal is wave timing (monotone on LB: nowave 1057 < s100 1146 <
+    # s150 1228). These probe LATER starts / BIGGER waves around the holdwave
+    # optimum (s150,min60). Off-by-default factories; submission unchanged. Promote
+    # only if a variant DOMINATES holdwave vs the external field proxies.
+    "pgs_wave_s120": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=120),
+    "pgs_wave_s175": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=175),
+    "pgs_wave_s200": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=200),
+    "pgs_wave_min45_s150": lambda: _pgs(scripts="hold", wave_min_ships=45.0, wave_start_step=150),
+    "pgs_wave_min80_s150": lambda: _pgs(scripts="hold", wave_min_ships=80.0, wave_start_step=150, reactive_reinforce_margin=2.2),
+    "pgs_wave_min80_s175": lambda: _pgs(scripts="hold", wave_min_ships=80.0, wave_start_step=175),
     "pgs_wave_4pfloor": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
                                      floor_in_4p=True),
     # H7 E4: holdwave base + learned value net plugged into the search (scores the
@@ -335,6 +402,17 @@ FACTORIES = {
     "pgs_valuenet": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
                                  defend_in_4p=True,
                                  value_net_path=str(ROOT / "artifacts/h7/value_net.pt")),
+    # H11 (2026-06-17): same as pgs_valuenet but the value net is the ATTENTION
+    # arch (AttnValueNet) — sees pairwise threat (which fleet threatens which
+    # planet), the structure mean-pool was blind to (E5 4p-death failure DB 166).
+    # load_value_net auto-builds the attn arch from the checkpoint's "arch" tag.
+    # CANONICAL path = artifacts/h7/value_net_attn.pt (goal.md "single path" rule);
+    # retrained fresh 2026-06-18 (train_value_net --arch attn --epochs 30, E3 PASS
+    # Spearman +0.653 > baseline +0.637). nash_gate._candidate_checkpoint hashes
+    # this same path so the gate report's hash matches the net that actually plays.
+    "pgs_valuenet_attn": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
+                                      defend_in_4p=True,
+                                      value_net_path=str(ROOT / "artifacts/h7/value_net_attn.pt")),
     # style exploiters (league-only, NEVER submit): cover the field's loss axes
     # absent from the producer-lineage pool (2026-06-10 falsification).
     "rusher": lambda: _rusher(attack_from=50, cadence=4),       # early all-in (annihilates hold-family regime)
@@ -353,6 +431,22 @@ def _register_league_artifacts() -> None:
     for py in sorted((ROOT / "artifacts" / "league" / "submissions").glob("*.py")):
         if py.stem not in FACTORIES:
             register_submission_file(py.stem, py)
+
+    # ARL auto-research survivors: PGS-config genomes dropped as JSON by the
+    # Auto-Research Loop handoff (scripts/research_loop/arl.py --research). Each
+    # registers as a `_pgs(**genome)` factory so the seat-rotated ruler can run
+    # it by name. Per-file guard: a malformed/non-dict genome is skipped, never
+    # breaks this import (which would break the whole eval stack).
+    for cfg in sorted((ROOT / "artifacts" / "research_loop" / "candidates").glob("*.json")):
+        name = cfg.stem
+        if name in FACTORIES:
+            continue
+        try:
+            genome = json.loads(cfg.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(genome, dict):
+            FACTORIES[name] = (lambda g=dict(genome): _pgs(**g))
 
 
 _register_league_artifacts()

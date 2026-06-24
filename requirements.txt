@@ -10,4 +10,4 @@ gymnasium>=0.29
 pettingzoo>=1.24
 torch>=2.2
 tensorboard>=2.16
-kaggle-environments>=1.16
+kaggle-environments>=1.28.0

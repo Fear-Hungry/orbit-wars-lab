@@ -164,10 +164,24 @@ def _neural_action(obs, player):
 
 
 def _policy_action_source(payload: dict[str, Any], *, function_name: str, policy_name: str) -> str:
-    action_src = _ENTITY_ACTION_SRC if payload.get("arch") == "entity" else _FLAT_ACTION_SRC
-    return action_src.replace("def _neural_action(obs, player):", f"def {function_name}(obs, player):").replace(
-        "_NEURAL_POLICY", policy_name
-    )
+    is_entity = payload.get("arch") == "entity"
+    action_src = _ENTITY_ACTION_SRC if is_entity else _FLAT_ACTION_SRC
+    src = action_src.replace(
+        "def _neural_action(obs, player):", f"def {function_name}(obs, player):"
+    ).replace("_NEURAL_POLICY", policy_name)
+    if is_entity:
+        # _ENTITY_ACTION_SRC defines a top-level `_entity_pool` helper that closes over
+        # the policy weights global. When a 2p AND a separate 4p neural policy are both
+        # rendered (four_player_policy="neural" + checkpoint_4p), the two `_entity_pool`
+        # defs collide; the later (2p) one shadows the 4p one, so `_neural_action_4p`
+        # would mean-pool the 4p features with the WRONG (2p) weights -> corrupted hidden
+        # -> flipped argmax (the 4p export-parity launch/frac mismatch). Give the helper a
+        # per-policy unique name so its def and both call-sites stay bound to the right
+        # policy. suffix == "" for the 2p policy -> no-op (byte-identical to before).
+        suffix = function_name[len("_neural_action"):]
+        if suffix:
+            src = src.replace("_entity_pool(", f"_entity_pool{suffix}(")
+    return src
 
 
 def _neural_runtime_source(
@@ -359,6 +373,9 @@ def _neural_decode_with_policy(policy, obs, player, action):
     if int(action[0]) == 0:
         return []
     source_rank, target_rank, fraction_idx, offset_idx = [int(value) for value in action[1:5]]
+    _ftr = decoder.get("force_target_rank")
+    if _ftr is not None:
+        target_rank = int(_ftr)
     own.sort(key=lambda planet: (_planet_ships(planet), _planet_production(planet)), reverse=True)
     offset = source_rank % len(own)
     ranked_sources = own[offset:] + own[:offset]

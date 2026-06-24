@@ -19,6 +19,7 @@ runs/
 wandb/
 logs/
 checkpoints/
+data/
 
 # artifacts/ holds mostly generated benchmark/sweep output (ignored).
 # Only the curated deliverables below are tracked on purpose.

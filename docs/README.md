@@ -4,20 +4,26 @@ Esta pasta é a **fonte de verdade** do projeto. Cada documento cobre um tópico
 não se repete nos outros; quando um assunto aparece em mais de um lugar, o dono
 canônico está marcado abaixo e os demais apenas referenciam.
 
+Status pós-competição: [`PORTFOLIO_POST.md`](PORTFOLIO_POST.md) é a síntese para
+leitura externa. Os outros documentos preservam decisões, comandos e auditorias
+do ciclo competitivo; quando dizem "atual", leia como o estado do laboratório
+naquele registro.
+
 ## Ordem de leitura sugerida
 
 Para entender o projeto do zero (ex.: leitor de portfólio):
 
 1. [`../README.md`](../README.md) — visão geral, problema e instalação.
-2. [`ARCHITECTURE.md`](ARCHITECTURE.md) — o modelo de três camadas (Rust simula, Python decide, submissão leve) e a fronteira que o sustenta.
-3. [`DECISIONS.md`](DECISIONS.md) — por que cada escolha de arquitetura foi feita (D1–D11).
-4. [`BLUEPRINT.md`](BLUEPRINT.md) — o método competitivo: ciclo de geração, espaço de ação, fórmula de fitness, critérios de promoção, antipadrões.
-5. [`PARITY.md`](PARITY.md) — como garantimos que o motor local é fiel ao ambiente oficial do Kaggle.
-6. [`COMPETITIVE_INTEL.md`](COMPETITIVE_INTEL.md) — pesquisa externa (fórum/notebooks) que orienta as hipóteses.
-7. [`TRAINING.md`](TRAINING.md) — plano de treino por fases e a decisão atual sobre PPO.
-8. [`SUBMISSION.md`](SUBMISSION.md) — regra e checklist do agente que vai para o Kaggle.
-9. [`PLAYBOOK.md`](PLAYBOOK.md) — comandos operacionais para reproduzir tudo.
-10. [`SUBMISSION_AUDIT_2026-06-11.md`](SUBMISSION_AUDIT_2026-06-11.md) —
+2. [`PORTFOLIO_POST.md`](PORTFOLIO_POST.md) — pós-mortem curto: problema, heurísticas, validação, submissões, ablações e lições.
+3. [`ARCHITECTURE.md`](ARCHITECTURE.md) — o modelo de três camadas (Rust simula, Python decide, submissão leve) e a fronteira que o sustenta.
+4. [`DECISIONS.md`](DECISIONS.md) — por que cada escolha de arquitetura foi feita (D1–D11).
+5. [`BLUEPRINT.md`](BLUEPRINT.md) — o método competitivo: ciclo de geração, espaço de ação, fórmula de fitness, critérios de promoção, antipadrões.
+6. [`PARITY.md`](PARITY.md) — como garantimos que o motor local é fiel ao ambiente oficial do Kaggle.
+7. [`COMPETITIVE_INTEL.md`](COMPETITIVE_INTEL.md) — pesquisa externa (fórum/notebooks) que orienta as hipóteses.
+8. [`TRAINING.md`](TRAINING.md) — plano de treino por fases e a decisão atual sobre PPO.
+9. [`SUBMISSION.md`](SUBMISSION.md) — regra e checklist do agente que vai para o Kaggle.
+10. [`PLAYBOOK.md`](PLAYBOOK.md) — comandos operacionais para reproduzir tudo.
+11. [`SUBMISSION_AUDIT_2026-06-11.md`](SUBMISSION_AUDIT_2026-06-11.md) —
     auditoria dos bugs silenciosos e pacotes top-score antes de nova submissão.
 
 ## Quem é dono de quê (uma fonte de verdade por tópico)
@@ -31,6 +37,7 @@ Para entender o projeto do zero (ex.: leitor de portfólio):
 | "Producer é piso, não teto" | `COMPETITIVE_INTEL.md` | `BLUEPRINT.md`, `PLAYBOOK.md` |
 | Comandos de benchmark e gates | `PLAYBOOK.md` | `../README.md` |
 | Auditoria de submissoes top-score | `SUBMISSION_AUDIT_2026-06-11.md` | `SUBMISSION.md`, `PLAYBOOK.md` |
+| Síntese de portfólio e pós-mortem | `PORTFOLIO_POST.md` | `../README.md` |
 
 ## Logs (não são fonte de verdade curada)
 
@@ -40,3 +47,5 @@ para um leitor de portfólio:
 - `experiments.duckdb` — store de ablações (status feito/rejeitado/todo); relatório em [`EXPERIMENTS_REPORT.md`](EXPERIMENTS_REPORT.md).
 - [`../todo.md`](../todo.md) — journal de trabalho em andamento (roadmap, threads, checkboxes).
 - [`../AGENTS.md`](../AGENTS.md) — instruções para o executor de IA (harness Codex), não documentação do projeto.
+- `data/` e dumps grandes em `artifacts/` — artefatos locais ignorados; não são
+  necessários para ler o portfólio.

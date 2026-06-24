@@ -95,6 +95,8 @@ def _decoder_config(payload: dict[str, Any]) -> DecoderConfig:
         max_moves_per_turn=int(decoder.get("max_moves_per_turn", 8)),
         min_ships_to_launch=int(decoder.get("min_ships_to_launch", 2)),
         reserve_home_ships=int(decoder.get("reserve_home_ships", 8)),
+        force_target_rank=(None if decoder.get("force_target_rank") is None
+                           else int(decoder["force_target_rank"])),
     )
 
 
