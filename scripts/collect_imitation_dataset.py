@@ -9,12 +9,21 @@ report summarises the residual distribution.
 Datasets produced (``--datasets``):
   - ``producer_only``     both sides driven by Producer; label = producer.
   - ``oep_only``          both sides driven by OEP; label = oep.
+  - ``pgs_only``          both sides driven by PGS holdwave (operational config).
+  - ``mahoraga_only``     both sides driven by the Mahoraga full2p config
+                          (adaptive profiles + rescue/punish/hammer missions).
   - ``producer_oep_mix``  players alternate Producer/OEP; label = mover's expert.
+  - ``producer_pgs_mix``  players alternate Producer/PGS.
+  - ``oep_pgs_mix``       players alternate OEP/PGS.
   - ``hard_states``       Producer vs OEP; at states where the two experts'
                           projected actions disagree, emit one example per expert
                           (both labels) so contested decisions are oversampled.
-  - ``league_strong_mix`` fixed local ruler pool rotated across seats/seeds.
-  - ``league_elite_mix``  stronger teacher-only subset for PPO warm starts.
+  - ``hard_states_pgs``   same disagreement scheme for Producer vs PGS.
+
+Stateful experts (producer/oep/pgs/mahoraga) get ONE isolated instance per player
+seat so per-game memory (e.g. PGS opponent profiles) never leaks across seats; the
+instance index == player index is also used for the hard-states probes, so each
+probe sees a consistent per-seat history.
 
 Splits are assigned by seed (``seed % 5`` -> train/val/test), never by row, to
 avoid leaking states from the same game across splits.
@@ -43,12 +52,11 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-
-_ROOT = Path(__file__).resolve().parents[1]
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-
-from python.agents.registry import get_heuristic_policies
+from python.agents.registry import (
+    STATEFUL_SINGLETON_OPPONENTS,
+    get_heuristic_policies,
+    get_isolated_opponents,
+)
 from python.orbit_wars_gym.action_decoder import DEFAULT_DECODER_CONFIG, DecoderConfig
 from python.orbit_wars_gym.action_inverse import (
     DEFAULT_INVERSE_CONFIG,
@@ -65,27 +73,108 @@ Policy = Callable[[dict[str, Any], int], list[list[float]]]
 _EXPERT_FILES = {
     "producer": ["bots/producer/agent.py", "bots/producer/_upstream.py"],
     "oep": ["bots/oep/agent.py", "bots/oep/planner.py"],
-    "pgs_holdwave": ["scripts/league_agents.py", "bots/pgs/planner.py"],
-    "pgs_bigwave": ["scripts/league_agents.py", "bots/pgs/planner.py"],
-    "greedy": ["python/agents/heuristics.py"],
-    "rush": ["python/agents/heuristics.py"],
+    # PGS rides on the Producer floor, so its behaviour hash covers both.
+    "pgs": [
+        "bots/pgs/agent.py",
+        "bots/pgs/planner.py",
+        "bots/producer/agent.py",
+        "bots/producer/_upstream.py",
+    ],
+    # Mahoraga = PGSRuntime with _MAHORAGA_CONFIG (below); no agent.py of its own.
+    "mahoraga": [
+        "bots/pgs/planner.py",
+        "bots/producer/agent.py",
+        "bots/producer/_upstream.py",
+    ],
 }
-_EXTERNAL_EXPERT_FILES = {
-    "brep": Path.home() / "projects/Kaggle/orbit-wars-lab-B/artifacts/submission_brep.tar.gz",
-}
-_EXPERT_NAMES = ("producer", "oep", "pgs_holdwave", "pgs_bigwave", "brep", "greedy", "rush")
-_EXPERT_IDS = {name: idx for idx, name in enumerate(_EXPERT_NAMES)}
+_EXPERT_IDS = {"producer": 0, "oep": 1, "pgs": 2, "mahoraga": 3}
 _SPLIT_IDS = {"train": 0, "val": 1, "test": 2}
-STRONG_EXPERT_POOL = ("producer", "pgs_holdwave", "brep", "pgs_bigwave", "oep", "rush", "greedy")
-ELITE_EXPERT_POOL = ("producer", "pgs_holdwave", "brep", "pgs_bigwave", "oep")
 DATASETS = (
     "producer_only",
     "oep_only",
+    "pgs_only",
+    "mahoraga_only",
     "producer_oep_mix",
+    "producer_pgs_mix",
+    "oep_pgs_mix",
     "hard_states",
-    "league_strong_mix",
-    "league_elite_mix",
+    "hard_states_pgs",
 )
+
+# Single-expert datasets -> expert; pair datasets -> (even seats, odd seats).
+_SINGLE = {
+    "producer_only": "producer",
+    "oep_only": "oep",
+    "pgs_only": "pgs",
+    "mahoraga_only": "mahoraga",
+}
+_PAIRS = {
+    "producer_oep_mix": ("producer", "oep"),
+    "producer_pgs_mix": ("producer", "pgs"),
+    "oep_pgs_mix": ("oep", "pgs"),
+    "hard_states": ("producer", "oep"),
+    "hard_states_pgs": ("producer", "pgs"),
+}
+
+# Same config as the league's pgs_v3_adaptive_full2p (scripts/league_agents.py):
+# operational holdwave profile + adaptive opponent profiles + rescue/punish/hammer
+# missions — the live-code equivalent of the shipped Mahoraga submission.
+_MAHORAGA_CONFIG: dict[str, Any] = {
+    "scripts": "hold",
+    "wave_min_ships": 60.0,
+    "wave_start_step": 150,
+    "floor_in_4p": True,
+    "adaptive_mode": True,
+    "adaptive_reply_models": True,
+    "mission_mode": True,
+    "enabled_missions": "rescue,punish,hammer",
+    "max_mission_candidates": 8,
+    "max_selected_missions": 1,
+    "hammer_top_targets": 3,
+    "hammer_top_sources": 4,
+    "deadline_ms": 450.0,
+    "deadline_guard_ms": 100.0,
+    "value_mode": "scalar",
+}
+
+
+def _make_mahoraga_policy() -> Policy:
+    """One fresh Mahoraga (PGS full2p) instance with per-game memory.
+
+    Mirrors the reset-on-step-0 contract of the registry's isolated opponents so
+    sequential games never share opponent profiles or mission state.
+    """
+    from bots.pgs.planner import PGSConfig, PGSRuntime
+    from python.orbit_wars_gym.observation import to_official_observation
+
+    cfg = PGSConfig(**_MAHORAGA_CONFIG)
+    box: list[PGSRuntime] = [PGSRuntime(cfg)]
+
+    def _policy(state: dict[str, Any], player: int) -> list[list[float]]:
+        if int(state.get("step", 0)) == 0:
+            box[0] = PGSRuntime(cfg)
+        moves = box[0].act(to_official_observation(state, player=player))
+        return list(moves) if isinstance(moves, list) else []
+
+    return _policy
+
+
+def _policy_table(experts: set[str], num_players: int) -> dict[str, list[Policy]]:
+    """Per-(expert, seat) policy table: ``table[name][player]``.
+
+    Stateful experts get one isolated instance per seat (sharing one singleton
+    across seats would cross-contaminate per-game memory — e.g. PGS opponent
+    profiles would see every fleet twice). Stateless heuristics share a callable.
+    """
+    table: dict[str, list[Policy]] = {}
+    for name in experts:
+        if name == "mahoraga":
+            table[name] = [_make_mahoraga_policy() for _ in range(num_players)]
+        elif name in STATEFUL_SINGLETON_OPPONENTS:
+            table[name] = list(get_isolated_opponents(name, num_players))
+        else:
+            table[name] = [get_heuristic_policies()[name]] * num_players
+    return table
 
 
 def expert_content_hash(name: str) -> str:
@@ -114,15 +203,10 @@ def split_for_seed(seed: int) -> str:
 
 def _player_experts(dataset: str, num_players: int, *, seed: int = 0) -> dict[int, str]:
     """Map each player index to the expert that drives it for a dataset."""
-    if dataset in ("producer_only", "oep_only"):
-        name = "producer" if dataset == "producer_only" else "oep"
-        return {p: name for p in range(num_players)}
-    if dataset in ("league_strong_mix", "league_elite_mix"):
-        pool = STRONG_EXPERT_POOL if dataset == "league_strong_mix" else ELITE_EXPERT_POOL
-        offset = int(seed) % len(pool)
-        return {p: pool[(offset + p) % len(pool)] for p in range(num_players)}
-    # mix + hard_states: alternate Producer (even players) / OEP (odd players).
-    return {p: ("producer" if p % 2 == 0 else "oep") for p in range(num_players)}
+    if dataset in _SINGLE:
+        return {p: _SINGLE[dataset] for p in range(num_players)}
+    even, odd = _PAIRS[dataset]
+    return {p: (even if p % 2 == 0 else odd) for p in range(num_players)}
 
 
 def _expert_policies() -> dict[str, Policy]:
@@ -231,7 +315,11 @@ def collect_dataset(
     augment: bool = False,
     launch_oversample: int = 1,
 ) -> list[dict[str, Any]]:
-    policies = _expert_policies()
+    player_experts = _player_experts(dataset, num_players)
+    is_hard_dataset = dataset.startswith("hard_states")
+    probe_pair = _PAIRS[dataset] if is_hard_dataset else None
+    needed = set(player_experts.values()) | (set(probe_pair) if probe_pair else set())
+    policies = _policy_table(needed, num_players)
     examples: list[dict[str, Any]] = []
 
     for seed in seeds:
@@ -252,70 +340,56 @@ def collect_dataset(
             moves_by_player: dict[int, list[float]] = {}
             for player in range(num_players):
                 expert = player_experts[player]
-                moves = list(policies[expert](state, player))
+                moves = list(policies[expert][player](state, player))
                 moves_by_player[player] = moves
                 flat_rows.extend(_flat_rows(player, moves))
 
-                if dataset != "hard_states":
-                    rows = _example(
-                        state=state,
-                        player=player,
-                        step=step,
-                        expert=expert,
-                        moves=moves,
-                        seed=int(seed),
-                        is_hard=False,
-                        decoder_cfg=decoder_cfg,
-                        inverse_cfg=inverse_cfg,
-                        augment=augment,
+                if not is_hard_dataset:
+                    examples.extend(
+                        _example(
+                            state=state, player=player, step=step, expert=expert,
+                            moves=moves, seed=int(seed), is_hard=False,
+                            decoder_cfg=decoder_cfg, inverse_cfg=inverse_cfg, augment=augment,
+                        )
                     )
                     train_split = split_for_seed(int(seed)) == "train"
                     repeats = max(1, int(launch_oversample)) if moves and train_split else 1
                     for _ in range(repeats):
                         examples.extend(rows)
 
-            if dataset == "hard_states":
-                # For every player perspective, ask BOTH experts; record where the
-                # projected actions disagree (contested decisions).
+            if is_hard_dataset:
+                # For every player perspective, ask BOTH experts of the pair;
+                # record where the projected actions disagree (contested
+                # decisions). The driving expert's moves are reused (no second
+                # act() on the same state — stateful experts would double-step
+                # their per-game memory); the other expert probes with its own
+                # per-seat instance.
+                assert probe_pair is not None
                 for player in range(num_players):
-                    prod_moves = list(policies["producer"](state, player))
-                    oep_moves = list(policies["oep"](state, player))
-                    prod_act = invert_moves(
-                        state, player, prod_moves, decoder_cfg=decoder_cfg, cfg=inverse_cfg
-                    ).action
-                    oep_act = invert_moves(
-                        state, player, oep_moves, decoder_cfg=decoder_cfg, cfg=inverse_cfg
-                    ).action
-                    if prod_act == oep_act:
+                    driver = player_experts[player]
+                    moves_by_expert: dict[str, list[list[float]]] = {
+                        driver: moves_by_player[player]
+                    }
+                    for name in probe_pair:
+                        if name not in moves_by_expert:
+                            moves_by_expert[name] = list(policies[name][player](state, player))
+                    acts = {
+                        name: invert_moves(
+                            state, player, mv, decoder_cfg=decoder_cfg, cfg=inverse_cfg
+                        ).action
+                        for name, mv in moves_by_expert.items()
+                    }
+                    first, second = probe_pair
+                    if acts[first] == acts[second]:
                         continue
-                    examples.extend(
-                        _example(
-                            state=state,
-                            player=player,
-                            step=step,
-                            expert="producer",
-                            moves=prod_moves,
-                            seed=int(seed),
-                            is_hard=True,
-                            decoder_cfg=decoder_cfg,
-                            inverse_cfg=inverse_cfg,
-                            augment=augment,
+                    for name in probe_pair:
+                        examples.extend(
+                            _example(
+                                state=state, player=player, step=step, expert=name,
+                                moves=moves_by_expert[name], seed=int(seed), is_hard=True,
+                                decoder_cfg=decoder_cfg, inverse_cfg=inverse_cfg, augment=augment,
+                            )
                         )
-                    )
-                    examples.extend(
-                        _example(
-                            state=state,
-                            player=player,
-                            step=step,
-                            expert="oep",
-                            moves=oep_moves,
-                            seed=int(seed),
-                            is_hard=True,
-                            decoder_cfg=decoder_cfg,
-                            inverse_cfg=inverse_cfg,
-                            augment=augment,
-                        )
-                    )
 
             flat = (
                 np.asarray(flat_rows, dtype=np.float64)
@@ -480,6 +554,7 @@ def run(
         "augment": bool(augment),
         "launch_oversample": int(launch_oversample),
         "expert_hashes": expert_hashes,
+        "mahoraga_config": dict(_MAHORAGA_CONFIG),
         "decoder_config": asdict(decoder_cfg),
         "inverse_config": asdict(inverse_cfg),
         "encoder_config": asdict(DEFAULT_ENCODER_CONFIG),
@@ -504,6 +579,7 @@ def run(
             "dataset": name,
             "content_hash": _content_hash(packed),
             "expert_hashes": expert_hashes,
+            "mahoraga_config": dict(_MAHORAGA_CONFIG),
             "decoder_config": asdict(decoder_cfg),
             "inverse_config": asdict(inverse_cfg),
             "encoder_config": asdict(DEFAULT_ENCODER_CONFIG),

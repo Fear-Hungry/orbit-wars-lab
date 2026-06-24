@@ -5,89 +5,40 @@
 
 ---
 
-# ✅ RESOLVIDO (2026-06-14) — drenagem dupla no seletor guloso (CONFIRMADO 2026-06-11 via /diagnose)
+# 🎯 FOCO ATUAL (2026-06-12, tarde) — PGS v2/v3: missões coordenadas + sanidade de medição
 
-> **FIX APLICADO 2026-06-14** (branch `oep-search-and-submit-exploration`, patch canônico do usuário
-> `drenagem_dupla_fix.patch` = idêntico ao DB 200, que ficara só na outra worktree — NÃO existia aqui).
-> Suíte completa **465 passed**; probe ao vivo = **0 violações** nos regimes que disparavam (producer
-> 4p+rusher 0/1467; oep vs rusher 0/2091). Resta APENAS o gate H2H vs incumbente (último item, `[ ]`).
+> Plano aprovado (Etapas A–G) implementado SOBRE o scaffolding v3 adaptativo da sessão paralela
+> (DB 198–199; detectado mid-session — auditado, não sobrescrito; snapshot em `stash@{0}`).
+> Etapa A (sanidade): floor por budget agora devolve Producer PURO (closure corrigida), wave filter
+> sem side-effect (commit só quando o plano final usa a base filtrada), `budget_floor_returns`
+> instrumentado planner→agent→wrapper→validador, `_greedy_select` com DOIS orçamentos
+> (físico + safe_drain cumulativo; fix da memória safe_drain_overspend), `avail` do PGS = safe_drain.
+> Lacunas v3 preenchidas: timeline com death-penalty + captura SUSTENTADA; missão HOLD_SOURCE
+> (hoard); wave v2 (age-out DESCARTA em vez de soltar spray) + pending→hammer prioritário.
+> Gate A PASSOU: suíte 355 passed; tarball `VALIDATION OK` (1563 calls 2p/4p all seats,
+> fallbacks=0, timeouts=0, budget_floor_returns=0, sha256 c2810f00…, p95 99.8ms).
+> Teste obrigatório da Etapa D provado: hammer 35+35 captura alvo de 60 que nenhuma fonte captura só.
 
-> Achado do usuário, CONFIRMADO empiricamente. `_greedy_select` (`orbit_lite/planner_core.py:367`)
-> checa financiamento contra `source_budget` = `obs.ships` BRUTO; `used_src` só impede alvo↔fonte,
-> não reuso da fonte. Repro sintético: 2 candidatos da mesma fonte (ships=100, safe_drain=40) →
-> 2 waves, 80 naves (2× o teto seguro). Em jogo REAL é raro mas ocorre: producer 4p+rusher
-> (8 seeds × 500): 1 violação 2.0× (gastou 24, drain 12); OEP vs rusher (2 seeds): 1 violação 1.5×
-> (gastou 108, drain 72 = frações 1.0+0.5 da mesma fonte). Zero em producer-vs-producer 2p (1000
-> chamadas): em posição calma drain≈ships e 2·drain>ships não financia — o bug só dispara com a
-> fonte AMEAÇADA (drain≪ships), exatamente o regime de derrota (rushers/4p). Probes (tag
-> DEBUG-sd01): `/tmp/repro_safe_drain.py` (sintético) e `/tmp/probe_drain_live2.py` (ao vivo).
-> PGS não é afetado (não chama `_greedy_select`); artifacts/ são cópias congeladas.
+> **Em execução (agente, sem ação sua):** bateria de gates 32 seeds frozen 9000+ × 500 steps ×
+> 2 assentos → `artifacts/pgs/v2gates/*.json` (holdwave-regressão, full2p, timeline2p, hoard2p,
+> waveactive2p vs producer/oep). Ao terminar: leitura dos resultados, registro no experiments.duckdb
+> (pós-199) e veredito vs âncoras frozen (+0.206 Producer / +0.406 OEP) ficam por minha conta.
+> Critério de regressão do swap `avail=safe_drain`: se o holdwave congelado cair, condicionar o swap
+> a `mission_mode`. Liga continua VETO, não promoção — nenhuma submissão automática.
 
-- [x] **Fix de dois orçamentos em `_greedy_select`** ✅ 2026-06-14 (`orbit_lite/planner_core.py`): novo
-  param opcional `source_spend_budget` (default `None` → clone do `source_budget`, preserva
-  callers antigos); `can_fund` checa o spend budget; ao selecionar, debita OS DOIS; continua
-  retornando `source_budget` como leftover real (contrato do `_plan_regroup` intacto). Scatter
-  `[S]→[P]` com `drain.floor()` via helper `_scatter_drain_to_slots`.
-  - [x] verificar: `pytest tests/test_planner_core_source_budget.py` passa (3/3)
-- [x] **Call sites** ✅ 2026-06-14: producer `bots/producer/_upstream.py` (spend = scatter de
-  `drain.floor()`); OEP `bots/oep/planner.py` (chave `source_spend_budget` no built; repassada ao
-  `_greedy_select`; `_masked_score_after_prefix` mantém e debita os dois, can-fund checa o spend;
-  2ª chamada pós-prefixo + desempacote de 5-tupla no beam recebem os dois).
-  - [x] verificar: `/tmp/probe_drain_live2.py` → **0 violações** (producer 4p+rusher 0/1467; oep vs
-    rusher 0/2091, regimes que antes davam 2.0× e 1.5×); suíte completa **465 passed**
-- [x] **Teste de regressão** `tests/test_planner_core_source_budget.py` ✅ 2026-06-14: 3 casos —
-  (1) send=40×2, `source_budget=100`, `spend=40` → 1 wave, total ≤ 40, leftover 60; (2) estilo OEP
-  sends 40 (frac 1.0)+20 (frac 0.5), spend 40 → só o de 40 dispara; (3) spend `None` reproduz
-  comportamento antigo (2 waves, 80) — trava o contrato de compat.
-  - [x] verificar: caso 3 demonstra o legado (80) e os casos 1-2 o fix (40); 3 passed
-- [ ] **Gate antes de promover** ⬅ ÚNICO PENDENTE: o fix MUDA o producer (que é a submissão viva, LB 1228) — no
-  producer todo candidato envia o drain inteiro, então o fix ⇒ no máx. 1 wave/fonte/turno.
-  Violações são raras (~1/6647 turnos-assento), efeito esperado pequeno, mas medir mesmo assim:
-  H2H fixado vs incumbente a 500 steps, ambos assentos, 96 seeds frozen + liga como VETO.
-  - [ ] verificar: margem ≥ 0 vs incumbente nos 96 seeds E sem rebaixamento no veto da liga
-    antes de embarcar em tarball
+## Tarballs submetidos na liga (2026-06-12) — mahoraga / r3_adaptive_guard / safehammer
 
-# 📋 PARECER (2026-06-11, tarde) — review do pacote de 14 commits (régua v4 + hardening)
+> Os 3 tarballs submetidos no Kaggle estão em `artifacts/` e registrados na liga via
+> `artifacts/league/tarballs/` (auto-discovery): `mahoraga`, `mahoraga_r3_adaptive_guard`
+> e `pgs_v2_safehammer` (novo, adicionado 2026-06-12). Hashes idênticos aos do Downloads.
 
-> Review tech-lead dos commits f2ecf48..cef5d97. Veredito: hardening de validade INTERNA é
-> sólido e bem testado; o risco remanescente é de validade EXTERNA — a pool de referências da
-> régua (`DEFAULT_REFERENCES`: 6/8 linhagem própria + 2 ext) reproduz a estrutura de viés de
-> população que falsificou a liga como gate (Spearman LB = 0.0; Balduzzi 2018). Detalhe na conversa.
-
-- [ ] **Encodar veto-only na régua v4** (mesmo tratamento que o report.json ganhou com
-  `bt_predictive`/`lb_inversions`): o report da régua deve marcar explicitamente que o ranking
-  PASS>INCONCLUSIVE>REJECT é veto/sanidade, não ordem de promoção; decisão de submeter deve citar
-  evidência voltada ao LB (estilo elite big-wave/hoard, desempenho 4p), não posição na régua.
-  - [ ] verificar: report da régua contém campo/aviso explícito de veto-only E a próxima decisão
-    de submissão registrada no DB cita critério externo à régua
-- [x] **Resetar runtime PGS/OEP após fallback** ✅ 2026-06-11 (validado no review): implementação
-  MELHOR que a sugerida — `notify_fallback_applied()` troca o `_RUNTIME` de módulo imediatamente
-  (o thread zumbi segue mutando a instância VELHA que ele referencia; a nova nasce limpa), em
-  TODO fallback, não só pós-overrun. Já embarcado nos tarballs submetidos (53582859/53582886).
-  - [x] verificar: `test_fallback_notifies_oep_runtime_reset` + `reset_count==5` no teste de
-    bloqueio-e-retomada; suíte das 9 áreas afetadas = 70 passed
-- [x] **Monitorabilidade dos runs em background** ✅ resolvida na v11 (validado no review): runs
-  v4–v10 morreram TODOS sem output (run.log 0B, sem task_results) — o checkpoint por chunk
-  (eac4c6b/ac6ad0c/42c9d4c) + `--task-results-out` corrigiu: v11 (PID 249495, ~3h) tem 8 tasks
-  2p gravadas incrementalmente.
-  - [ ] (residual) investigar POR QUE v4–v10 morreram silenciosamente (OOM? WSL? wedge pré-SIGALRM)
-    — se foi wedge de agente, o hard timeout cbb4ab7 já cobre; confirmar se v11 fecha inteiro
-- [ ] **Instrumentar o floor-por-budget do planner PGS** (gap achado no review de 9ee1a7c): o
-  `budget_low() → producer_floor_payload()` é um fallback SILENCIOSO um nível abaixo do wrapper —
-  em hardware lento, `SUBMISSION_STATS` mostraria `fallbacks=0` com o PGS jogando Producer puro o
-  jogo todo (a classe exata de degradação invisível desta campanha). Contar só os retornos por
-  budget_low (floor_in_4p/deviation_max_step são comportamento desenhado, não contam).
-  - [ ] verificar: contador (ex.: `budget_floor_returns`) exposto ao wrapper/`SUBMISSION_STATS`,
-    reportado pelo `validate_pgs_tarball` e ≈0 na validação local
-- [ ] **Commitar os 14 arquivos modificados** (reset pós-fallback, semântica de fault no
-  benchmark/objective_validation, half2p league-only): os tarballs VIVOS no Kaggle foram gerados
-  deste working tree — sem commit, a evidência hash-bound (bf3dca8) aponta para fonte
-  irreproduzível.
-  - [ ] verificar: `git status` limpo e sha1 dos tarballs submetidos reproduzível do HEAD
-- [ ] **(menor) lineup 4p pode variar com o painel** quando o candidato pertence ao template
-  (`_complete_4p_lineup` completa com `ref_order`, que inclui os outros candidatos do comando) —
-  documentar ou fixar o preenchimento só com referências para manter o claim de estabilidade.
-  - [ ] verificar: mesmo candidato + mesmo template ⇒ mesmo lineup, com qualquer painel
+- [ ] Rodar a liga (VETO, não promoção) incluindo `pgs_v2_safehammer`, `mahoraga` e
+  `mahoraga_r3_adaptive_guard` na pool, 500 steps × 2 assentos
+  - [ ] verificar: nenhum dos 3 incrementa counters proibidos de SUBMISSION_STATS
+    (fallbacks/timeouts/...) e o report H2H sai com CI; liga usada só como veto
+- [ ] Quando os scores LB dos 3 estabilizarem (~1h pós-submit), registrar no
+  `experiments.duckdb` e em `LB_ANCHORS` (scripts/league_agents.py) com ref do episódio
+  - [ ] verificar: 3 novas âncoras com score estabilizado + ref Kaggle anotadas
 
 # ✅ RESOLVIDO (2026-06-11) — entrypoint duplicado do PGS: "pgs" podia significar OUTRO bot
 

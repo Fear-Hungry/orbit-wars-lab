@@ -96,97 +96,34 @@ def test_hard_states_only_records_disagreements() -> None:
         assert bool(packed["is_hard"].all())
 
 
-def test_league_strong_mix_collects_pgs_and_brep_examples(monkeypatch) -> None:
-    _stub_external_brep(monkeypatch)
-    kw = {**_KW, "num_players": 4, "episode_steps": 2}
-    examples = collect_dataset("league_strong_mix", seeds=[0], **kw)
+def test_pgs_only_is_deterministic_legal_and_labelled() -> None:
+    a = collect_dataset("pgs_only", seeds=[0, 1], **_KW)
+    b = collect_dataset("pgs_only", seeds=[0, 1], **_KW)
+    packed_a, packed_b = _pack(a), _pack(b)
+    assert _content_hash(packed_a) == _content_hash(packed_b)
+
+    report = _dataset_report("pgs_only", packed_a)
+    assert report["legal_action_rate"] == 1.0
+    assert report["num_examples"] > 0
+    # every example carries the pgs expert id (2)
+    assert np.array_equal(packed_a["expert_id"], np.full_like(packed_a["expert_id"], 2))
+
+
+def test_mahoraga_only_is_deterministic_and_labelled() -> None:
+    a = collect_dataset("mahoraga_only", seeds=[0], **_KW)
+    b = collect_dataset("mahoraga_only", seeds=[0], **_KW)
+    packed_a, packed_b = _pack(a), _pack(b)
+    assert _content_hash(packed_a) == _content_hash(packed_b)
+    assert _dataset_report("mahoraga_only", packed_a)["legal_action_rate"] == 1.0
+    assert np.array_equal(packed_a["expert_id"], np.full_like(packed_a["expert_id"], 3))
+
+
+def test_hard_states_pgs_labels_come_from_the_pair() -> None:
+    # At 16 steps PGS ≈ Producer floor, so disagreements may be empty; the
+    # contract under test: any recorded example is hard and labelled with one
+    # of the pair's expert ids (producer=0, pgs=2).
+    examples = collect_dataset("hard_states_pgs", seeds=[0], **_KW)
     packed = _pack(examples)
-    report = _dataset_report("league_strong_mix", packed)
-
-    assert _content_hash(packed) == _content_hash(
-        _pack(collect_dataset("league_strong_mix", seeds=[0], **kw))
-    )
-    assert packed["legal"].all()
-    assert {"producer", "pgs_holdwave", "brep", "pgs_bigwave"}.issubset(report["by_expert"])
-    assert {
-        _EXPERT_IDS["producer"],
-        _EXPERT_IDS["pgs_holdwave"],
-        _EXPERT_IDS["brep"],
-        _EXPERT_IDS["pgs_bigwave"],
-    }.issubset(set(packed["expert_id"].tolist()))
-
-
-def test_league_strong_mix_rotates_all_declared_experts_across_seeds(monkeypatch) -> None:
-    _stub_external_brep(monkeypatch)
-    kw = {**_KW, "num_players": 4, "episode_steps": 1}
-    examples = collect_dataset(
-        "league_strong_mix", seeds=list(range(len(STRONG_EXPERT_POOL))), **kw
-    )
-    expert_ids = set(_pack(examples)["expert_id"].tolist())
-
-    assert {_EXPERT_IDS[name] for name in STRONG_EXPERT_POOL}.issubset(expert_ids)
-
-
-def test_league_elite_mix_uses_teacher_pool_without_greedy_rush(monkeypatch) -> None:
-    _stub_external_brep(monkeypatch)
-    kw = {**_KW, "num_players": 4, "episode_steps": 1}
-    examples = collect_dataset("league_elite_mix", seeds=list(range(len(ELITE_EXPERT_POOL))), **kw)
-    expert_ids = set(_pack(examples)["expert_id"].tolist())
-
-    assert {_EXPERT_IDS[name] for name in ELITE_EXPERT_POOL}.issubset(expert_ids)
-    assert _EXPERT_IDS["greedy"] not in expert_ids
-    assert _EXPERT_IDS["rush"] not in expert_ids
-
-
-def test_launch_oversample_repeats_non_empty_decisions(monkeypatch) -> None:
-    _stub_external_brep(monkeypatch)
-    base = _pack(
-        collect_dataset(
-            "league_strong_mix",
-            seeds=[0],
-            num_players=4,
-            episode_steps=2,
-            launch_oversample=1,
-            **{k: v for k, v in _KW.items() if k not in {"num_players", "episode_steps"}},
-        )
-    )
-    over = _pack(
-        collect_dataset(
-            "league_strong_mix",
-            seeds=[0],
-            num_players=4,
-            episode_steps=2,
-            launch_oversample=3,
-            **{k: v for k, v in _KW.items() if k not in {"num_players", "episode_steps"}},
-        )
-    )
-
-    assert over["obs"].shape[0] >= base["obs"].shape[0]
-    assert int((over["action"][:, 0] == 1).sum()) >= int((base["action"][:, 0] == 1).sum())
-
-
-def test_launch_oversample_does_not_repeat_validation_or_test_decisions(monkeypatch) -> None:
-    _stub_external_brep(monkeypatch)
-    common = {k: v for k, v in _KW.items() if k not in {"num_players", "episode_steps"}}
-    base = _pack(
-        collect_dataset(
-            "league_strong_mix",
-            seeds=[3, 4],
-            num_players=4,
-            episode_steps=3,
-            launch_oversample=1,
-            **common,
-        )
-    )
-    over = _pack(
-        collect_dataset(
-            "league_strong_mix",
-            seeds=[3, 4],
-            num_players=4,
-            episode_steps=3,
-            launch_oversample=4,
-            **common,
-        )
-    )
-
-    assert _content_hash(over) == _content_hash(base)
+    if packed["is_hard"].size:
+        assert bool(packed["is_hard"].all())
+        assert set(np.unique(packed["expert_id"]).tolist()) <= {0, 2}

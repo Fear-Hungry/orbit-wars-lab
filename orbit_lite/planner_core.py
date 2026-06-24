@@ -367,33 +367,21 @@ def reachable_mask(
 def _greedy_select(
     *, P, W, device, dtype, score, cand_src, cand_send, cand_angle, cand_eta,
     cand_active, cand_tgt_slot, cand_tgt_short, cand_is_def, source_budget,
-    target_exists, roi_threshold, source_spend_budget: Tensor | None = None,
-    should_stop: Callable[[], bool] | None = None,
+    source_spend_budget=None,
+    target_exists, roi_threshold, should_stop: Callable[[], bool] | None = None,
 ) -> LaunchEntries:
     """Masking-only greedy over [C, L] candidates: pick the best wave each iter,
     one per target, source-budget aware across all L contributors. Enforces the
     role mutex: a reinforced planet can't also be a source, and vice-versa.
 
-    Two deliberately separate budgets (see the "drenagem dupla" bug, todo.md
-    2026-06-11):
-
-    * ``source_budget`` — raw ships per planet. Returned as the leftover for
-      :func:`_plan_regroup`; its contract is unchanged.
-    * ``source_spend_budget`` — how many ships a source may *launch offensively*
-      this turn (the caller passes scattered ``safe_drain``). Funding is checked
-      and debited against this budget so a single source cannot fire several
-      waves that, summed, exceed its safe drain. When ``None`` it clones
-      ``source_budget`` — reproducing the old single-budget behavior exactly, so
-      existing callers are unaffected.
-    """
+    ``source_budget`` is the PHYSICAL budget (ships present) and is what the
+    returned leftover reflects; ``source_spend_budget`` is the TACTICAL cap per
+    source (e.g. safe_drain) that funding is checked against — without it, two
+    waves from the same source can each fit under safe_drain individually while
+    their sum drains the source below holding strength."""
     L = int(cand_src.shape[1])
-    # Work on copies; never mutate the caller's tensors in place.
-    source_budget = source_budget.clone()
-    spend_budget = (
-        source_budget.clone()
-        if source_spend_budget is None
-        else source_spend_budget.clone()
-    )
+    if source_spend_budget is None:
+        source_spend_budget = source_budget.clone()
     target_taken = ~target_exists.clone()                                        # [T]
     defended = torch.zeros(P, dtype=torch.bool, device=device)                   # reinforced this turn
     used_src = torch.zeros(P, dtype=torch.bool, device=device)                   # contributed this turn
@@ -409,8 +397,8 @@ def _greedy_select(
         if should_stop is not None and should_stop():
             break
         taken_cand = target_taken[cand_tgt_short]                               # [C]
-        budget_at = spend_budget[cand_src]                                     # [C, L]
-        can_fund = ((cand_send <= budget_at) | ~cand_active).all(dim=-1)        # [C]
+        spend_at = source_spend_budget[cand_src]                                # [C, L]
+        can_fund = ((cand_send <= spend_at) | ~cand_active).all(dim=-1)         # [C]
         # role mutex: target not already drained as a source; no contributor is a
         # planet we're reinforcing this turn.
         tgt_used_as_src = used_src[cand_tgt_slot]                               # [C]
@@ -433,13 +421,11 @@ def _greedy_select(
         w_tgt[w] = cand_tgt_slot[best_c]
         w_active[w] = sel_active
 
-        # debit all contributors' sends from both budgets: the raw-ship budget
-        # (for the leftover/regroup contract) and the offensive spend budget
-        # (so this source can't fund another wave past its safe drain).
+        # debit all contributors' sends from both budgets (physical + tactical).
         debit = torch.zeros_like(source_budget)
         debit.scatter_add_(0, sel_src, torch.where(sel_active, sel_send, torch.zeros_like(sel_send)))
         source_budget = (source_budget - debit).clamp(min=0.0)
-        spend_budget = (spend_budget - debit).clamp(min=0.0)
+        source_spend_budget = (source_spend_budget - debit).clamp(min=0.0)
         # mark target taken (one wave per target).
         target_taken[cand_tgt_short[best_c]] = True
         # role mutex bookkeeping: mark contributors used; mark reinforced targets

@@ -263,6 +263,14 @@ def _brep():
     return _tarball_agent(_BREP_TAR, "brep")
 
 
+_PGS_V3_BASE = {
+    "scripts": "hold",
+    "wave_min_ships": 60.0,
+    "wave_start_step": 150,
+    "floor_in_4p": True,
+}
+
+
 def register_submission_file(name: str, path: str | Path) -> None:
     """Register a Kaggle-format ``agent(obs)`` file as a league bot."""
 
@@ -272,17 +280,6 @@ def register_submission_file(name: str, path: str | Path) -> None:
     if not p.exists():
         raise FileNotFoundError(p)
     FACTORIES[str(name)] = (lambda f=p, n=str(name): _fresh_module(f, n).agent)
-
-
-def register_submission_tarball(name: str, path: str | Path) -> None:
-    """Register a Kaggle-format tarball as a league bot."""
-
-    p = Path(path)
-    if not p.is_absolute():
-        p = ROOT / p
-    if not p.exists():
-        raise FileNotFoundError(p)
-    FACTORIES[str(name)] = (lambda f=p, n=str(name): _tarball_agent(f, n))
 
 
 FACTORIES = {
@@ -396,6 +393,94 @@ FACTORIES = {
     "pgs_wave_min80_s175": lambda: _pgs(scripts="hold", wave_min_ships=80.0, wave_start_step=175),
     "pgs_wave_4pfloor": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
                                      floor_in_4p=True),
+    # PGS v3 pre-registered league variants. They keep the operational
+    # hold+wave profile, force the Producer floor in 4p, and opt into the new
+    # planner hooks incrementally for 2p evaluation.
+    "pgs_v3_profile_only": lambda: _pgs(
+        **_PGS_V3_BASE,
+        adaptive_mode=True,
+        adaptive_reply_models=False,
+        mission_mode=False,
+        enabled_missions="",
+        value_mode="scalar",
+    ),
+    "pgs_v3_adaptive_arbiter": lambda: _pgs(
+        **_PGS_V3_BASE,
+        adaptive_mode=True,
+        adaptive_reply_models=True,
+        mission_mode=False,
+        enabled_missions="",
+        value_mode="scalar",
+    ),
+    "pgs_v3_adaptive_defense": lambda: _pgs(
+        **_PGS_V3_BASE,
+        adaptive_mode=True,
+        adaptive_reply_models=True,
+        mission_mode=True,
+        enabled_missions="rescue",
+        max_mission_candidates=10,
+        max_selected_missions=1,
+        value_mode="scalar",
+    ),
+    "pgs_v3_adaptive_full2p": lambda: _pgs(
+        **_PGS_V3_BASE,
+        adaptive_mode=True,
+        adaptive_reply_models=True,
+        mission_mode=True,
+        enabled_missions="rescue,punish,hammer",
+        max_mission_candidates=8,
+        max_selected_missions=1,
+        hammer_top_targets=3,
+        hammer_top_sources=4,
+        deadline_ms=450.0,
+        deadline_guard_ms=100.0,
+        value_mode="scalar",
+    ),
+    # Etapas E/G do plano v2 (2026-06-12): cada variante isola UM delta sobre
+    # o full2p para a ordem de avaliação atribuir ganho/perda ao mecanismo certo.
+    "pgs_v3_timeline2p": lambda: _pgs(
+        **_PGS_V3_BASE,
+        adaptive_mode=True,
+        adaptive_reply_models=True,
+        mission_mode=True,
+        enabled_missions="rescue,punish,hammer",
+        max_mission_candidates=8,
+        max_selected_missions=1,
+        hammer_top_targets=3,
+        hammer_top_sources=4,
+        deadline_ms=450.0,
+        deadline_guard_ms=100.0,
+        value_mode="timeline",
+    ),
+    "pgs_v3_hoard2p": lambda: _pgs(
+        **_PGS_V3_BASE,
+        adaptive_mode=True,
+        adaptive_reply_models=True,
+        mission_mode=True,
+        enabled_missions="rescue,punish,hammer,hold_source",
+        max_mission_candidates=8,
+        max_selected_missions=2,
+        hammer_top_targets=3,
+        hammer_top_sources=4,
+        deadline_ms=450.0,
+        deadline_guard_ms=100.0,
+        value_mode="scalar",
+    ),
+    "pgs_v3_waveactive2p": lambda: _pgs(
+        **_PGS_V3_BASE,
+        adaptive_mode=True,
+        adaptive_reply_models=True,
+        mission_mode=True,
+        enabled_missions="rescue,punish,hammer",
+        max_mission_candidates=8,
+        max_selected_missions=1,
+        hammer_top_targets=3,
+        hammer_top_sources=4,
+        deadline_ms=450.0,
+        deadline_guard_ms=100.0,
+        value_mode="scalar",
+        wave_release_on_age=False,
+    ),
     # H7 E4: holdwave base + learned value net plugged into the search (scores the
     # post-launch board instead of margin-at-H). Tests if the learned value unblocks
     # 4p deviation + improves survival. defend_in_4p on so reinforce/evac are candidates.
@@ -450,6 +535,10 @@ def _register_league_artifacts() -> None:
 
 
 _register_league_artifacts()
+
+# Exported .py submissions (e.g. DRL promotion-gate candidates) auto-register too.
+for _py in sorted((ROOT / "artifacts" / "league" / "submissions").glob("*.py")):
+    register_submission_file(_py.stem, _py)
 
 
 def make(name: str):

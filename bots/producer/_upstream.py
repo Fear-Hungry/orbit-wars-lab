@@ -373,57 +373,13 @@ def plan_lite_waves(
     )  # [C]
     score = torch.where(cand_valid, score, torch.full_like(score, float("-inf")))
 
-    # Offense-bias levers (kvatsa5), both keyed off current ownership/garrison at t0.
-    wem = float(getattr(config, "weakest_enemy_4p_mult", 1.0))
-    exm = float(getattr(config, "exposed_target_mult", 1.0))
-    if (wem != 1.0 and int(player_count) >= 4) or exm != 1.0:
-        owner0 = garrison_status.owner[:, 0]                                    # [P]
-        ships0 = obs.ships.to(dtype).view(-1)                                   # [P]
-        tgt_slot = cand_tgt_slot.clamp(0, P - 1)                                # [C]
-        tgt_owner = owner0[tgt_slot]                                            # [C]
-
-        # Exposed-target bonus (kvatsa5 2.0x "just-captured"): snipe ENEMY planets with
-        # a LOW garrison (recently captured / drained for attacks = cheap to take).
-        # Complements threat-aware (avoids contestable targets) by preferring vulnerable
-        # ones. Applies in 2p and 4p; exm==1.0 => no-op.
-        if exm != 1.0:
-            is_exposed = (
-                (tgt_owner >= 0) & (tgt_owner != int(pid))
-                & (ships0[tgt_slot] < float(config.exposed_ships_threshold))
-                & cand_valid & (score > 0.0)
-            )                                                                  # [C]
-            score = score + torch.where(is_exposed, score * (exm - 1.0), torch.zeros_like(score))
-
-        # Weakest-enemy 4p targeting: gang up on the weakest opponent (finish off the
-        # weak before they're farmed by stronger rivals — the 4p kingmaker/overextension
-        # loss bucket). 4p-only; mult==1.0 => no-op.
-        if wem != 1.0 and int(player_count) >= 4:
-            per_player = torch.zeros(int(player_count), dtype=dtype, device=device)
-            own_ok = (owner0 >= 0) & (owner0 < int(player_count))
-            per_player.scatter_add_(
-                0, owner0.clamp(0, int(player_count) - 1).long(),
-                torch.where(own_ok, ships0, torch.zeros_like(ships0)),
-            )
-            is_opp = torch.ones(int(player_count), dtype=torch.bool, device=device)
-            is_opp[int(pid)] = False
-            opp_ships = torch.where(is_opp, per_player, torch.full_like(per_player, float("inf")))
-            weakest = torch.argmin(opp_ships)                                   # 0-dim
-            is_weakest = (tgt_owner == weakest) & cand_valid & (score > 0.0)    # [C]
-            boost = torch.where(is_weakest, score * (wem - 1.0), torch.zeros_like(score))
-            elim = (per_player[weakest] < float(config.weakest_enemy_elim_ships)).to(dtype)
-            boost = boost + (tgt_owner == weakest).to(dtype) * cand_valid.to(dtype) * elim * float(
-                config.weakest_enemy_elim_bonus)
-            score = score + boost
-
-    # Offensive spend budget per planet = scattered safe_drain (see "drenagem
-    # dupla", todo.md 2026-06-11). Padded shortlist slots contribute zero.
+    # Tactical spend cap: cumulative sends per source may not exceed safe_drain
+    # (each candidate is sized to drain, but two waves from the same source could
+    # otherwise sum past it and drop the source below holding strength).
     spend_budget = torch.zeros(P, dtype=dtype, device=device)
-    spend_budget.scatter_add_(
-        0,
-        source_idx.clamp(0, P - 1).to(torch.long),
-        torch.where(source_exists, drain.floor().to(dtype), torch.zeros_like(drain, dtype=dtype)),
+    spend_budget[source_idx[source_exists]] = (
+        drain.floor().clamp(min=0.0)[source_exists]
     )
-
     wave_entries, leftover = _greedy_select(
         P=P,
         W=W,
@@ -439,10 +395,7 @@ def plan_lite_waves(
         cand_tgt_short=cand_tgt_short,
         cand_is_def=cand_is_def,
         source_budget=obs.ships.to(dtype).clone(),
-        # disable_drain_fix=True -> None reproduces the pre-fix single-budget
-        # behaviour exactly (the gate's pre-fix incumbent); see ProducerLiteConfig.
-        source_spend_budget=(None if getattr(config, "disable_drain_fix", False)
-                             else spend_budget),
+        source_spend_budget=spend_budget,
         target_exists=target_exists,
         roi_threshold=float(config.roi_threshold),
     )

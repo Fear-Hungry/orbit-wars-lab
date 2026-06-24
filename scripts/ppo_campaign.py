@@ -24,11 +24,8 @@ import math
 import shutil
 import sys
 from pathlib import Path
+from statistics import fmean
 from typing import Any
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
 from python.train.train_ppo import (
     Phase0TrainingConfig,
@@ -41,157 +38,92 @@ from scripts.benchmark_ppo_submission import benchmark_exported_checkpoint
 from scripts.drl_promotion_gate import run_drl_promotion_gate
 
 
-def _opponent_parts(name: str) -> tuple[str, ...]:
-    return tuple(part.strip() for part in str(name).split("+") if part.strip())
-
-
-def _pairwise_rate(pairwise: dict[str, Any], name: str) -> float | None:
-    metrics = pairwise.get(name)
-    if not isinstance(metrics, dict):
+def _margin_for_format(report: dict[str, Any], fmt: str) -> float | None:
+    records: list[dict[str, Any]] = []
+    for item in report.get("formats", []):
+        if item.get("format") != fmt:
+            continue
+        if fmt == "2p":
+            for opponent in item.get("opponents", []):
+                records.extend(opponent.get("records", []))
+        else:
+            records.extend(item.get("records", []))
+    if not records:
         return None
-    for key in ("decisive_win_rate", "win_rate"):
-        if key in metrics:
-            return float(metrics[key])
-    return None
+    return float(fmean(float(record["normalized_margin"]) for record in records))
 
 
-def _pfsp_reweighted_opponents(
-    opponents: tuple[str, ...],
-    pairwise: dict[str, Any],
+def _margin_residual_inprocess(
+    checkpoint: Path,
     *,
-    band: tuple[float, float] = (0.35, 0.65),
-    max_repeats: int = 4,
-) -> tuple[str, ...]:
-    """PFSP-style deterministic reweighting from gate pairwise win rates.
+    base_agent: str,
+    opponents: list[str],
+    seeds: list[int],
+    episode_steps: int,
+) -> dict[str, Any]:
+    """Per-chunk gate for the residual arch: evaluate IN-PROCESS (the BReP arch has
+    no render_submission export path). Margin vs the first opponent (the parity-floor
+    base, e.g. pgs_holdwave) is the gate; others are reported for context."""
+    import torch
 
-    Opponents with at least one component near the learning frontier
-    (win-rate inside ``band``) are repeated most. Composite 4p lineups keep their
-    shape; only their sampling frequency changes.
-    """
-    lo, hi = float(band[0]), float(band[1])
-    cap = max(1, int(max_repeats))
-    weighted: list[str] = []
-    for opponent in opponents:
-        rates = [
-            rate
-            for part in _opponent_parts(opponent)
-            if (rate := _pairwise_rate(pairwise, part)) is not None
-        ]
-        repeats = 1
-        if rates:
-            if any(lo <= rate <= hi for rate in rates):
-                repeats = cap
-            else:
-                closeness = max(max(0.0, 1.0 - abs(rate - 0.5) / 0.5) for rate in rates)
-                if closeness >= 0.5:
-                    repeats = max(2, cap // 2)
-        weighted.extend([opponent] * repeats)
-    return tuple(weighted)
+    from python.agents.policy import ProducerResidualBranchActorCritic
+    from python.train.train_ppo import evaluate_residual_margin
+    from orbit_wars_gym.encoding import observation_dim
 
-
-def _linear_schedule(start: float, end: float, progress: float) -> float:
-    progress = min(max(float(progress), 0.0), 1.0)
-    return float(start + (end - start) * progress)
-
-
-def _mixed_stage_timesteps(total: int, two_player_fraction: float) -> tuple[int, int]:
-    total = int(total)
-    if total < 2:
-        raise ValueError("mixed_2p4p requires chunk_timesteps >= 2")
-    frac = min(max(float(two_player_fraction), 0.05), 0.95)
-    two_player = int(round(total * frac))
-    two_player = min(max(1, two_player), total - 1)
-    return two_player, total - two_player
+    ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    model = ProducerResidualBranchActorCritic(observation_dim())
+    model.load_state_dict(ckpt["model_state_dict"])
+    per_opp = {
+        opp: evaluate_residual_margin(
+            model, base_agent=base_agent, opponent_name=opp,
+            seeds=len(seeds), episode_steps=episode_steps,
+        )
+        for opp in opponents
+    }
+    gate = per_opp[opponents[0]]
+    return {
+        "games": gate["games"],
+        "win_rate": gate["win_rate"],
+        "mean_score_margin": gate["mean_score_margin"],
+        "invalid_action_rate": 0.0,
+        "margin_2p": gate["mean_score_margin"],
+        "margin_4p": None,
+        "per_opponent": {o: per_opp[o]["mean_score_margin"] for o in opponents},
+    }
 
 
-def _training_stages(
-    training_track: str,
+def _margin_gridnet_inprocess(
+    checkpoint: Path,
     *,
-    chunk: int,
-    chunk_timesteps: int,
-    mixed_2p_fraction: float,
-    final_checkpoint: Path,
-) -> list[dict[str, Any]]:
-    if training_track == "phase0_2p":
-        return [
-            {
-                "track": "phase0_2p",
-                "num_players": 2,
-                "timesteps": int(chunk_timesteps),
-                "checkpoint": final_checkpoint,
-            }
-        ]
-    if training_track == "phase5_4p":
-        return [
-            {
-                "track": "phase5_4p",
-                "num_players": 4,
-                "timesteps": int(chunk_timesteps),
-                "checkpoint": final_checkpoint,
-            }
-        ]
-    if training_track == "mixed_2p4p":
-        steps_2p, steps_4p = _mixed_stage_timesteps(chunk_timesteps, mixed_2p_fraction)
-        return [
-            {
-                "track": "phase0_2p",
-                "num_players": 2,
-                "timesteps": steps_2p,
-                "checkpoint": final_checkpoint.with_name(f"chunk{chunk:02d}_2p.pt"),
-            },
-            {
-                "track": "phase5_4p",
-                "num_players": 4,
-                "timesteps": steps_4p,
-                "checkpoint": final_checkpoint,
-            },
-        ]
-    raise ValueError(f"unknown training_track: {training_track}")
+    opponents: list[str],
+    seeds: list[int],
+    episode_steps: int,
+) -> dict[str, Any]:
+    """Per-chunk gate for the GridNet arch: evaluate IN-PROCESS (no render_submission
+    path). Margin vs the first opponent (e.g. pgs_holdwave) is the gate."""
+    import torch
 
+    from python.agents.policy import GridNetActorCritic
+    from python.train.train_ppo import evaluate_gridnet_margin
+    from orbit_wars_gym.encoding import observation_dim
 
-def _build_training_config(track: str, cfg_kwargs: dict[str, Any]) -> Phase0TrainingConfig:
-    if track == "phase5_4p":
-        return build_phase5_4p_config(**cfg_kwargs)
-    if track == "phase0_2p":
-        return Phase0TrainingConfig(**cfg_kwargs)
-    raise ValueError(f"unknown training stage track: {track}")
-
-
-def _train_stage(track: str, cfg: Phase0TrainingConfig) -> dict[str, Any]:
-    return train_phase5_4p(cfg) if track == "phase5_4p" else train_phase0(cfg)
-
-
-def _combined_train_summary(stage_records: list[dict[str, Any]]) -> dict[str, Any]:
-    if not stage_records:
-        return {}
-    summaries = [record["summary"] for record in stage_records]
-    final = dict(summaries[-1])
-    observed = sum(float(summary.get("episodes_observed", 0.0)) for summary in summaries)
-    completed = sum(float(summary.get("completed_episodes", 0.0)) for summary in summaries)
-    final["episodes_observed"] = observed
-    final["completed_episodes"] = completed
-    if observed > 0.0:
-        final["mean_return"] = (
-            sum(
-                float(summary.get("mean_return", 0.0))
-                * float(summary.get("episodes_observed", 0.0))
-                for summary in summaries
-            )
-            / observed
-        )
-        final["mean_early_survival_rate"] = (
-            sum(
-                float(summary.get("mean_early_survival_rate", 0.0))
-                * float(summary.get("episodes_observed", 0.0))
-                for summary in summaries
-            )
-            / observed
-        )
-    final["learner_seat_rotation"] = any(
-        bool(summary.get("learner_seat_rotation", False)) for summary in summaries
-    )
-    final["training_stages"] = stage_records
-    return final
+    ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    model = GridNetActorCritic(observation_dim())
+    model.load_state_dict(ckpt["model_state_dict"])
+    per_opp = {
+        opp: evaluate_gridnet_margin(model, opponent_name=opp, seeds=len(seeds), episode_steps=episode_steps)
+        for opp in opponents
+    }
+    gate = per_opp[opponents[0]]
+    return {
+        "games": gate["games"],
+        "win_rate": gate["win_rate"],
+        "mean_score_margin": gate["mean_score_margin"],
+        "invalid_action_rate": 0.0,
+        "margin_2p": gate["mean_score_margin"],
+        "margin_4p": None,
+        "per_opponent": {o: per_opp[o]["mean_score_margin"] for o in opponents},
+    }
 
 
 def _margin(
@@ -201,9 +133,19 @@ def _margin(
     seeds: list[int],
     episode_steps: int,
     include_4p: bool = False,
-    jobs: int | None = None,
+    jobs: int = 1,
+    policy_arch: str = "flat",
+    base_agent: str = "producer",
 ) -> dict[str, Any]:
-    eval_jobs = min(8, len(seeds)) if jobs is None else max(1, int(jobs))
+    if policy_arch == "producer_residual":
+        return _margin_residual_inprocess(
+            checkpoint, base_agent=base_agent, opponents=opponents,
+            seeds=seeds, episode_steps=episode_steps,
+        )
+    if policy_arch == "gridnet":
+        return _margin_gridnet_inprocess(
+            checkpoint, opponents=opponents, seeds=seeds, episode_steps=episode_steps,
+        )
     report = benchmark_exported_checkpoint(
         checkpoint,
         submission_out=checkpoint.with_suffix(".sub.py"),
@@ -212,10 +154,13 @@ def _margin(
         episode_steps=episode_steps,
         enable_comets=True,
         act_timeout=1.0,
-        include_4p=bool(include_4p),
-        jobs=eval_jobs,
+        include_4p=include_4p,
+        jobs=jobs,
     )
-    return report["summary"]
+    summary = dict(report["summary"])
+    summary["margin_2p"] = _margin_for_format(report, "2p")
+    summary["margin_4p"] = _margin_for_format(report, "4p")
+    return summary
 
 
 def run_campaign(
@@ -241,32 +186,17 @@ def run_campaign(
     device: str = "cpu",
     rollout_num_envs: int = 1,
     training_track: str = "phase0_2p",
-    num_players: int | None = None,
-    mixed_2p_fraction: float = 0.5,
-    strict_drl_gate: bool = False,
-    drl_profile: str = "quick",
-    drl_seeds: int | None = None,
-    drl_steps: int | None = None,
-    drl_jobs: int = 1,
-    pfsp: bool = False,
-    pfsp_min_winrate: float = 0.35,
-    pfsp_max_winrate: float = 0.65,
-    pfsp_max_repeats: int = 4,
-    kl_to_ref_coef: float = 0.0,
-    ref_checkpoint: str | None = None,
-    require_terminal_reward: bool = False,
-    bc_anchor_coef: float = 0.0,
-    bc_anchor_coef_end: float | None = None,
-    bc_anchor_teacher: str | None = None,
-    bc_anchor_max_quant_error: float = float("inf"),
-    decoder_max_moves_per_turn: int | None = None,
-    decoder_min_ships_to_launch: int | None = None,
-    decoder_reserve_home_ships: int | None = None,
-    decoder_force_target_rank: int | None = None,
-    inherit_checkpoint_decoder: bool = True,
-    min_decoder_max_moves_per_turn: int = 1,
+    policy_arch: str = "flat",
+    base_agent: str = "producer",
+    league: bool = False,
+    eval_jobs: int = 1,
+    eval_include_4p: bool = False,
 ) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
+    if training_track == "phase5_4p" and rollout_num_envs != 1:
+        # train_ppo only supports vectorized rollouts with num_players == 2.
+        print("phase5_4p: forcing rollout_num_envs=1 (multi-env rollout is 2p-only)")
+        rollout_num_envs = 1
     prev = init_checkpoint
     best_margin = float("-inf")
     best_path: Path | None = None
@@ -282,245 +212,52 @@ def run_campaign(
 
     for chunk in range(chunks):
         ckpt = out_dir / f"chunk{chunk:02d}.pt"
-        stages = _training_stages(
-            training_track,
-            chunk=chunk,
-            chunk_timesteps=chunk_timesteps,
-            mixed_2p_fraction=mixed_2p_fraction,
-            final_checkpoint=ckpt,
+        common = dict(
+            seed=seed + chunk,
+            policy_arch=policy_arch,
+            base_agent=base_agent,
+            opponents=opponents,
+            total_timesteps=chunk_timesteps,
+            rollout_steps=rollout_steps,
+            rollout_num_envs=rollout_num_envs,
+            ent_coef=ent_coef,
+            device=device,
+            checkpoint_in=prev,
+            checkpoint_out=str(ckpt),
         )
-        stage_records: list[dict[str, Any]] = []
-        stage_prev = prev
-        elapsed_chunk_steps = 0
-        for stage_idx, stage in enumerate(stages):
-            stage_start_progress = (chunk * chunk_timesteps + elapsed_chunk_steps) / max(
-                float(chunks * chunk_timesteps), 1.0
-            )
-            stage_end_progress = (
-                chunk * chunk_timesteps + elapsed_chunk_steps + int(stage["timesteps"])
-            ) / max(float(chunks * chunk_timesteps), 1.0)
-            stage_bc_anchor_coef = _linear_schedule(
-                anchor_start, anchor_final, stage_start_progress
-            )
-            stage_bc_anchor_coef_end = (
-                _linear_schedule(anchor_start, anchor_final, stage_end_progress)
-                if bc_anchor_coef_end is not None
-                else None
-            )
-            cfg_kwargs = dict(
-                seed=seed + chunk * 100 + stage_idx,
-                policy_track=stage["track"],
-                num_players=int(stage["num_players"]),
-                opponents=active_opponents,
-                total_timesteps=int(stage["timesteps"]),
-                episode_steps=int(train_episode_steps),
-                rollout_steps=rollout_steps,
-                rollout_num_envs=rollout_num_envs,
-                ent_coef=ent_coef,
-                learning_rate=float(learning_rate),
-                clip_coef=float(clip_coef),
-                update_epochs=int(update_epochs),
-                minibatch_size=int(minibatch_size),
-                device=device,
-                checkpoint_in=stage_prev,
-                checkpoint_out=str(stage["checkpoint"]),
-                kl_to_ref_coef=float(kl_to_ref_coef),
-                ref_checkpoint=(ref_checkpoint or init_checkpoint)
-                if float(kl_to_ref_coef) > 0.0
-                else None,
-                bc_anchor_coef=stage_bc_anchor_coef,
-                bc_anchor_coef_end=stage_bc_anchor_coef_end,
-                bc_anchor_teacher=bc_anchor_teacher,
-                bc_anchor_max_quant_error=float(bc_anchor_max_quant_error),
-                inherit_checkpoint_decoder=bool(inherit_checkpoint_decoder),
-            )
-            if decoder_max_moves_per_turn is not None:
-                cfg_kwargs["decoder_max_moves_per_turn"] = int(decoder_max_moves_per_turn)
-            if decoder_min_ships_to_launch is not None:
-                cfg_kwargs["decoder_min_ships_to_launch"] = int(decoder_min_ships_to_launch)
-            if decoder_reserve_home_ships is not None:
-                cfg_kwargs["decoder_reserve_home_ships"] = int(decoder_reserve_home_ships)
-            if decoder_force_target_rank is not None:
-                cfg_kwargs["decoder_force_target_rank"] = int(decoder_force_target_rank)
-            cfg = _build_training_config(stage["track"], cfg_kwargs)
-            stage_summary = _train_stage(stage["track"], cfg)
-            stage_records.append(
-                {
-                    "track": stage["track"],
-                    "num_players": int(stage["num_players"]),
-                    "timesteps": int(stage["timesteps"]),
-                    "checkpoint": str(stage["checkpoint"]),
-                    "bc_anchor_start_coef": stage_bc_anchor_coef,
-                    "bc_anchor_end_coef": (
-                        stage_bc_anchor_coef
-                        if stage_bc_anchor_coef_end is None
-                        else stage_bc_anchor_coef_end
-                    ),
-                    "episodes_observed": float(stage_summary.get("episodes_observed", 0.0)),
-                    "completed_episodes": float(stage_summary.get("completed_episodes", 0.0)),
-                    "learner_seat_rotation": bool(
-                        stage_summary.get("learner_seat_rotation", False)
-                    ),
-                    "summary": stage_summary,
-                }
-            )
-            stage_prev = str(stage["checkpoint"])
-            elapsed_chunk_steps += int(stage["timesteps"])
-        train_summary = _combined_train_summary(stage_records)
-        episodes_observed = float(train_summary.get("episodes_observed", 0.0))
-        completed_episodes = float(train_summary.get("completed_episodes", 0.0))
-        terminal_reward_observed = completed_episodes > 0.0
-        decoder_summary = (
-            train_summary.get("decoder") if isinstance(train_summary.get("decoder"), dict) else {}
-        )
-        effective_decoder_max_moves = int(
-            decoder_summary.get("max_moves_per_turn", getattr(cfg, "decoder_max_moves_per_turn", 1))
-        )
-        decoder_capacity_floor = max(1, int(min_decoder_max_moves_per_turn))
-        decoder_capacity_ok = effective_decoder_max_moves >= decoder_capacity_floor
-        terminal_signal_ok = terminal_reward_observed or not require_terminal_reward
-        train_signal_ok = terminal_signal_ok and decoder_capacity_ok
-        if not terminal_signal_ok:
-            train_signal_verdict = "REJECT_NO_TERMINAL_REWARD"
-        elif not decoder_capacity_ok:
-            train_signal_verdict = "REJECT_DECODER_CAPACITY"
+        # League/PFSP: the "self" opponent is the PREVIOUS chunk's frozen snapshot
+        # (or the BC init on chunk 0), so opponent strength tracks the agent and the
+        # learning stays in the ~50%-win zone that crosses strength gaps.
+        if league and policy_arch == "gridnet" and prev:
+            common["self_opponent_checkpoint"] = str(prev)
+        if training_track == "phase5_4p":
+            train_summary = train_phase5_4p(build_phase5_4p_config(**common))
         else:
-            train_signal_verdict = "PASS_TRAIN_SIGNAL"
-        include_eval_4p = training_track in {"phase5_4p", "mixed_2p4p"}
+            train_summary = train_phase0(Phase0TrainingConfig(**common))
         summary = _margin(
             ckpt,
             opponents=eval_opponents,
             seeds=eval_seeds,
             episode_steps=eval_episode_steps,
-            include_4p=include_eval_4p,
-            jobs=resolved_eval_jobs,
+            include_4p=eval_include_4p,
+            jobs=eval_jobs,
+            policy_arch=policy_arch,
+            base_agent=base_agent,
         )
-        margin = float(summary["mean_score_margin"])
-        gate_report_path: Path | None = None
-        gate_verdict = "NOT_RUN"
-        gate_score = margin
-        gate_score_2p: float | None = None
-        gate_score_4p: float | None = None
-        gate_pairwise: dict[str, Any] = {}
-        next_opponents = active_opponents
-        if strict_drl_gate and not train_signal_ok:
-            gate_verdict = "SKIP_NO_TERMINAL_REWARD"
-        elif strict_drl_gate:
-            gate_dir = out_dir / "drl_gate" / f"chunk{chunk:02d}"
-            gate_checkpoint_patterns = [str(ckpt)]
-            gate_checkpoint_4p: str | None = None
-            gate_four_player_policy = "neural"
-            if training_track == "phase0_2p":
-                gate_four_player_policy = "template"
-            elif training_track == "phase5_4p":
-                gate_checkpoint_patterns = [str(init_checkpoint)]
-                gate_checkpoint_4p = str(ckpt)
-            elif training_track == "mixed_2p4p":
-                two_player_stage = next(
-                    (stage for stage in stage_records if str(stage["track"]) == "phase0_2p"),
-                    None,
-                )
-                if two_player_stage is not None:
-                    gate_checkpoint_patterns = [str(two_player_stage["checkpoint"])]
-                    gate_checkpoint_4p = str(ckpt)
-            gate_report = run_drl_promotion_gate(
-                checkpoint_patterns=gate_checkpoint_patterns,
-                league_candidates=[],
-                out_dir=gate_dir,
-                profile=drl_profile,
-                seeds=drl_seeds,
-                seed_base=200_000 + 10_000 * chunk + seed,
-                steps=drl_steps,
-                jobs=drl_jobs,
-                match_chunk_size=0,
-                skip_run=False,
-                required_2p_threshold=0.50,
-                min_decisive_2p=None,
-                min_producer_winrate=0.50,
-                min_incumbent_winrate=0.50,
-                min_floor_winrate=0.60,
-                max_annihilation_rate_4p=0.35,
-                weight_2p=0.46,
-                checkpoint_4p=gate_checkpoint_4p,
-                four_player_policy=gate_four_player_policy,
-            )
-            gate_report_path = gate_dir / "report.json"
-            gate_report_path.parent.mkdir(parents=True, exist_ok=True)
-            gate_report_path.write_text(
-                json.dumps(gate_report, indent=2, sort_keys=True), encoding="utf-8"
-            )
-            gate_row = next(
-                row
-                for row in gate_report["ranking"]
-                if row["candidate"] in gate_report["prepared_candidates"]
-            )
-            gate_verdict = str(gate_row["verdict"])
-            gate_score = float(gate_row["overall_score"])
-            gate_score_2p = (
-                float(gate_row["score_2p"]) if gate_row.get("score_2p") is not None else None
-            )
-            gate_score_4p = (
-                float(gate_row["score_4p"]) if gate_row.get("score_4p") is not None else None
-            )
-            candidates_info = gate_report.get("candidates", {})
-            candidate_info = (
-                candidates_info.get(gate_row["candidate"], {})
-                if isinstance(candidates_info, dict)
-                else {}
-            )
-            pairwise = candidate_info.get("pairwise", {})
-            if isinstance(pairwise, dict):
-                gate_pairwise = {
-                    str(name): {
-                        "win_rate": float(metrics.get("win_rate", 0.0)),
-                        "decisive_win_rate": (
-                            float(metrics["decisive_win_rate"])
-                            if metrics.get("decisive_win_rate") is not None
-                            else None
-                        ),
-                        "nonloss_rate": float(metrics.get("nonloss_rate", 0.0)),
-                        "faults": dict(metrics.get("faults", {})),
-                    }
-                    for name, metrics in sorted(pairwise.items())
-                    if isinstance(metrics, dict)
-                }
-            if pfsp:
-                if isinstance(pairwise, dict):
-                    next_opponents = _pfsp_reweighted_opponents(
-                        active_opponents,
-                        pairwise,
-                        band=(pfsp_min_winrate, pfsp_max_winrate),
-                        max_repeats=pfsp_max_repeats,
-                    )
+        # The gate margin must reflect the track's goal: a 4p campaign is judged
+        # on the 4p format, not on an aggregate diluted by 2p games.
+        if training_track == "phase5_4p" and summary.get("margin_4p") is not None:
+            margin = float(summary["margin_4p"])
+        else:
+            margin = float(summary["mean_score_margin"])
         record = {
             "chunk": chunk,
             "cumulative_timesteps": (chunk + 1) * chunk_timesteps,
             "train_episode_steps": int(train_episode_steps),
             "training_opponents": list(active_opponents),
             "margin": margin,
-            "gate_score": gate_score,
-            "gate_score_2p": gate_score_2p,
-            "gate_score_4p": gate_score_4p,
-            "gate_pairwise": gate_pairwise,
-            "gate_verdict": gate_verdict,
-            "gate_report": str(gate_report_path) if gate_report_path is not None else None,
-            "gate_four_player_policy": (
-                gate_four_player_policy if strict_drl_gate and train_signal_ok else None
-            ),
-            "gate_checkpoint_2p": (
-                gate_checkpoint_patterns[0] if strict_drl_gate and train_signal_ok else None
-            ),
-            "gate_checkpoint_4p": (
-                gate_checkpoint_4p if strict_drl_gate and train_signal_ok else None
-            ),
-            "pfsp_enabled": bool(pfsp),
-            "next_training_opponents": list(next_opponents),
-            "training_stages": [
-                {key: value for key, value in stage.items() if key != "summary"}
-                for stage in stage_records
-            ],
-            "eval_include_4p": bool(include_eval_4p),
-            "eval_games": float(summary.get("games", 0.0)),
+            "margin_2p": summary.get("margin_2p"),
+            "margin_4p": summary.get("margin_4p"),
             "win_rate": float(summary["win_rate"]),
             "invalid_action_rate": float(summary["invalid_action_rate"]),
             "episodes_observed": episodes_observed,
@@ -599,11 +336,12 @@ def run_campaign(
 
     report = {
         "init_checkpoint": init_checkpoint,
+        "training_track": training_track,
+        "policy_arch": policy_arch,
         "opponents": list(opponents),
         "eval_opponents": eval_opponents,
         "eval_seeds": eval_seeds,
-        "eval_jobs": int(resolved_eval_jobs),
-        "train_episode_steps": int(train_episode_steps),
+        "eval_include_4p": eval_include_4p,
         "ent_coef": ent_coef,
         "learning_rate": float(learning_rate),
         "clip_coef": float(clip_coef),
@@ -678,7 +416,12 @@ def run_campaign(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--init", required=True, help="initial checkpoint (e.g. a BC checkpoint)")
+    parser.add_argument(
+        "--init",
+        default="",
+        help="initial checkpoint (e.g. a BC checkpoint); empty = fresh init "
+        "(producer_residual trains from KEEP-init = parity floor)",
+    )
     parser.add_argument("--out-dir", default="artifacts/ppo/campaign")
     parser.add_argument(
         "--opponents",
@@ -755,32 +498,35 @@ def main() -> None:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--rollout-num-envs", type=int, default=1)
     parser.add_argument(
-        "--training-track", choices=("phase0_2p", "phase5_4p", "mixed_2p4p"), default="phase0_2p"
-    )
-    parser.add_argument("--num-players", type=int, default=None)
-    parser.add_argument(
-        "--mixed-2p-fraction",
-        type=float,
-        default=0.5,
-        help="fraction of each mixed_2p4p chunk spent on 2p before the 4p substage",
+        "--training-track",
+        choices=("phase0_2p", "phase5_4p"),
+        default="phase0_2p",
+        help="phase5_4p trains 4-player games (single-env rollout only)",
     )
     parser.add_argument(
-        "--strict-drl-gate",
+        "--policy-arch", choices=("flat", "entity", "producer_residual", "gridnet"), default="flat"
+    )
+    parser.add_argument(
+        "--base-agent",
+        default="producer",
+        help="base plan for producer_residual: producer or pgs_holdwave (incumbent floor)",
+    )
+    parser.add_argument(
+        "--league",
         action="store_true",
-        help="run the PPO/BReP 2p+4p promotion gate after each chunk; best.pt is written only for PASS_LOCAL chunks",
+        help="GridNet league/PFSP: self opponent = previous chunk snapshot (growing curriculum)",
     )
-    parser.add_argument("--drl-profile", choices=("quick", "standard", "strong"), default="quick")
-    parser.add_argument("--drl-seeds", type=int, default=None)
-    parser.add_argument("--drl-steps", type=int, default=None)
-    parser.add_argument("--drl-jobs", type=int, default=1)
     parser.add_argument(
-        "--pfsp",
-        action="store_true",
-        help="after each strict gate, reweight the next chunk's opponent pool toward 35-65%% pairwise winrates",
+        "--eval-jobs",
+        type=int,
+        default=1,
+        help="parallel benchmark games per eval; keep 1 on WSL (pool deadlocks)",
     )
-    parser.add_argument("--pfsp-min-winrate", type=float, default=0.35)
-    parser.add_argument("--pfsp-max-winrate", type=float, default=0.65)
-    parser.add_argument("--pfsp-max-repeats", type=int, default=4)
+    parser.add_argument(
+        "--eval-include-4p",
+        action="store_true",
+        help="also benchmark the 4p format each chunk (gate margin for phase5_4p)",
+    )
     args = parser.parse_args()
 
     report = run_campaign(
@@ -817,18 +563,12 @@ def main() -> None:
         seed=args.seed,
         device=args.device,
         rollout_num_envs=args.rollout_num_envs,
-        training_track=str(args.training_track),
-        num_players=args.num_players,
-        mixed_2p_fraction=float(args.mixed_2p_fraction),
-        strict_drl_gate=bool(args.strict_drl_gate),
-        drl_profile=str(args.drl_profile),
-        drl_seeds=args.drl_seeds,
-        drl_steps=args.drl_steps,
-        drl_jobs=int(args.drl_jobs),
-        pfsp=bool(args.pfsp),
-        pfsp_min_winrate=float(args.pfsp_min_winrate),
-        pfsp_max_winrate=float(args.pfsp_max_winrate),
-        pfsp_max_repeats=int(args.pfsp_max_repeats),
+        training_track=args.training_track,
+        policy_arch=args.policy_arch,
+        base_agent=args.base_agent,
+        league=args.league,
+        eval_jobs=max(1, args.eval_jobs),
+        eval_include_4p=args.eval_include_4p,
     )
     print(json.dumps({k: v for k, v in report.items() if k != "history"}, indent=2))
 

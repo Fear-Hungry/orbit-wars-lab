@@ -170,6 +170,10 @@ FORBIDDEN_EXACT_STATS = {
     "illegal_moves",
     "policy_illegal_moves",
     "invalid_actions",
+    # in-planner deadline degradation: PGS silently returning the Producer
+    # floor mid-search. Intentional regimes (floor_in_4p, deviation_max_step)
+    # are NOT counted here — only budget_low() floors.
+    "budget_floor_returns",
 }
 
 

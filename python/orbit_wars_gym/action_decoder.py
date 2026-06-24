@@ -202,6 +202,157 @@ def decode_discrete_action(
     return moves
 
 
+PLANET_SLOTS = 96  # must match encoding.max_planets / policy.PLANET_N
+
+
+def invert_gridnet_moves(
+    state: dict[str, Any],
+    player: int,
+    expert_moves: "list",
+    cfg: DecoderConfig = DEFAULT_DECODER_CONFIG,
+) -> tuple["np.ndarray", float]:
+    """Project expert moves onto a GridNet per-planet action (for BC labels).
+
+    Returns ``(action[PLANET_SLOTS, 4], quant_error)``. For each expert move
+    ``[planet, angle, ships]`` whose source is an own planet at slot ``i``, find the
+    (target_rank, frac, offset) whose decoded angle/ships best matches — using the
+    SAME per-source target ranking as ``decode_gridnet_action`` so decode∘invert is
+    near-identity. Unlike the global 1-tuple inverse (whose shared rank made the
+    target head unlearnable), each source is labelled INDEPENDENTLY, so the BC
+    target signal is clean."""
+    a = np.zeros((PLANET_SLOTS, 4), dtype=np.int64)
+    planets = state.get("planets", [])
+    slot_of = {planet_id(p): i for i, p in enumerate(planets[:PLANET_SLOTS])}
+    total_err = 0.0
+    n = 0
+    used_targets: set[int] = set()
+    for mv in expert_moves:
+        src_id = int(mv[0])
+        if src_id not in slot_of:
+            continue
+        i = slot_of[src_id]
+        src = planets[i]
+        if planet_owner(src) != player:
+            continue
+        candidates = [p for p in planets if planet_id(p) != src_id]
+        if not candidates:
+            continue
+        sx, sy = planet_x(src), planet_y(src)
+        source_xy = (sx, sy)
+        max_launch_ships = max(1, int(planet_ships(src) * cfg.fractions[-1]))
+
+        def target_score(p: Any, source_xy: tuple[float, float] = source_xy, max_ships: int = max_launch_ships) -> float:
+            tx, ty = _predict_target_xy(state, source_xy, p, max_ships)
+            dist = math.hypot(tx - source_xy[0], ty - source_xy[1])
+            owner = planet_owner(p)
+            enemy_bonus = 8.0 if owner not in (-1, player) else 0.0
+            neutral_bonus = 4.0 if owner == -1 else 0.0
+            repeat_penalty = 3.0 if planet_id(p) in used_targets else 0.0
+            return (
+                float(planet_production(p)) * 10.0
+                + enemy_bonus + neutral_bonus - repeat_penalty
+                - 0.15 * dist - 0.12 * float(planet_ships(p))
+            )
+
+        ranked = sorted(candidates, key=target_score, reverse=True)
+        e_angle = float(mv[1])
+        e_ships = float(mv[2])
+        # best (target_rank, offset) reproducing the expert angle; best frac for ships
+        best = None
+        for r, tgt in enumerate(ranked[:32]):
+            ships_guess = max(1, int(e_ships))
+            txy = _predict_target_xy(state, source_xy, tgt, ships_guess)
+            base = _sun_safe_angle(source_xy, txy, _angle(source_xy, txy))
+            for oi, off in enumerate(cfg.angle_offsets):
+                d = abs(math.atan2(math.sin(base + off - e_angle), math.cos(base + off - e_angle)))
+                if best is None or d < best[0]:
+                    best = (d, r, oi)
+        ang_err, target_rank, offset_idx = best
+        src_ships = max(1.0, float(planet_ships(src)))
+        frac_idx = int(min(range(len(cfg.fractions)), key=lambda k: abs(cfg.fractions[k] - e_ships / src_ships)))
+        a[i, 0] = 1
+        a[i, 1] = target_rank % max(1, len(ranked))
+        a[i, 2] = frac_idx
+        a[i, 3] = offset_idx
+        used_targets.add(planet_id(ranked[target_rank % len(ranked)]))
+        total_err += ang_err
+        n += 1
+    return a, (total_err / n if n else 0.0)
+
+
+def gridnet_planet_mask(
+    state: dict[str, Any], player: int, cfg: DecoderConfig = DEFAULT_DECODER_CONFIG
+) -> "np.ndarray":
+    """Per-planet launch mask aligned to encode_state's slot order (planets[i] -> i).
+
+    Slot ``i`` is active iff ``planets[i]`` is the player's and has enough ships to
+    launch. Inactive slots are forced to no-op by the policy — this is the launch
+    half of the full GridNet mask (target/frac stay decode-legal via modulo)."""
+    planets = state.get("planets", [])
+    mask = np.zeros(PLANET_SLOTS, dtype=bool)
+    for i, p in enumerate(planets[:PLANET_SLOTS]):
+        if planet_owner(p) == player and planet_ships(p) >= cfg.min_ships_to_launch:
+            mask[i] = True
+    return mask
+
+
+def decode_gridnet_action(
+    state: dict[str, Any],
+    player: int,
+    action: "np.ndarray | list",
+    cfg: DecoderConfig = DEFAULT_DECODER_CONFIG,
+) -> list[list[float]]:
+    """Decode a per-planet GridNet action into official moves.
+
+    ``action`` is ``(PLANET_SLOTS, 4)``: row ``i`` = ``[launch, target_rank,
+    frac_idx, offset_idx]`` for ``planets[i]``. Each OWN planet with launch==1 and
+    enough ships emits ONE move toward its OWN heuristically-ranked target — sources
+    are INDEPENDENT (no shared rank), so multi-source plans are representable. Each
+    target may be hit once per turn (used_targets) to avoid degenerate stacking."""
+    a = np.asarray(action, dtype=np.int64)
+    planets = state.get("planets", [])
+    moves: list[list[float]] = []
+    used_targets: set[int] = set()
+    for i, src in enumerate(planets[:PLANET_SLOTS]):
+        if i >= a.shape[0] or int(a[i, 0]) != 1:
+            continue
+        if planet_owner(src) != player or planet_ships(src) < cfg.min_ships_to_launch:
+            continue
+        candidates = [p for p in planets if planet_id(p) != planet_id(src)]
+        if not candidates:
+            continue
+        sx, sy = planet_x(src), planet_y(src)
+        max_launch_ships = max(1, int(planet_ships(src) * cfg.fractions[-1]))
+        source_xy = (sx, sy)
+
+        def target_score(p: Any, source_xy: tuple[float, float] = source_xy, max_ships: int = max_launch_ships) -> float:
+            tx, ty = _predict_target_xy(state, source_xy, p, max_ships)
+            dist = math.hypot(tx - source_xy[0], ty - source_xy[1])
+            owner = planet_owner(p)
+            enemy_bonus = 8.0 if owner not in (-1, player) else 0.0
+            neutral_bonus = 4.0 if owner == -1 else 0.0
+            repeat_penalty = 3.0 if planet_id(p) in used_targets else 0.0
+            return (
+                float(planet_production(p)) * 10.0
+                + enemy_bonus + neutral_bonus - repeat_penalty
+                - 0.15 * dist - 0.12 * float(planet_ships(p))
+            )
+
+        candidates.sort(key=target_score, reverse=True)
+        target = candidates[int(a[i, 1]) % len(candidates)]
+        frac = cfg.fractions[int(a[i, 2]) % len(cfg.fractions)]
+        ships = int(max(0, math.floor(float(planet_ships(src)) * frac)))
+        if ships <= 0:
+            continue
+        target_xy = _predict_target_xy(state, source_xy, target, ships)
+        base = _angle(source_xy, target_xy)
+        base = _sun_safe_angle(source_xy, target_xy, base)
+        angle = base + cfg.angle_offsets[int(a[i, 3]) % len(cfg.angle_offsets)]
+        moves.append([planet_id(src), float(angle), int(ships)])
+        used_targets.add(planet_id(target))
+    return moves
+
+
 def greedy_moves(
     state: dict[str, Any],
     player: int,

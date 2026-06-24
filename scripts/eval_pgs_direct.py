@@ -134,6 +134,11 @@ def main() -> None:
     ap.add_argument("--wave-min-ships", type=float, default=None)
     ap.add_argument("--wave-start-step", type=int, default=None)
     ap.add_argument("--wave-max-delay", type=int, default=None)
+    ap.add_argument(
+        "--config-json", type=str, default=None,
+        help="JSON dict merged into PGSConfig kwargs (v3 knobs: mission_mode, "
+             "enabled_missions, adaptive_mode, adaptive_reply_models, value_mode, "
+             "wave_release_on_age, hoard_min_step, ...)")
     ap.add_argument("--out")
     args = ap.parse_args()
 
@@ -143,6 +148,8 @@ def main() -> None:
         v = getattr(args, key)
         if v is not None:
             pgs_config[key] = v
+    if args.config_json:
+        pgs_config.update(json.loads(args.config_json))
 
     seeds = list(range(args.seed_base, args.seed_base + args.seeds))
     enable_comets = not args.no_comets

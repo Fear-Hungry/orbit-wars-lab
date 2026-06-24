@@ -15,12 +15,14 @@ strictly contains Producer instead of merely containing it as one candidate.
 
 Submission-safe: pure Python over ``orbit_lite``/``bots`` (no Rust import).
 """
+
 from __future__ import annotations
 
 import math
 import os
 import time
-from dataclasses import dataclass, replace as _dc_replace
+from collections import deque
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -42,6 +44,7 @@ from orbit_lite.planner_core import (
     empty_action_row,
     entries_to_sparse_payload,
     largest_initial_player_count,
+    safe_drain,
 )
 from torch import Tensor
 
@@ -133,68 +136,130 @@ class PGSConfig:
     # selects them). A real 4p fix needs a LEARNED value (H7) or a 4p-aware multi-turn
     # threat model — not a flag. Left off by default.
     defend_in_4p: bool = False
-    # H9 (DB 169/234) — 4p multi-player threat value. When True, _plan_value in 4p
-    # scores the post-launch projection with bots/pgs/threat.compute_threat_features
-    # (forward, PER-ENEMY max/min over the trajectory + arrivals_by_owner) instead of
-    # the endpoint margin@H. The probe (scripts/h9_threat_probe.py) confirmed margin@H
-    # is flat across launch/hold/defend (DB 118) while threat_value separates them in
-    # 86% of states, so the coordinate-ascent search can finally SELECT survival plans
-    # (reinforce/evac already offered via `scripts`). No learned net (contrast H7, DB
-    # 166/172). Pure-python / submission-safe. Off until the 4p death gate passes.
-    threat_value_4p: bool = False
-    # H9 threat-value term weights (research-loop search space). Defaults reproduce
-    # the shipped v2 ThreatFeatures.threat_value scalar exactly; the auto-research
-    # loop (scripts/research_loop/) mutates these to trade off survival terms.
-    threat_planet_weight: float = 100.0
-    threat_first_loss_weight: float = 2.0
-    threat_incoming_weight: float = 0.5
-    threat_ships_weight: float = 0.01
-    # A/B harness for the "drenagem dupla" fix (commit 8459f7b). When True, the
-    # producer floor AND the 2-ply reply arbiter both run plan_lite_waves with
-    # the fix disabled (source_spend_budget=None == pre-fix single budget). Used
-    # only by the pgs_hold_prefix incumbent in the seat-rotated promotion gate
-    # (scripts/league_submit_ruler.py). Per-instance, so candidate (fix) and
-    # incumbent (pre-fix) play head-to-head in one process without leaking. The
-    # live submission pgs_holdwave keeps the default (fix ON).
-    disable_drain_fix: bool = False
-    # Rank-19 threat-aware OFFENSE targeting passed to the Producer floor: gate out
-    # captures whose target the enemy can reinforce after our launch (general, all
-    # game). 0.0 == holdwave's byte-identical behaviour. See _upstream.py.
-    reactive_reinforce_margin: float = 0.0
-    # Threat-aware DEFENSE (mirror of the offense term) passed to the Producer floor:
-    # don't drain sources the enemy can attack (counters 4p overextension). See
-    # _upstream.py. 0.0 == holdwave byte-identical.
-    reactive_defense_margin: float = 0.0
-    # Weakest-enemy 4p targeting (kvatsa5 lever) passed to the Producer floor: gang up
-    # on the weakest opponent in 4p. 1.0 == holdwave byte-identical. See _upstream.py.
-    weakest_enemy_4p_mult: float = 1.0
-    # Exposed-target bonus (kvatsa5 lever) passed to the Producer floor: snipe enemy
-    # planets with a low garrison (2p+4p). 1.0 == holdwave byte-identical. See _upstream.py.
-    exposed_target_mult: float = 1.0
-    # G3.2 Phase 2 — DECISIVE-WAVE conversion for even_attrition_2p (loss class #2,
-    # 125/382 real losses, ~all 2p; docs/LOSS_TAXONOMY.md). Phase 1
-    # (g32_even_attrition_2p_phase1) found the tell: LOSERS SPRAY (frac_ships_in_big
-    # 0.38 loss vs 0.60 win) — they dribble force across small waves and never
-    # convert parity into a kill. That is losing the Lanchester exchange (combat
-    # power ~ N^2, so one concentrated wave beats many small ones). The fix is
-    # ACTIVE force concentration, NOT better defence: in a roughly-even 2p
-    # late-game, FOCUS-FIRE the enemy CORE (max-production enemy planet we are
-    # already attacking), withholding attacks on every OTHER enemy target so
-    # garrisons accumulate into ONE decisive wave (hoard -> strike). Distinct from
-    # the rejected wave-v0 unconditional size veto (lost tempo on expansion/
-    # defence, id=139): this is decisive-2p-regime-only, ATTACK-only, and
-    # concentrates rather than merely vetoes. Off by default (live pgs_holdwave
-    # unchanged); A/B'd via the seat-rotated 2p ruler before any ship.
-    decisive_wave_2p: bool = False
-    decisive_wave_start_step: int = 200      # late-game only (attrition collapses late)
-    decisive_wave_even_band: float = 0.30    # active when |my_ship_share - 0.5| <= band/2
-    # Release threshold for the concentrated wave. Above holdwave's 60-ship merge
-    # (so it genuinely concentrates further) but reachable by 1-2 sources' summed
-    # safe_drain in a late-game hoard — set too high and the floor never proposes
-    # it, so the filter just withholds and turns passive (the H7 failure mode).
-    # Elite LB waves are ~50-80 ships (lb_elite_style_taxonomy).
-    decisive_wave_min: float = 80.0
-    decisive_wave_max_delay: int = 20        # force a release after this many held turns
+    # PGS v3 adaptive hooks. Defaults are inert: profiling may observe state when
+    # enabled, but reply models/missions/value changes are opt-in.
+    adaptive_mode: bool = False
+    profile_min_step: int = 8
+    profile_ewma_alpha: float = 0.12
+    profile_switch_confidence: float = 0.65
+    profile_min_role_age: int = 8
+    adaptive_reply_models: bool = False
+    reply_models_default: str = "producer"
+    reply_models_vs_rusher: str = "producer,rush,hold"
+    reply_models_vs_expander: str = "producer,expand"
+    reply_models_vs_sprayer: str = "producer,hold"
+    reply_models_vs_wave: str = "producer,wave,rush"
+    reply_models_vs_turtle: str = "producer,expand"
+    reply_worst_case: bool = True
+    # Accepted by experimental league configs. Mission/timeline phases are wired
+    # behind these flags as they land; keeping the knobs here avoids config drift.
+    mission_mode: bool = False
+    enabled_missions: str = ""
+    max_mission_candidates: int = 24
+    max_selected_missions: int = 3
+    rescue_hold_window: int = 10
+    mission_min_advantage: float = 15.0
+    hammer_top_targets: int = 4
+    hammer_top_sources: int = 6
+    hammer_max_sources: int = 3
+    hammer_min_total_ships: float = 50.0
+    hammer_hold_window: int = 12
+    punish_recent_window: int = 24
+    punish_min_enemy_launch: float = 35.0
+    evac_max_fraction: float = 0.75
+    evac_min_send: float = 8.0
+    recapture_max_targets: int = 4
+    recapture_min_send: float = 8.0
+    value_mode: str = "scalar"
+    timeline_horizon: int = 80
+    timeline_discount: float = 0.985
+    timeline_prod_weight: float = 2.5
+    timeline_min_ship_weight: float = 1.5
+    timeline_terminal_ship_weight: float = 1.0
+    # timeline: a board where we own ZERO planets at any step is a loss now,
+    # not a bad margin — plans that die mid-horizon must be dominated by any
+    # plan that survives (H7 lesson: value picking HOLD/passivity died 92%).
+    timeline_death_penalty: float = 100000.0
+    # timeline: capture only counts if HELD — a capture that flips back within
+    # capture_hold_turns earns nothing ("capturar e perder 3 turnos depois").
+    timeline_capture_hold_weight: float = 8.0
+    timeline_capture_hold_turns: int = 10
+    # hoard policy (HOLD_SOURCE mission): after hoard_min_step, a source whose
+    # base plan consists ONLY of small attacks (< hoard_small_attack_max ships
+    # each, vs enemy targets) may be vetoed wholesale — its mass accumulates
+    # for waves/hammers. Expansion (neutral) and defense are never vetoed.
+    hoard_min_step: int = 80
+    hoard_small_attack_max: float = 25.0
+    # wave v2 (ACTIVE wave): when wave_release_on_age=False, an aged pending
+    # group is NOT released as spray (v1's age-out shipped junk attacks out of
+    # impatience) — it stays withheld with a restarted age window, and its
+    # target is fed to the hammer generator as a priority target so the
+    # hoarded mass fires as ONE simulation-validated capture instead.
+    wave_release_on_age: bool = True
+    wave_discard_after: int = 12
+
+
+@dataclass
+class OpponentOnlineStats:
+    owner_id: int
+    launches_seen: int = 0
+    ships_seen: float = 0.0
+    launches_to_me: int = 0
+    ships_to_me: float = 0.0
+    launches_to_neutral: int = 0
+    ships_to_neutral: float = 0.0
+    launches_to_enemy: int = 0
+    ships_to_enemy: float = 0.0
+    big_launches: int = 0
+    small_launches: int = 0
+    last_launch_step: int = -1
+
+    launch_rate_ewma: float = 0.0
+    avg_size_ewma: float = 0.0
+    aggression_ewma: float = 0.0
+    neutral_ratio_ewma: float = 0.0
+    big_ratio_ewma: float = 0.0
+
+    role: str = "unknown"
+    confidence: float = 0.0
+    role_age: int = 0
+
+
+@dataclass(frozen=True)
+class RecentEnemyLaunch:
+    step: int
+    owner_id: int
+    source_pid: int
+    target_slot: int
+    ships: float
+    eta: int
+
+
+@dataclass(frozen=True)
+class EffectivePGSPolicy:
+    mode: str
+    source_budget_multiplier: float = 1.0
+    hammer_enabled: bool = True
+    hammer_min_total_ships: float = 50.0
+    hammer_hold_window: int = 10
+    mission_min_advantage: float = 15.0
+    rescue_enabled: bool = False
+    evac_enabled: bool = False
+    punish_enabled: bool = False
+    recapture_enabled: bool = False
+    hold_source_enabled: bool = False
+    wave_min_ships_override: float | None = None
+    value_mode_override: str | None = None
+
+
+@dataclass(frozen=True)
+class MissionCandidate:
+    name: str
+    entries: LaunchEntries
+    replace_sources: frozenset[int]
+    exclusive_targets: frozenset[int]
+    priority: float
+    kind: str
 
 
 def _select_entries(entries: LaunchEntries, mask: Tensor) -> LaunchEntries:
@@ -240,6 +305,15 @@ class PGSRuntime:
         # (fidelity probe: ~45% of steps, incl. different move counts).
         self._floor_runtimes: dict[int, ProducerLiteRuntime] = {}
         self._player_count: int | None = None
+        self._seen_fleet_ids: set[int] = set()
+        self._opp_profiles: dict[int, OpponentOnlineStats] = {}
+        self._last_strategy_mode: str = "unknown"
+        self._mode_age: int = 0
+        self._recent_enemy_launches: deque[RecentEnemyLaunch] = deque(maxlen=64)
+        # internal degradation counters (NOT regime gates like floor_in_4p):
+        # budget_floor_returns counts turns where the in-planner deadline forced
+        # the Producer floor — the silent self-deception channel the gates watch.
+        self._stats: dict[str, int] = {"budget_floor_returns": 0}
         # H7 E4: learned value net (loaded once; CPU inference)
         self._value_net = None
         self._cur_planets: list = []
@@ -249,7 +323,15 @@ class PGSRuntime:
         self._cur_angular: float = 0.0
         if self.config.value_net_path:
             from python.agents.value_net import load_value_net
+
             self._value_net = load_value_net(self.config.value_net_path, device="cpu")
+
+    def _reset_adaptive_state(self) -> None:
+        self._seen_fleet_ids = set()
+        self._opp_profiles = {}
+        self._last_strategy_mode = "unknown"
+        self._mode_age = 0
+        self._recent_enemy_launches = deque(maxlen=64)
 
     def notify_fallback_applied(self) -> None:
         """Drop non-observation-derived state after an external fallback move.
@@ -259,7 +341,22 @@ class PGSRuntime:
         plan must not influence the next real turn.
         """
         self._wave_pending = {}
-        self._decisive_pending = {}
+        self._reset_adaptive_state()
+
+    def runtime_stats(self) -> dict[str, int]:
+        """Monotonic per-runtime degradation counters (see ``_stats``)."""
+        return dict(self._stats)
+
+    def opponent_roles(self) -> dict[int, tuple[str, float]]:
+        """Current opponent classification ``{owner_id: (role, confidence)}``.
+
+        Read-only view over the adaptive profiles (updated inside ``act``);
+        consumed by the Mahoraga-PPO hybrid's selector.
+        """
+        return {
+            int(owner): (str(stat.role), float(stat.confidence))
+            for owner, stat in self._opp_profiles.items()
+        }
 
     # -- agent glue --------------------------------------------------------
     def act(self, obs: Any):
@@ -327,7 +424,9 @@ class PGSRuntime:
         if int(targets.numel()) == 0:
             return None
         src = torch.full_like(targets, int(source))
-        size = torch.full(targets.shape, float(available), dtype=movement.dtype, device=movement.device)
+        size = torch.full(
+            targets.shape, float(available), dtype=movement.dtype, device=movement.device
+        )
         aim = intercept_angle(movement, src, targets, size)
         eta = aim["eta"]
         ok = aim["viable"] & torch.isfinite(eta) & (eta <= float(H))
@@ -359,7 +458,9 @@ class PGSRuntime:
             if not bool(re_aim["viable"][0]) or not math.isfinite(re_eta) or re_eta > float(H):
                 return None
             k2 = min(H, int(math.ceil(re_eta)))
-            need2 = math.ceil(float(status.ships[target, k2].item()) + 1.0 + float(cfg.capture_margin))
+            need2 = math.ceil(
+                float(status.ships[target, k2].item()) + 1.0 + float(cfg.capture_margin)
+            )
             if need2 <= send:
                 tgt_prod = float(movement.planet_prod[target].item())
                 if tgt_prod <= 0.0 or send / tgt_prod > float(cfg.payback_max_turns):
@@ -411,9 +512,7 @@ class PGSRuntime:
                 continue
             if math.ceil(eta) > flip_k:
                 continue  # arrives after the planet already fell
-            return _single_entry(
-                movement, source, best_t, send, float(aim["angle"][0].item()), eta
-            )
+            return _single_entry(movement, source, best_t, send, float(aim["angle"][0].item()), eta)
         return None
 
     def _script_evac(
@@ -437,7 +536,9 @@ class PGSRuntime:
         if int(targets.numel()) == 0:
             return None
         src = torch.full_like(targets, int(source))
-        size = torch.full(targets.shape, float(available), dtype=movement.dtype, device=movement.device)
+        size = torch.full(
+            targets.shape, float(available), dtype=movement.dtype, device=movement.device
+        )
         aim = intercept_angle(movement, src, targets, size)
         eta = aim["eta"]
         ok = aim["viable"] & torch.isfinite(eta)
@@ -446,8 +547,12 @@ class PGSRuntime:
         eta_masked = torch.where(ok, eta, torch.full_like(eta, math.inf))
         best = int(eta_masked.argmin().item())
         return _single_entry(
-            movement, source, int(targets[best].item()), float(available),
-            float(aim["angle"][best].item()), float(eta_masked[best].item()),
+            movement,
+            source,
+            int(targets[best].item()),
+            float(available),
+            float(aim["angle"][best].item()),
+            float(eta_masked[best].item()),
         )
 
     def _script_half(
@@ -476,6 +581,216 @@ class PGSRuntime:
             valid=base_for_source.valid,
         )
 
+    # -- adaptive opponent profiling ----------------------------------------
+    def _classify_opponent(self, stat: OpponentOnlineStats, step_now: int) -> tuple[str, float]:
+        cfg = self.config
+        if step_now < int(cfg.profile_min_step) or stat.launches_seen <= 0:
+            return "unknown", 0.0
+
+        rate = float(stat.launch_rate_ewma)
+        avg = float(stat.avg_size_ewma)
+        aggression = float(stat.aggression_ewma)
+        neutral = float(stat.neutral_ratio_ewma)
+        big_ratio = float(stat.big_ratio_ewma)
+
+        if step_now < 100 and aggression > 0.50 and stat.ships_to_me >= 20.0:
+            conf = min(1.0, 0.45 + 0.45 * aggression + min(0.10, stat.ships_to_me / 400.0))
+            return "rusher", conf
+
+        if rate >= 0.45 and avg < 18.0 and stat.small_launches >= max(3, 2 * stat.big_launches + 1):
+            conf = min(1.0, 0.45 + 0.30 * rate + min(0.25, stat.small_launches / 20.0))
+            return "sprayer", conf
+
+        if neutral > 0.55 and aggression < 0.25 and rate >= 0.25:
+            conf = min(1.0, 0.45 + 0.35 * neutral + 0.20 * rate)
+            return "expander", conf
+
+        if (avg > 45.0 or big_ratio > 0.55) and rate < 0.55:
+            conf = min(1.0, 0.45 + 0.35 * max(big_ratio, min(avg / 90.0, 1.0)))
+            return "wave", conf
+
+        if step_now >= 80 and stat.launches_seen <= 1 and aggression < 0.15:
+            return "turtle", 0.65
+
+        return "producer-like", 0.50
+
+    def _update_profile_role(self, stat: OpponentOnlineStats, step_now: int) -> None:
+        role, confidence = self._classify_opponent(stat, step_now)
+        cfg = self.config
+        if role == stat.role:
+            stat.confidence = confidence
+            stat.role_age += 1
+            return
+        can_switch = stat.role == "unknown" or (
+            confidence >= float(cfg.profile_switch_confidence)
+            and stat.role_age >= int(cfg.profile_min_role_age)
+        )
+        if can_switch:
+            stat.role = role
+            stat.confidence = confidence
+            stat.role_age = 0
+        else:
+            stat.role_age += 1
+            stat.confidence = max(stat.confidence, confidence)
+
+    def _update_opponent_profiles(
+        self,
+        *,
+        movement: PlanetMovement,
+        owner0: Tensor,
+        me: int,
+        step_now: int,
+        obs_tensors: dict | None = None,
+    ) -> None:
+        ids = getattr(movement, "tracked_fleet_ids", None)
+        owners = getattr(movement, "tracked_fleet_owner", None)
+        if owners is None:
+            owners = getattr(movement, "owner", None)
+        targets = getattr(movement, "tracked_fleet_target_slot", None)
+        if targets is None:
+            targets = getattr(movement, "target_slot", None)
+        ships = getattr(movement, "tracked_fleet_ships", None)
+        if ships is None:
+            ships = getattr(movement, "ships", None)
+        etas = getattr(movement, "tracked_fleet_eta", None)
+        if etas is None:
+            etas = getattr(movement, "eta", None)
+        if ids is None or owners is None or targets is None or ships is None:
+            return
+
+        alpha = float(self.config.profile_ewma_alpha)
+        updated: set[int] = set()
+        source_pid_by_fid: dict[int, int] = {}
+        if obs_tensors is not None and "fleets" in obs_tensors:
+            fleets = obs_tensors["fleets"]
+            if int(fleets.numel()) > 0:
+                for row in fleets.reshape(-1, fleets.shape[-1]):
+                    fid_obs = int(row[0].item())
+                    if fid_obs >= 0:
+                        source_pid_by_fid[fid_obs] = int(row[5].item())
+        width = int(ids.shape[0])
+        for i in range(width):
+            fid = int(ids[i].item())
+            if fid < 0 or fid in self._seen_fleet_ids:
+                continue
+            self._seen_fleet_ids.add(fid)
+
+            owner = int(owners[i].item())
+            if owner < 0 or owner == int(me):
+                continue
+
+            ship_count = float(ships[i].item())
+            if ship_count <= 0.0:
+                continue
+
+            stat = self._opp_profiles.setdefault(owner, OpponentOnlineStats(owner_id=owner))
+            stat.launches_seen += 1
+            stat.ships_seen += ship_count
+            elapsed = (
+                1 if stat.last_launch_step < 0 else max(1, int(step_now) - stat.last_launch_step)
+            )
+            stat.last_launch_step = int(step_now)
+
+            target = int(targets[i].item())
+            target_owner = -999
+            if 0 <= target < int(owner0.shape[0]):
+                target_owner = int(owner0[target].item())
+
+            to_me = target_owner == int(me)
+            to_neutral = target_owner < 0
+            if to_me:
+                stat.launches_to_me += 1
+                stat.ships_to_me += ship_count
+            elif to_neutral:
+                stat.launches_to_neutral += 1
+                stat.ships_to_neutral += ship_count
+            else:
+                stat.launches_to_enemy += 1
+                stat.ships_to_enemy += ship_count
+
+            is_big = ship_count >= 35.0
+            is_small = ship_count < 18.0
+            stat.big_launches += int(is_big)
+            stat.small_launches += int(is_small)
+
+            instant_rate = min(1.0, 1.0 / float(elapsed))
+            stat.launch_rate_ewma = (1.0 - alpha) * stat.launch_rate_ewma + alpha * instant_rate
+            stat.avg_size_ewma = (1.0 - alpha) * stat.avg_size_ewma + alpha * ship_count
+            stat.aggression_ewma = (1.0 - alpha) * stat.aggression_ewma + alpha * float(to_me)
+            stat.neutral_ratio_ewma = (1.0 - alpha) * stat.neutral_ratio_ewma + alpha * float(
+                to_neutral
+            )
+            stat.big_ratio_ewma = (1.0 - alpha) * stat.big_ratio_ewma + alpha * float(is_big)
+            source_pid = source_pid_by_fid.get(fid)
+            if source_pid is not None:
+                self._recent_enemy_launches.append(
+                    RecentEnemyLaunch(
+                        step=int(step_now),
+                        owner_id=owner,
+                        source_pid=source_pid,
+                        target_slot=target,
+                        ships=ship_count,
+                        eta=int(etas[i].item()) if etas is not None else 0,
+                    )
+                )
+            updated.add(owner)
+
+        for owner in updated:
+            self._update_profile_role(self._opp_profiles[owner], int(step_now))
+
+    # -- adaptive reactive replies ------------------------------------------
+    def _movement_after_my_entries(
+        self,
+        my_entries: LaunchEntries,
+        obs_tensors: dict,
+        movement: PlanetMovement,
+        me: int,
+    ) -> PlanetMovement:
+        reply_movement = _clone_movement(movement)
+        if bool(my_entries.valid.any()):
+            launches = infer_planned_launches_from_entries(
+                obs_tensors=obs_tensors,
+                movement=reply_movement,
+                entries=my_entries,
+                player_id=int(me),
+            )
+            apply_private_planned_launches(
+                movement=reply_movement,
+                launches=launches,
+                owner_id=int(me),
+                obs_tensors=obs_tensors,
+            )
+            _debit_entry_sources(reply_movement, my_entries)
+        return reply_movement
+
+    def _reply_producer(
+        self,
+        my_entries: LaunchEntries,
+        opponent_id: int,
+        obs_tensors: dict,
+        movement: PlanetMovement,
+        cache,
+        player_count: int,
+        me: int,
+    ) -> LaunchEntries:
+        pcfg = _producer_config_for(player_count)
+        h = int(pcfg.horizon)
+        reply_movement = self._movement_after_my_entries(my_entries, obs_tensors, movement, me)
+        reply_status = reply_movement.garrison_status(max_horizon=h)
+        opp_tensors = _with_tensor_player(obs_tensors, int(opponent_id))
+        opp_obs = parse_obs(opp_tensors, player_id=int(opponent_id))
+        return plan_lite_waves(
+            movement=reply_movement,
+            obs=opp_obs,
+            obs_tensors=opp_tensors,
+            cache=cache,
+            garrison_status=reply_status,
+            prod=reply_movement.planet_prod,
+            alive_by_step=reply_movement.alive_by_step[: h + 1],
+            config=pcfg,
+            player_count=int(player_count),
+        )
+
     # -- reactive reply (ported from OEP's _reactive_reply_entries) ----------
     def _reactive_reply(
         self,
@@ -492,35 +807,967 @@ class PGSRuntime:
         Static 1-ply prediction inflates deviations (OEP diagnosis B); this is the
         2-ply correction, used as the final arbiter between the deviated plan and
         the all-PRODUCER floor."""
-        pcfg = self._producer_cfg(player_count) or _producer_config_for(player_count)
-        h = int(pcfg.horizon)
-        reply_movement = _clone_movement(movement)
-        if bool(my_entries.valid.any()):
-            launches = infer_planned_launches_from_entries(
-                obs_tensors=obs_tensors, movement=reply_movement, entries=my_entries, player_id=int(me)
-            )
-            apply_private_planned_launches(
-                movement=reply_movement, launches=launches, owner_id=int(me), obs_tensors=obs_tensors
-            )
-            _debit_entry_sources(reply_movement, my_entries)
-        reply_status = reply_movement.garrison_status(max_horizon=h)
-        opp_tensors = _with_tensor_player(obs_tensors, int(opponent_id))
-        opp_obs = parse_obs(opp_tensors, player_id=int(opponent_id))
-        return plan_lite_waves(
-            movement=reply_movement,
-            obs=opp_obs,
-            obs_tensors=opp_tensors,
-            cache=cache,
-            garrison_status=reply_status,
-            prod=reply_movement.planet_prod,
-            alive_by_step=reply_movement.alive_by_step[: h + 1],
-            config=pcfg,
-            player_count=int(player_count),
+        return self._reply_producer(
+            my_entries, opponent_id, obs_tensors, movement, cache, player_count, me
         )
 
+    def _filter_reply(
+        self,
+        reply: LaunchEntries,
+        *,
+        movement: PlanetMovement,
+        me: int,
+        mode: str,
+    ) -> LaunchEntries:
+        if not bool(reply.valid.any()):
+            return reply
+        status = movement.garrison_status(max_horizon=1)
+        owner0 = status.owner[:, 0]
+        target_slots = reply.target_slots.clamp(min=0, max=max(int(owner0.shape[0]) - 1, 0))
+        target_owner = owner0[target_slots]
+        high_value_mine = (target_owner == int(me)) & (movement.planet_prod[target_slots] >= 2.0)
+        if mode == "hold":
+            keep = reply.valid & ((reply.ships >= 25.0) | high_value_mine)
+        elif mode == "wave":
+            keep = reply.valid & ((target_owner != int(me)) | (reply.ships >= 40.0))
+        elif mode == "expand":
+            keep = reply.valid & ((target_owner < 0) | (reply.ships >= 30.0))
+        else:
+            keep = reply.valid
+        return _select_entries(reply, keep)
+
+    def _reply_rush(
+        self,
+        my_entries: LaunchEntries,
+        opponent_id: int,
+        obs_tensors: dict,
+        movement: PlanetMovement,
+        player_count: int,
+        me: int,
+    ) -> LaunchEntries:
+        h = int(_producer_config_for(player_count).horizon)
+        reply_movement = self._movement_after_my_entries(my_entries, obs_tensors, movement, me)
+        status = reply_movement.garrison_status(max_horizon=h)
+        owner0 = status.owner[:, 0]
+        ships_now = reply_movement.planet_ships
+        opp_sources = torch.where(
+            (owner0 == int(opponent_id)) & ((ships_now - 1.0).floor() >= 8.0)
+        )[0]
+        my_targets = torch.where(owner0 == int(me))[0]
+        if int(opp_sources.numel()) == 0 or int(my_targets.numel()) == 0:
+            return _empty_entries(reply_movement.device, reply_movement.dtype)
+
+        src_order = (ships_now[opp_sources] - 1.0).argsort(descending=True)
+        sources = opp_sources[src_order[:3]]
+        target_base = 3.0 * reply_movement.planet_prod[my_targets] + 0.4 * ships_now[my_targets]
+        tgt_order = target_base.argsort(descending=True)
+        targets = my_targets[tgt_order[:4]]
+
+        entries: list[LaunchEntries] = []
+        used_sources: set[int] = set()
+        for s in sources.tolist():
+            available = float((ships_now[int(s)] - 1.0).clamp(min=0.0).floor().item())
+            if available < 8.0:
+                continue
+            src = torch.full_like(targets, int(s))
+            size = torch.full(
+                targets.shape, available, dtype=reply_movement.dtype, device=reply_movement.device
+            )
+            aim = intercept_angle(reply_movement, src, targets, size)
+            eta = aim["eta"]
+            ok = aim["viable"] & torch.isfinite(eta) & (eta <= float(h))
+            if not bool(ok.any()):
+                continue
+            k = eta.ceil().long().clamp(0, h)
+            defenders = status.ships[targets, k]
+            score = torch.where(
+                ok,
+                target_base[tgt_order[:4]] - 0.8 * eta - 0.5 * defenders,
+                torch.full_like(eta, -math.inf),
+            )
+            best = int(score.argmax().item())
+            if not math.isfinite(float(score[best].item())):
+                continue
+            target = int(targets[best].item())
+            needed = math.ceil(float(defenders[best].item()) + 1.0)
+            send = float(min(available, max(8.0, needed)))
+            entries.append(
+                _single_entry(
+                    reply_movement,
+                    int(s),
+                    target,
+                    send,
+                    float(aim["angle"][best].item()),
+                    float(eta[best].item()),
+                )
+            )
+            used_sources.add(int(s))
+            if len(used_sources) >= 2:
+                break
+        if not entries:
+            return _empty_entries(reply_movement.device, reply_movement.dtype)
+        return concat_launch_entries(entries)
+
+    def _reply_entries_for_model(
+        self,
+        model: str,
+        my_entries: LaunchEntries,
+        opponent_id: int,
+        obs_tensors: dict,
+        movement: PlanetMovement,
+        cache,
+        player_count: int,
+        me: int,
+    ) -> LaunchEntries:
+        model = model.strip().lower()
+        if model == "rush":
+            return self._reply_rush(
+                my_entries, opponent_id, obs_tensors, movement, player_count, me
+            )
+        producer = self._reply_producer(
+            my_entries, opponent_id, obs_tensors, movement, cache, player_count, me
+        )
+        if model in {"hold", "wave", "expand"}:
+            reply_movement = self._movement_after_my_entries(my_entries, obs_tensors, movement, me)
+            return self._filter_reply(producer, movement=reply_movement, me=me, mode=model)
+        return producer
+
+    def _reply_models_for_current_enemy(
+        self, player_count: int, opponent_id: int | None = None
+    ) -> list[str]:
+        cfg = self.config
+        if not bool(cfg.adaptive_reply_models) or int(player_count) != 2:
+            raw = str(cfg.reply_models_default)
+        else:
+            role = "producer-like"
+            if opponent_id is not None and int(opponent_id) in self._opp_profiles:
+                role = self._opp_profiles[int(opponent_id)].role
+            if role == "rusher":
+                raw = str(cfg.reply_models_vs_rusher)
+            elif role == "expander":
+                raw = str(cfg.reply_models_vs_expander)
+            elif role == "sprayer":
+                raw = str(cfg.reply_models_vs_sprayer)
+            elif role == "wave":
+                raw = str(cfg.reply_models_vs_wave)
+            elif role == "turtle":
+                raw = str(cfg.reply_models_vs_turtle)
+            else:
+                raw = str(cfg.reply_models_default)
+        models = [m.strip().lower() for m in raw.split(",") if m.strip()]
+        return models or ["producer"]
+
+    # -- adaptive mission layer ---------------------------------------------
+    def _enabled_missions(self) -> set[str]:
+        return {
+            m.strip().lower() for m in str(self.config.enabled_missions).split(",") if m.strip()
+        }
+
+    def _effective_policy(
+        self,
+        *,
+        me: int,
+        opp_ids: list[int],
+        player_count: int,
+        step_now: int,
+    ) -> EffectivePGSPolicy:
+        del me, step_now
+        cfg = self.config
+        enabled = self._enabled_missions()
+        mode = "producer-like"
+        if int(player_count) == 2 and opp_ids:
+            stat = self._opp_profiles.get(int(opp_ids[0]))
+            if stat is not None and stat.role != "unknown":
+                mode = stat.role
+
+        rescue = "rescue" in enabled
+        evac = "evac" in enabled or "evac_smart" in enabled
+        punish = "punish" in enabled or "punish_drain" in enabled
+        recapture = "recapture" in enabled
+        hammer = "hammer" in enabled
+        hold_source = "hold_source" in enabled
+        mult = 1.0
+        min_adv = float(cfg.mission_min_advantage)
+        hold_window = int(cfg.hammer_hold_window)
+        if mode == "rusher":
+            mult = 0.55
+            rescue = rescue or bool(cfg.mission_mode)
+            evac = evac or "evac" in enabled
+            punish = punish or "punish" in enabled
+            hammer = hammer and False
+            min_adv = max(min_adv, 25.0)
+        elif mode == "expander":
+            mult = 0.85
+            recapture = recapture or "recapture" in enabled
+            hammer = hammer or recapture
+            min_adv = min(min_adv, 10.0)
+        elif mode == "sprayer":
+            mult = 0.75
+            rescue = rescue or "rescue" in enabled
+            punish = punish or "punish" in enabled
+            recapture = recapture or "recapture" in enabled
+        elif mode == "wave":
+            mult = 0.65
+            evac = evac or "evac" in enabled
+            punish = punish or "punish" in enabled
+            hold_window = max(hold_window, 16)
+            min_adv = max(min_adv, 20.0)
+        elif mode == "turtle":
+            mult = 0.85
+            hammer = hammer or "hammer" in enabled
+
+        return EffectivePGSPolicy(
+            mode=mode,
+            source_budget_multiplier=mult,
+            hammer_enabled=hammer,
+            hammer_min_total_ships=float(cfg.hammer_min_total_ships),
+            hammer_hold_window=hold_window,
+            mission_min_advantage=min_adv,
+            rescue_enabled=rescue,
+            evac_enabled=evac,
+            punish_enabled=punish,
+            recapture_enabled=recapture,
+            hold_source_enabled=hold_source,
+        )
+
+    def _status_after_entries(
+        self,
+        *,
+        movement: PlanetMovement,
+        obs_tensors: dict,
+        entries: LaunchEntries,
+        me: int,
+        H: int,
+    ):
+        clone = _clone_movement(movement)
+        if bool(entries.valid.any()):
+            launches = infer_planned_launches_from_entries(
+                obs_tensors=obs_tensors, movement=clone, entries=entries, player_id=int(me)
+            )
+            apply_private_planned_launches(
+                movement=clone, launches=launches, owner_id=int(me), obs_tensors=obs_tensors
+            )
+            _debit_entry_sources(clone, entries)
+        return clone.garrison_status(max_horizon=int(H))
+
+    def _source_slots_by_planet_id(self, movement: PlanetMovement) -> dict[int, int]:
+        return {int(pid.item()): int(i) for i, pid in enumerate(movement.planet_ids)}
+
+    def _mission_rescue_min(
+        self,
+        *,
+        movement: PlanetMovement,
+        script_movement: PlanetMovement,
+        script_status,
+        obs_tensors: dict,
+        owner0: Tensor,
+        avail: Tensor,
+        sources: list[int],
+        me: int,
+        H: int,
+        policy: EffectivePGSPolicy,
+        budget_low=None,
+    ) -> list[MissionCandidate]:
+        del owner0
+        owner = script_status.owner
+        mine_now = owner[:, 0] == int(me)
+        lost_mask = (owner[:, 1:] >= 0) & (owner[:, 1:] != int(me))
+        flips = mine_now & lost_mask.any(dim=1)
+        if not bool(flips.any()):
+            return []
+        candidates: list[MissionCandidate] = []
+        targets = torch.where(flips)[0]
+        first_flip = torch.argmax(lost_mask[targets].long(), dim=1) + 1
+        prod = movement.planet_prod[targets]
+        for j in prod.argsort(descending=True).tolist():
+            if budget_low is not None and budget_low():
+                break
+            target = int(targets[j].item())
+            flip_k = int(first_flip[j].item())
+            deficit = max(1.0, float(script_status.ships[target, min(flip_k, H)].item()) + 1.0)
+            source_order: list[tuple[float, int, Tensor, float]] = []
+            for source in sources:
+                if budget_low is not None and budget_low():
+                    break
+                if int(source) == target:
+                    continue
+                max_send = float(avail[int(source)].item()) * float(policy.source_budget_multiplier)
+                if max_send < 1.0:
+                    continue
+                for extra in (1.0, 3.0, 8.0, 15.0):
+                    if budget_low is not None and budget_low():
+                        break
+                    send = float(min(math.floor(max_send), math.ceil(deficit + extra)))
+                    if send < 1.0:
+                        continue
+                    aim = intercept_angle(
+                        movement,
+                        torch.tensor([source], device=movement.device),
+                        torch.tensor([target], device=movement.device),
+                        torch.tensor([send], dtype=movement.dtype, device=movement.device),
+                    )
+                    eta = float(aim["eta"][0].item())
+                    if (
+                        not bool(aim["viable"][0])
+                        or not math.isfinite(eta)
+                        or math.ceil(eta) > flip_k
+                    ):
+                        continue
+                    source_order.append((send, int(source), aim["angle"], eta))
+            source_order.sort(key=lambda item: (item[0], item[3]))
+            for send, source, angle, eta in source_order[:8]:
+                if budget_low is not None and budget_low():
+                    break
+                entry = _single_entry(movement, source, target, send, float(angle[0].item()), eta)
+                st2 = self._status_after_entries(
+                    movement=script_movement, obs_tensors=obs_tensors, entries=entry, me=me, H=H
+                )
+                hold_end = min(int(H), flip_k + int(self.config.rescue_hold_window))
+                if bool((st2.owner[target, 1 : hold_end + 1] == int(me)).all()):
+                    priority = (
+                        1000.0
+                        + 30.0 * float(movement.planet_prod[target].item())
+                        + 0.5 * float(movement.planet_ships[target].item())
+                        - send
+                    )
+                    candidates.append(
+                        MissionCandidate(
+                            name=f"rescue:{target}",
+                            entries=entry,
+                            replace_sources=frozenset({source}),
+                            exclusive_targets=frozenset({target}),
+                            priority=priority,
+                            kind="rescue",
+                        )
+                    )
+                    break
+            if len(candidates) >= int(self.config.max_mission_candidates):
+                break
+        return candidates
+
+    def _mission_evac_smart(
+        self,
+        *,
+        movement: PlanetMovement,
+        script_movement: PlanetMovement,
+        script_status,
+        obs_tensors: dict,
+        avail: Tensor,
+        sources: list[int],
+        me: int,
+        H: int,
+        policy: EffectivePGSPolicy,
+        budget_low=None,
+    ) -> list[MissionCandidate]:
+        owner = script_status.owner
+        out: list[MissionCandidate] = []
+        for source in sources:
+            if budget_low is not None and budget_low():
+                break
+            src_owner = owner[int(source), :]
+            if bool((src_owner == int(me)).all()):
+                continue
+            lost_steps = torch.where((src_owner >= 0) & (src_owner != int(me)))[0]
+            if int(lost_steps.numel()) == 0:
+                continue
+            flip_k = int(lost_steps[0].item())
+            available = float(avail[int(source)].item())
+            send = float(math.floor(min(available - 3.0, available * float(self.config.evac_max_fraction))))
+            if send < float(self.config.evac_min_send):
+                continue
+
+            safe_now = owner[:, 0] == int(me)
+            safe_now[int(source)] = False
+            targets = torch.where(safe_now)[0]
+            if int(targets.numel()) == 0:
+                continue
+            src = torch.full_like(targets, int(source))
+            size = torch.full(targets.shape, send, dtype=movement.dtype, device=movement.device)
+            aim = intercept_angle(movement, src, targets, size)
+            eta = aim["eta"]
+            ok = aim["viable"] & torch.isfinite(eta) & (eta <= float(H))
+            if not bool(ok.any()):
+                continue
+
+            risk = torch.zeros_like(eta)
+            for idx, target in enumerate(targets.tolist()):
+                if not bool(ok[idx]):
+                    risk[idx] = 1.0
+                    continue
+                arrive = min(int(H), int(math.ceil(float(eta[idx].item()))))
+                hold_end = min(int(H), arrive + int(policy.hammer_hold_window))
+                if not bool((owner[int(target), arrive : hold_end + 1] == int(me)).all()):
+                    risk[idx] = 1.0
+            score = torch.where(
+                ok,
+                2.5 * movement.planet_prod[targets]
+                + 0.5 * movement.planet_ships[targets]
+                - 0.8 * eta
+                - 25.0 * risk,
+                torch.full_like(eta, -math.inf),
+            )
+            best = int(score.argmax().item())
+            if not math.isfinite(float(score[best].item())):
+                continue
+            target = int(targets[best].item())
+            entry = _single_entry(
+                movement, int(source), target, send, float(aim["angle"][best].item()), float(eta[best].item())
+            )
+            st2 = self._status_after_entries(
+                movement=script_movement, obs_tensors=obs_tensors, entries=entry, me=me, H=H
+            )
+            arrive = min(int(H), int(math.ceil(float(eta[best].item()))))
+            hold_end = min(int(H), arrive + int(policy.hammer_hold_window))
+            if not bool((st2.owner[target, arrive : hold_end + 1] == int(me)).all()):
+                continue
+            priority = (
+                850.0
+                + 20.0 * float(movement.planet_prod[int(source)].item())
+                + 1.5 * float(movement.planet_prod[target].item())
+                + 0.2 * send
+                - 0.2 * float(flip_k)
+                - 0.5 * float(eta[best].item())
+            )
+            out.append(
+                MissionCandidate(
+                    name=f"evac:{source}->{target}",
+                    entries=entry,
+                    replace_sources=frozenset({int(source)}),
+                    exclusive_targets=frozenset({target}),
+                    priority=priority,
+                    kind="evac",
+                )
+            )
+            if len(out) >= int(self.config.max_mission_candidates):
+                break
+        return out
+
+    def _mission_punish_drain(
+        self,
+        *,
+        movement: PlanetMovement,
+        script_movement: PlanetMovement,
+        obs_tensors: dict,
+        owner0: Tensor,
+        avail: Tensor,
+        sources: list[int],
+        me: int,
+        H: int,
+        step_now: int,
+        budget_low=None,
+    ) -> list[MissionCandidate]:
+        id_to_slot = self._source_slots_by_planet_id(movement)
+        out: list[MissionCandidate] = []
+        for ev in reversed(self._recent_enemy_launches):
+            if budget_low is not None and budget_low():
+                break
+            if int(step_now) - int(ev.step) > int(self.config.punish_recent_window):
+                continue
+            if ev.ships < float(self.config.punish_min_enemy_launch):
+                continue
+            target = id_to_slot.get(int(ev.source_pid))
+            if target is None or not (0 <= target < int(owner0.shape[0])):
+                continue
+            if int(owner0[target].item()) != int(ev.owner_id):
+                continue
+            best_entry: LaunchEntries | None = None
+            best_score = -math.inf
+            for source in sources:
+                if budget_low is not None and budget_low():
+                    break
+                if int(source) == target:
+                    continue
+                max_send = float(avail[int(source)].item())
+                if max_send < 8.0:
+                    continue
+                for send in (min(max_send, ev.ships * 0.6), min(max_send, ev.ships), max_send):
+                    if budget_low is not None and budget_low():
+                        break
+                    send = float(math.floor(send))
+                    if send < 8.0:
+                        continue
+                    aim = intercept_angle(
+                        movement,
+                        torch.tensor([source], device=movement.device),
+                        torch.tensor([target], device=movement.device),
+                        torch.tensor([send], dtype=movement.dtype, device=movement.device),
+                    )
+                    eta = float(aim["eta"][0].item())
+                    if not bool(aim["viable"][0]) or not math.isfinite(eta) or eta > float(H):
+                        continue
+                    st2 = self._status_after_entries(
+                        movement=script_movement,
+                        obs_tensors=obs_tensors,
+                        entries=_single_entry(
+                            movement, source, target, send, float(aim["angle"][0].item()), eta
+                        ),
+                        me=me,
+                        H=H,
+                    )
+                    k = min(int(H), int(math.ceil(eta)) + 4)
+                    if int(st2.owner[target, k].item()) != int(me):
+                        continue
+                    score = (
+                        700.0 + 35.0 * float(movement.planet_prod[target].item()) - send - 0.5 * eta
+                    )
+                    if score > best_score:
+                        best_score = score
+                        best_entry = _single_entry(
+                            movement, source, target, send, float(aim["angle"][0].item()), eta
+                        )
+            if best_entry is not None:
+                out.append(
+                    MissionCandidate(
+                        name=f"punish:{target}",
+                        entries=best_entry,
+                        replace_sources=frozenset(int(s.item()) for s in best_entry.source_slots),
+                        exclusive_targets=frozenset({target}),
+                        priority=best_score,
+                        kind="punish",
+                    )
+                )
+            if len(out) >= int(self.config.max_mission_candidates):
+                break
+        return out
+
+    def _mission_recapture(
+        self,
+        *,
+        movement: PlanetMovement,
+        script_movement: PlanetMovement,
+        obs_tensors: dict,
+        owner0: Tensor,
+        avail: Tensor,
+        sources: list[int],
+        me: int,
+        H: int,
+        policy: EffectivePGSPolicy,
+        budget_low=None,
+    ) -> list[MissionCandidate]:
+        enemy_targets = torch.where((owner0 >= 0) & (owner0 != int(me)))[0]
+        if int(enemy_targets.numel()) == 0:
+            return []
+        target_score = (
+            55.0 * movement.planet_prod[enemy_targets]
+            - 1.1 * movement.planet_ships[enemy_targets]
+        )
+        targets = enemy_targets[
+            target_score.argsort(descending=True)[: int(self.config.recapture_max_targets)]
+        ]
+        out: list[MissionCandidate] = []
+        script_status = script_movement.garrison_status(max_horizon=H)
+        for target in targets.tolist():
+            if budget_low is not None and budget_low():
+                break
+            best_entry: LaunchEntries | None = None
+            best_priority = -math.inf
+            for source in sources:
+                if budget_low is not None and budget_low():
+                    break
+                if int(source) == int(target):
+                    continue
+                max_send = float(avail[int(source)].item()) * float(policy.source_budget_multiplier)
+                if max_send < float(self.config.recapture_min_send):
+                    continue
+                aim_full = intercept_angle(
+                    movement,
+                    torch.tensor([source], device=movement.device),
+                    torch.tensor([target], device=movement.device),
+                    torch.tensor([max_send], dtype=movement.dtype, device=movement.device),
+                )
+                eta = float(aim_full["eta"][0].item())
+                if not bool(aim_full["viable"][0]) or not math.isfinite(eta) or eta > float(H):
+                    continue
+                k = min(int(H), int(math.ceil(eta)))
+                need = math.ceil(float(script_status.ships[target, k].item()) + 2.0)
+                send = float(min(math.floor(max_send), max(float(self.config.recapture_min_send), need)))
+                if send > max_send:
+                    continue
+                aim = intercept_angle(
+                    movement,
+                    torch.tensor([source], device=movement.device),
+                    torch.tensor([target], device=movement.device),
+                    torch.tensor([send], dtype=movement.dtype, device=movement.device),
+                )
+                eta = float(aim["eta"][0].item())
+                if not bool(aim["viable"][0]) or not math.isfinite(eta) or eta > float(H):
+                    continue
+                entry = _single_entry(movement, source, target, send, float(aim["angle"][0].item()), eta)
+                st2 = self._status_after_entries(
+                    movement=script_movement, obs_tensors=obs_tensors, entries=entry, me=me, H=H
+                )
+                hold_end = min(int(H), int(math.ceil(eta)) + int(policy.hammer_hold_window))
+                if int(st2.owner[target, hold_end].item()) != int(me):
+                    continue
+                priority = 650.0 + 60.0 * float(movement.planet_prod[target].item()) - send - 0.4 * eta
+                if priority > best_priority:
+                    best_priority = priority
+                    best_entry = entry
+            if best_entry is not None:
+                out.append(
+                    MissionCandidate(
+                        name=f"recapture:{target}",
+                        entries=best_entry,
+                        replace_sources=frozenset(int(s.item()) for s in best_entry.source_slots),
+                        exclusive_targets=frozenset({int(target)}),
+                        priority=best_priority,
+                        kind="recapture",
+                    )
+                )
+            if len(out) >= int(self.config.max_mission_candidates):
+                break
+        return out
+
+    def _mission_hammer(
+        self,
+        *,
+        movement: PlanetMovement,
+        script_movement: PlanetMovement,
+        obs_tensors: dict,
+        owner0: Tensor,
+        avail: Tensor,
+        sources: list[int],
+        me: int,
+        H: int,
+        policy: EffectivePGSPolicy,
+        priority_targets: frozenset[int] = frozenset(),
+        budget_low=None,
+    ) -> list[MissionCandidate]:
+        enemy_targets = torch.where((owner0 >= 0) & (owner0 != int(me)))[0]
+        if int(enemy_targets.numel()) == 0:
+            return []
+        target_score = (
+            70.0 * movement.planet_prod[enemy_targets] - 0.8 * movement.planet_ships[enemy_targets]
+        )
+        if policy.mode == "expander":
+            target_score = (
+                85.0 * movement.planet_prod[enemy_targets]
+                - 1.0 * movement.planet_ships[enemy_targets]
+            )
+        elif policy.mode == "sprayer":
+            target_score = (
+                65.0 * movement.planet_prod[enemy_targets]
+                - 1.25 * movement.planet_ships[enemy_targets]
+            )
+        elif policy.mode == "wave":
+            target_score = (
+                80.0 * movement.planet_prod[enemy_targets]
+                - 0.5 * movement.planet_ships[enemy_targets]
+            )
+        elif policy.mode == "rusher":
+            id_to_slot = self._source_slots_by_planet_id(movement)
+            recent_sources = {
+                id_to_slot[int(ev.source_pid)]
+                for ev in self._recent_enemy_launches
+                if int(ev.source_pid) in id_to_slot and ev.ships >= float(self.config.punish_min_enemy_launch)
+            }
+            if recent_sources:
+                bonus = torch.zeros_like(target_score)
+                for idx, target in enumerate(enemy_targets.tolist()):
+                    if int(target) in recent_sources:
+                        bonus[idx] = 50.0
+                target_score = target_score + bonus
+        if priority_targets:
+            # wave v2: targets with a withheld (pending) wave get priority —
+            # the hoarded mass fires as one validated hammer, never as spray
+            bonus = torch.zeros_like(target_score)
+            for idx, t in enumerate(enemy_targets.tolist()):
+                if int(t) in priority_targets:
+                    bonus[idx] = 60.0
+            target_score = target_score + bonus
+        target_order = enemy_targets[
+            target_score.argsort(descending=True)[: int(self.config.hammer_top_targets)]
+        ]
+        source_order = sorted(sources, key=lambda s: float(avail[int(s)].item()), reverse=True)[
+            : int(self.config.hammer_top_sources)
+        ]
+        out: list[MissionCandidate] = []
+        for target in target_order.tolist():
+            if budget_low is not None and budget_low():
+                break
+            parts: list[LaunchEntries] = []
+            total = 0.0
+            used: set[int] = set()
+            for source in source_order:
+                if budget_low is not None and budget_low():
+                    break
+                if len(used) >= int(self.config.hammer_max_sources):
+                    break
+                send = float(
+                    math.floor(
+                        float(avail[int(source)].item()) * float(policy.source_budget_multiplier)
+                    )
+                )
+                if send < 8.0:
+                    continue
+                aim = intercept_angle(
+                    movement,
+                    torch.tensor([source], device=movement.device),
+                    torch.tensor([target], device=movement.device),
+                    torch.tensor([send], dtype=movement.dtype, device=movement.device),
+                )
+                eta = float(aim["eta"][0].item())
+                if not bool(aim["viable"][0]) or not math.isfinite(eta) or eta > float(H):
+                    continue
+                parts.append(
+                    _single_entry(
+                        movement, source, target, send, float(aim["angle"][0].item()), eta
+                    )
+                )
+                used.add(int(source))
+                total += send
+                if total >= float(policy.hammer_min_total_ships):
+                    break
+            if total < float(policy.hammer_min_total_ships) or not parts:
+                continue
+            entries = concat_launch_entries(parts)
+            st2 = self._status_after_entries(
+                movement=script_movement, obs_tensors=obs_tensors, entries=entries, me=me, H=H
+            )
+            arrive = min(int(H), int(math.ceil(max(float(p.eta.max().item()) for p in parts))))
+            hold_end = min(int(H), arrive + int(policy.hammer_hold_window))
+            if int(st2.owner[target, hold_end].item()) != int(me):
+                continue
+            priority = 500.0 + 70.0 * float(movement.planet_prod[target].item()) - total
+            out.append(
+                MissionCandidate(
+                    name=f"hammer:{target}",
+                    entries=entries,
+                    replace_sources=frozenset(used),
+                    exclusive_targets=frozenset({int(target)}),
+                    priority=priority,
+                    kind="hammer",
+                )
+            )
+        return out
+
+    def _mission_hold_source(
+        self,
+        *,
+        base_entries: LaunchEntries,
+        owner0: Tensor,
+        me: int,
+        step_now: int,
+    ) -> list[MissionCandidate]:
+        """Hoard policy: veto a source whose plan is ONLY small enemy attacks.
+
+        The elite field plays few LARGE waves and hoards mass; the Producer
+        profile is small-attack spray. After hoard_min_step, a source spending
+        itself on sub-threshold attacks may HOLD instead — its garrison
+        accumulates for waves/hammers. Expansion and defense are never vetoed,
+        and acceptance still rides the mission value gate + final arbiter."""
+        cfg = self.config
+        if step_now <= int(cfg.hoard_min_step) or not bool(base_entries.valid.any()):
+            return []
+        out: list[MissionCandidate] = []
+        for source in sorted({int(s.item()) for s in base_entries.source_slots[base_entries.valid]}):
+            mask = base_entries.valid & (base_entries.source_slots == int(source))
+            tgt_owner = owner0[base_entries.target_slots[mask]]
+            ships = base_entries.ships[mask]
+            small_attack = (
+                (tgt_owner >= 0)
+                & (tgt_owner != int(me))
+                & (ships < float(cfg.hoard_small_attack_max))
+            )
+            if not bool(small_attack.all()):
+                continue  # source also expands/defends — never veto those moves
+            out.append(
+                MissionCandidate(
+                    name=f"hold_source:{source}",
+                    entries=_empty_entries(base_entries.ships.device, base_entries.ships.dtype),
+                    replace_sources=frozenset({int(source)}),
+                    exclusive_targets=frozenset(),
+                    priority=120.0 + float(ships.sum().item()),
+                    kind="hold_source",
+                )
+            )
+        return out
+
+    def _build_mission_candidates(
+        self,
+        *,
+        movement: PlanetMovement,
+        script_movement: PlanetMovement,
+        script_status,
+        obs_tensors: dict,
+        owner0: Tensor,
+        avail: Tensor,
+        sources: list[int],
+        me: int,
+        H: int,
+        step_now: int,
+        policy: EffectivePGSPolicy,
+        base_entries: LaunchEntries | None = None,
+        priority_targets: frozenset[int] = frozenset(),
+        budget_low=None,
+    ) -> list[MissionCandidate]:
+        candidates: list[MissionCandidate] = []
+        if policy.hold_source_enabled and base_entries is not None:
+            candidates.extend(
+                self._mission_hold_source(
+                    base_entries=base_entries, owner0=owner0, me=me, step_now=step_now
+                )
+            )
+        if policy.rescue_enabled:
+            candidates.extend(
+                self._mission_rescue_min(
+                    movement=movement,
+                    script_movement=script_movement,
+                    script_status=script_status,
+                    obs_tensors=obs_tensors,
+                    owner0=owner0,
+                    avail=avail,
+                    sources=sources,
+                    me=me,
+                    H=H,
+                    policy=policy,
+                    budget_low=budget_low,
+                )
+            )
+        if budget_low is not None and budget_low():
+            return sorted(candidates, key=lambda c: c.priority, reverse=True)[
+                : int(self.config.max_mission_candidates)
+            ]
+        if policy.evac_enabled:
+            candidates.extend(
+                self._mission_evac_smart(
+                    movement=movement,
+                    script_movement=script_movement,
+                    script_status=script_status,
+                    obs_tensors=obs_tensors,
+                    avail=avail,
+                    sources=sources,
+                    me=me,
+                    H=H,
+                    policy=policy,
+                    budget_low=budget_low,
+                )
+            )
+        if budget_low is not None and budget_low():
+            return sorted(candidates, key=lambda c: c.priority, reverse=True)[
+                : int(self.config.max_mission_candidates)
+            ]
+        if policy.punish_enabled:
+            candidates.extend(
+                self._mission_punish_drain(
+                    movement=movement,
+                    script_movement=script_movement,
+                    obs_tensors=obs_tensors,
+                    owner0=owner0,
+                    avail=avail,
+                    sources=sources,
+                    me=me,
+                    H=H,
+                    step_now=step_now,
+                    budget_low=budget_low,
+                )
+            )
+        if budget_low is not None and budget_low():
+            return sorted(candidates, key=lambda c: c.priority, reverse=True)[
+                : int(self.config.max_mission_candidates)
+            ]
+        if policy.recapture_enabled:
+            candidates.extend(
+                self._mission_recapture(
+                    movement=movement,
+                    script_movement=script_movement,
+                    obs_tensors=obs_tensors,
+                    owner0=owner0,
+                    avail=avail,
+                    sources=sources,
+                    me=me,
+                    H=H,
+                    policy=policy,
+                    budget_low=budget_low,
+                )
+            )
+        if budget_low is not None and budget_low():
+            return sorted(candidates, key=lambda c: c.priority, reverse=True)[
+                : int(self.config.max_mission_candidates)
+            ]
+        if policy.hammer_enabled:
+            candidates.extend(
+                self._mission_hammer(
+                    movement=movement,
+                    script_movement=script_movement,
+                    obs_tensors=obs_tensors,
+                    owner0=owner0,
+                    avail=avail,
+                    sources=sources,
+                    me=me,
+                    H=H,
+                    policy=policy,
+                    priority_targets=priority_targets,
+                    budget_low=budget_low,
+                )
+            )
+        return sorted(candidates, key=lambda c: c.priority, reverse=True)[
+            : int(self.config.max_mission_candidates)
+        ]
+
+    def _assemble_missions(
+        self, base: LaunchEntries, missions: list[MissionCandidate]
+    ) -> LaunchEntries:
+        if not missions:
+            return base
+        keep = base.valid.clone()
+        used_sources: set[int] = set()
+        exclusive_targets: set[int] = set()
+        for mission in missions:
+            used_sources |= set(mission.replace_sources)
+            exclusive_targets |= set(mission.exclusive_targets)
+        for source in used_sources:
+            keep &= base.source_slots != int(source)
+        for target in exclusive_targets:
+            keep &= base.target_slots != int(target)
+        return disambiguate_duplicate_launches(
+            concat_launch_entries([_select_entries(base, keep)] + [m.entries for m in missions])
+        )
+
+    def _select_missions_greedy(
+        self,
+        *,
+        base: LaunchEntries,
+        candidates: list[MissionCandidate],
+        value_fn,
+        min_advantage: float,
+        budget_low=None,
+    ) -> list[MissionCandidate]:
+        selected: list[MissionCandidate] = []
+        used_sources: set[int] = set()
+        exclusive_targets: set[int] = set()
+        base_value = float(value_fn(base))
+        best_value = base_value
+        for candidate in sorted(candidates, key=lambda c: c.priority, reverse=True):
+            if budget_low is not None and budget_low():
+                break
+            if len(selected) >= int(self.config.max_selected_missions):
+                break
+            if used_sources & set(candidate.replace_sources):
+                continue
+            if exclusive_targets & set(candidate.exclusive_targets):
+                continue
+            trial = selected + [candidate]
+            trial_entries = self._assemble_missions(base, trial)
+            if budget_low is not None and budget_low():
+                break
+            trial_value = float(value_fn(trial_entries))
+            if trial_value <= best_value + float(min_advantage):
+                continue
+            selected = trial
+            used_sources |= set(candidate.replace_sources)
+            exclusive_targets |= set(candidate.exclusive_targets)
+            best_value = trial_value
+        return selected
+
     # -- plan value ----------------------------------------------------------
-    def _value_net_plan_value(self, obs_tensors: dict, my_entries: LaunchEntries,
-                              opp_entries_by_owner: list[tuple[int, LaunchEntries]], me: int) -> float:
+    def _value_net_plan_value(
+        self,
+        obs_tensors: dict,
+        my_entries: LaunchEntries,
+        opp_entries_by_owner: list[tuple[int, LaunchEntries]],
+        me: int,
+    ) -> float:
         """H7 E4: score the POST-LAUNCH board (real state + this plan's launches AND the
         opponents' predicted launches) with the learned value net. Including the enemy
         incoming fleets lets the net SEE the threat — so naive HOLD on a planet under
@@ -535,8 +1782,13 @@ class PGSRuntime:
             for i in torch.where(valid)[0].tolist():
                 slot = int(entries.source_slots[i].item())
                 if 0 <= slot < int(planet_ids.shape[0]):
-                    out.append((int(planet_ids[slot].item()),
-                                float(entries.angle[i].item()), float(entries.ships[i].item())))
+                    out.append(
+                        (
+                            int(planet_ids[slot].item()),
+                            float(entries.angle[i].item()),
+                            float(entries.ships[i].item()),
+                        )
+                    )
             return out
 
         by_owner = [(int(me), _moves(my_entries))]
@@ -562,9 +1814,15 @@ class PGSRuntime:
                 x, y = pos.get(fpid, (0.0, 0.0))
                 fleets.append([fid, owner, x, y, ang, fpid, sh])
                 fid += 1
-        obs_vec = encode_state({"planets": planets, "fleets": fleets,
-                                "step": int(obs_tensors["step"].item()),
-                                "angular_velocity": self._cur_angular}, int(me))
+        obs_vec = encode_state(
+            {
+                "planets": planets,
+                "fleets": fleets,
+                "step": int(obs_tensors["step"].item()),
+                "angular_velocity": self._cur_angular,
+            },
+            int(me),
+        )
         with torch.no_grad():
             return float(self._value_net(torch.as_tensor(obs_vec[None], dtype=torch.float32))[0])
 
@@ -579,6 +1837,10 @@ class PGSRuntime:
         cfg = self.config
         if self._value_net is not None:
             return self._value_net_plan_value(obs_tensors, my_entries, opp_entries_by_owner, me)
+        if str(cfg.value_mode).lower() == "timeline":
+            return self._plan_value_timeline(
+                movement, obs_tensors, my_entries, opp_entries_by_owner, me
+            )
         H = int(cfg.value_horizon)
         clone = _clone_movement(movement)
         for owner_id, entries in [(me, my_entries)] + opp_entries_by_owner:
@@ -613,16 +1875,94 @@ class PGSRuntime:
         ship_margin = float((ships_h[mine].sum() - ships_h[enemy].sum()).item())
         return ship_margin + float(cfg.prod_weight) * territory
 
+    def _plan_value_timeline(
+        self,
+        movement: PlanetMovement,
+        obs_tensors: dict,
+        my_entries: LaunchEntries,
+        opp_entries_by_owner: list[tuple[int, LaunchEntries]],
+        me: int,
+    ) -> float:
+        cfg = self.config
+        H = min(int(cfg.timeline_horizon), int(movement.movement_horizon))
+        clone = _clone_movement(movement)
+        for owner_id, entries in [(me, my_entries)] + opp_entries_by_owner:
+            if not bool(entries.valid.any()):
+                continue
+            launches = infer_planned_launches_from_entries(
+                obs_tensors=obs_tensors, movement=clone, entries=entries, player_id=int(owner_id)
+            )
+            apply_private_planned_launches(
+                movement=clone, launches=launches, owner_id=int(owner_id), obs_tensors=obs_tensors
+            )
+            _debit_entry_sources(clone, entries)
+        st = clone.garrison_status(max_horizon=H)
+        prod = clone.planet_prod
+        discount = float(cfg.timeline_discount)
+        prod_integral = 0.0
+        ship_margins: list[float] = []
+        for k in range(H + 1):
+            owner_k = st.owner[:, k]
+            mine = owner_k == int(me)
+            enemy = (owner_k >= 0) & (~mine)
+            if k > 0 and not bool(mine.any()):
+                # we own NOTHING at step k: this plan dies mid-horizon. Any
+                # surviving plan must dominate it; later death is less bad.
+                return -float(cfg.timeline_death_penalty) + float(k)
+            d = discount**k
+            prod_integral += d * float((prod[mine].sum() - prod[enemy].sum()).item())
+            ships_k = st.ships[:, k]
+            ship_margins.append(float((ships_k[mine].sum() - ships_k[enemy].sum()).item()))
+        terminal_ship = ship_margins[-1] if ship_margins else 0.0
+        min_ship = min(ship_margins) if ship_margins else 0.0
+        capture_bonus = 0.0
+        hold_turns = int(cfg.timeline_capture_hold_turns)
+        if hold_turns > 0 and H >= hold_turns:
+            mine_traj = st.owner == int(me)  # [P, H+1]
+            became = (~mine_traj[:, 0]) & mine_traj.any(dim=1)
+            for p in torch.where(became)[0].tolist():
+                k = int(torch.argmax(mine_traj[p].long()).item())
+                end = k + hold_turns
+                # SUSTAINED capture only: flipping it back within hold_turns
+                # earns nothing (capture-and-lose must not look like capture)
+                if end <= H and bool(mine_traj[p, k : end + 1].all()):
+                    capture_bonus += float(cfg.timeline_capture_hold_weight) * float(
+                        prod[p].item()
+                    )
+        exposure_penalty = 0.0
+        if bool(my_entries.valid.any()):
+            source_slots = {int(s.item()) for s in my_entries.source_slots[my_entries.valid]}
+            owner0 = st.owner[:, 0]
+            for source in source_slots:
+                if not (0 <= source < int(owner0.shape[0])) or int(owner0[source].item()) != int(
+                    me
+                ):
+                    continue
+                residual = float(clone.planet_ships[source].item())
+                if residual < 6.0:
+                    exposure_penalty += (6.0 - residual) * 2.0 + 8.0 * float(prod[source].item())
+        return (
+            float(cfg.timeline_terminal_ship_weight) * terminal_ship
+            + float(cfg.timeline_min_ship_weight) * min_ship
+            + float(cfg.timeline_prod_weight) * prod_integral
+            + capture_bonus
+            - exposure_penalty
+        )
+
     def _wave_merge_filter(
         self, my_base: LaunchEntries, owner0: Tensor, me: int, step_now: int
-    ) -> LaunchEntries:
+    ) -> tuple[LaunchEntries, dict[int, int]]:
         """Wave v1: withhold under-sized ATTACK groups (same enemy target) until
-        they merge into a >= wave_min_ships wave or age out (wave_max_delay)."""
+        they merge into a >= wave_min_ships wave or age out (wave_max_delay).
+
+        Pure: returns ``(filtered_entries, pending_next)`` and mutates NO
+        runtime state — the caller commits ``pending_next`` to
+        ``self._wave_pending`` only when the final plan actually used the
+        filtered base (a budget floor return must not advance the ledger)."""
         cfg = self.config
         valid = my_base.valid
         if not bool(valid.any()):
-            self._wave_pending = {}
-            return my_base
+            return my_base, {}
         tgt = my_base.target_slots
         tgt_owner = owner0[tgt]
         attack = valid & (tgt_owner >= 0) & (tgt_owner != int(me))
@@ -632,14 +1972,21 @@ class PGSRuntime:
             group = attack & (tgt == t_slot)
             total = float(my_base.ships[group].sum().item())
             first = self._wave_pending.get(t_slot, step_now)
-            if total >= float(cfg.wave_min_ships) or (step_now - first) >= int(cfg.wave_max_delay):
-                continue  # release the wave (or it aged out)
+            age = step_now - first
+            if total >= float(cfg.wave_min_ships):
+                continue  # the group crossed the threshold: release the wave
+            if bool(cfg.wave_release_on_age) and age >= int(cfg.wave_max_delay):
+                continue  # wave v1: aged-out groups release anyway (spray)
             keep &= ~group
-            pending_next[t_slot] = first
-        self._wave_pending = pending_next
+            if not bool(cfg.wave_release_on_age) and age >= int(cfg.wave_discard_after):
+                # wave v2: a stale pending wave is DISCARDED, never sprayed —
+                # keep withholding and restart its age window (mass builds on)
+                pending_next[t_slot] = step_now
+            else:
+                pending_next[t_slot] = first
         if bool((keep | ~valid).all()):
-            return my_base
-        return _select_entries(my_base, keep | ~valid)
+            return my_base, pending_next
+        return _select_entries(my_base, keep), pending_next
 
     def _decisive_wave_filter(
         self, my_base: LaunchEntries, owner0: Tensor, ships: Tensor, prod: Tensor,
@@ -706,6 +2053,7 @@ class PGSRuntime:
         if bool((obs_tensors["step"] == 0).all()):
             self._player_count = None
             self._floor_runtimes = {}
+            self._reset_adaptive_state()
         if self._player_count is None:
             self._player_count = largest_initial_player_count(obs_tensors)
         player_count = int(self._player_count)
@@ -714,21 +2062,36 @@ class PGSRuntime:
         if obs.P == 0:
             return empty_action_row(device)
         me = int(obs.player_id)
-        H = int(cfg.value_horizon)
+        H = (
+            int(cfg.timeline_horizon)
+            if str(cfg.value_mode).lower() == "timeline"
+            else int(cfg.value_horizon)
+        )
         movement = ensure_planet_movement(
             obs_tensors=obs_tensors,
             expected_cfg=MovementConfig(
-                movement_horizon=H, drift_epsilon=1e-3, track_fleets=True,
-                player_count=player_count, max_tracked_fleets=128,
+                movement_horizon=H,
+                drift_epsilon=1e-3,
+                track_fleets=True,
+                player_count=player_count,
+                max_tracked_fleets=128,
             ),
             cached_movement=None,
         )
         planet_ids = obs_tensors["planets"][..., 0].long()
 
-        my_base = self._producer_entries(me, obs_tensors, movement)
+        raw_producer_base = self._producer_entries(me, obs_tensors, movement)
+        my_base = raw_producer_base
 
         def producer_floor_payload() -> dict[str, Tensor]:
-            return entries_to_sparse_payload(my_base, planet_ids=planet_ids)
+            # the floor is the RAW Producer plan — never the wave-filtered base
+            # (closing over the rebound my_base shipped filtered "floors")
+            return entries_to_sparse_payload(raw_producer_base, planet_ids=planet_ids)
+
+        def budget_floor_payload() -> dict[str, Tensor]:
+            # in-planner deadline degradation; counted so gates can demand zero
+            self._stats["budget_floor_returns"] += 1
+            return producer_floor_payload()
 
         step_now = int(obs_tensors["step"].item())
         if step_now == 0:
@@ -740,47 +2103,54 @@ class PGSRuntime:
             # out-of-regime steps fall back to the exact Producer plan
             return producer_floor_payload()
         if budget_low():
-            return producer_floor_payload()
+            return budget_floor_payload()
 
         status = movement.garrison_status(max_horizon=H)
         alive = obs.alive
         owner0 = status.owner[:, 0]
+        if bool(cfg.adaptive_mode):
+            self._update_opponent_profiles(
+                movement=movement,
+                owner0=owner0,
+                me=me,
+                step_now=step_now,
+                obs_tensors=obs_tensors,
+            )
+        wave_pending_next: dict[int, int] | None = None
         if float(cfg.wave_min_ships) > 0 and step_now >= int(cfg.wave_start_step):
-            my_base = self._wave_merge_filter(my_base, owner0, me, step_now)
+            my_base, wave_pending_next = self._wave_merge_filter(my_base, owner0, me, step_now)
             if budget_low():
-                return producer_floor_payload()
-        # G3.2 Phase 2: decisive-wave concentration for even_attrition_2p (2p only).
-        if (player_count == 2 and bool(cfg.decisive_wave_2p)
-                and step_now >= int(cfg.decisive_wave_start_step)):
-            my_base = self._decisive_wave_filter(
-                my_base, owner0, movement.planet_ships, movement.planet_prod, me, step_now)
-            if budget_low():
-                return producer_floor_payload()
+                return budget_floor_payload()
         opp_ids = sorted({int(o.item()) for o in owner0[(owner0 >= 0) & (owner0 != me)]})
         opp_entries_by_owner = []
         for oid in opp_ids:
             if budget_low():
-                return producer_floor_payload()
+                return budget_floor_payload()
             opp_entries_by_owner.append((oid, self._producer_entries(oid, obs_tensors, movement)))
 
         # scripts read the projection WITH the opponent's predicted launches applied
         # (their plan this turn is exactly predictable): flips include the incoming
         # attacks, snipe targets include their reinforcements.
         script_status = status
+        script_movement = movement
         if any(bool(e.valid.any()) for _, e in opp_entries_by_owner):
             opp_clone = _clone_movement(movement)
             for oid, entries in opp_entries_by_owner:
                 if budget_low():
-                    return producer_floor_payload()
+                    return budget_floor_payload()
                 if not bool(entries.valid.any()):
                     continue
                 launches = infer_planned_launches_from_entries(
                     obs_tensors=obs_tensors, movement=opp_clone, entries=entries, player_id=int(oid)
                 )
                 apply_private_planned_launches(
-                    movement=opp_clone, launches=launches, owner_id=int(oid), obs_tensors=obs_tensors
+                    movement=opp_clone,
+                    launches=launches,
+                    owner_id=int(oid),
+                    obs_tensors=obs_tensors,
                 )
                 _debit_entry_sources(opp_clone, entries)
+            script_movement = opp_clone
             script_status = opp_clone.garrison_status(max_horizon=H)
 
         # H9-conditional (DB 234-239): only deviate when HOLDING actually loses planets.
@@ -803,8 +2173,24 @@ class PGSRuntime:
         # deviation sources: my alive planets with enough garrison, top-K by ships
         ships_now = movement.planet_ships
         my_mask = alive & (owner0 == me)
-        # launches must be integer-valued and <= available; keep 1 ship home
-        avail = (ships_now - 1.0).clamp(min=0.0).floor()
+        # tactical budget: scripts/missions may spend only what each source can
+        # shed while staying held over H (safe_drain) — not the physical
+        # garrison minus one. A source with 80 ships under pressure may only
+        # have 25 drainable; (ships - 1) let offensive scripts suicide sources.
+        avail = torch.zeros_like(ships_now)
+        my_idx = torch.where(my_mask)[0]
+        if int(my_idx.numel()):
+            avail[my_idx] = (
+                safe_drain(
+                    status,
+                    source_idx=my_idx,
+                    source_ships=ships_now[my_idx],
+                    H_eff=torch.full((), float(H), dtype=movement.dtype, device=movement.device),
+                    player_id=me,
+                )
+                .floor()
+                .clamp(min=0.0)
+            )
         candidates = torch.where(my_mask & (avail >= float(cfg.min_ships_to_act)))[0]
         if int(candidates.numel()) > int(cfg.max_search_sources):
             order = avail[candidates].argsort(descending=True)
@@ -838,7 +2224,7 @@ class PGSRuntime:
         portfolio: dict[int, list[tuple[str, LaunchEntries]]] = {}
         for s in sources:
             if budget_low():
-                return producer_floor_payload()
+                return budget_floor_payload()
             a = float(avail[s].item())
             options: list[tuple[str, LaunchEntries]] = [("PROD", base_by_source[s])]
             if "hold" in enabled:
@@ -847,11 +2233,17 @@ class PGSRuntime:
             if "half" in enabled:
                 maybe.append(("HALF", self._script_half(movement, base_by_source[s])))
             if "snipe" in enabled:
-                maybe.append(("SNIPE", self._script_take(movement, script_status, s, a, enemy_mask, me)))
+                maybe.append(
+                    ("SNIPE", self._script_take(movement, script_status, s, a, enemy_mask, me))
+                )
             if "capture" in enabled:
-                maybe.append(("CAPTURE", self._script_take(movement, script_status, s, a, neutral_mask, me)))
+                maybe.append(
+                    ("CAPTURE", self._script_take(movement, script_status, s, a, neutral_mask, me))
+                )
             if "reinforce" in enabled:
-                maybe.append(("REINFORCE", self._script_reinforce(movement, script_status, s, a, me)))
+                maybe.append(
+                    ("REINFORCE", self._script_reinforce(movement, script_status, s, a, me))
+                )
             if "evac" in enabled:
                 maybe.append(("EVAC", self._script_evac(movement, script_status, s, a, me)))
             for name, ent in maybe:
@@ -866,7 +2258,7 @@ class PGSRuntime:
             return concat_launch_entries(parts)
 
         if budget_low():
-            return producer_floor_payload()
+            return budget_floor_payload()
         cur_value = value(assembled(assign))
         deviations = 0
         for _ in range(int(cfg.max_passes)):
@@ -904,30 +2296,56 @@ class PGSRuntime:
                 assign = {s: 0 for s in sources}
                 deviated = False
         if deviated and opp_ids:
-            cache = build_distance_cache(movement, max_k=int(_producer_config_for(player_count).horizon))
+            cache = build_distance_cache(
+                movement, max_k=int(_producer_config_for(player_count).horizon)
+            )
             if budget_low():
                 assign = {s: 0 for s in sources}
                 deviated = False
         if deviated and opp_ids:
             plan_dev = assembled(assign)
-            plan_prod = concat_launch_entries(
-                [fixed_base] + [portfolio[s][0][1] for s in sources]
-            )
+            plan_prod = concat_launch_entries([fixed_base] + [portfolio[s][0][1] for s in sources])
 
             def reactive_value(plan: LaunchEntries) -> float | None:
-                replies = []
-                for oid in opp_ids:
+                if not bool(cfg.adaptive_reply_models) or len(opp_ids) != 1:
+                    replies = []
+                    for oid in opp_ids:
+                        if budget_low():
+                            return None
+                        replies.append(
+                            (
+                                oid,
+                                self._reactive_reply(
+                                    plan, oid, obs_tensors, movement, cache, player_count, me
+                                ),
+                            )
+                        )
                     if budget_low():
                         return None
-                    replies.append(
-                        (oid, self._reactive_reply(plan, oid, obs_tensors, movement, cache, player_count, me))
-                    )
-                if budget_low():
-                    return None
-                return self._plan_value(movement, obs_tensors, plan, replies, me)
+                    return self._plan_value(movement, obs_tensors, plan, replies, me)
 
-            _arb = (float(cfg.value_net_arbiter_margin) if self._value_net is not None
-                    else float(cfg.arbiter_margin))
+                oid = int(opp_ids[0])
+                values: list[float] = []
+                for model in self._reply_models_for_current_enemy(player_count, oid):
+                    if budget_low():
+                        return None
+                    reply = self._reply_entries_for_model(
+                        model, plan, oid, obs_tensors, movement, cache, player_count, me
+                    )
+                    if budget_low():
+                        return None
+                    values.append(self._plan_value(movement, obs_tensors, plan, [(oid, reply)], me))
+                if not values:
+                    return None
+                return (
+                    min(values) if bool(cfg.reply_worst_case) else sum(values) / float(len(values))
+                )
+
+            _arb = (
+                float(cfg.value_net_arbiter_margin)
+                if self._value_net is not None
+                else float(cfg.arbiter_margin)
+            )
             dev_value = reactive_value(plan_dev)
             prod_value = reactive_value(plan_prod) if dev_value is not None else None
             if dev_value is None or prod_value is None or dev_value <= prod_value + _arb:
@@ -941,6 +2359,51 @@ class PGSRuntime:
             print(f"[pgs] step={step_now} me={me} deviations={chosen}", file=sys.stderr)
 
         final = disambiguate_duplicate_launches(assembled(assign))
+        if bool(cfg.mission_mode) and player_count == 2 and not budget_low():
+            policy = self._effective_policy(
+                me=me,
+                opp_ids=opp_ids,
+                player_count=player_count,
+                step_now=step_now,
+            )
+            pending_targets: frozenset[int] = frozenset()
+            if not bool(cfg.wave_release_on_age) and wave_pending_next:
+                pending_targets = frozenset(int(t) for t in wave_pending_next)
+            candidates_m = self._build_mission_candidates(
+                movement=movement,
+                script_movement=script_movement,
+                script_status=script_status,
+                obs_tensors=obs_tensors,
+                owner0=owner0,
+                avail=avail,
+                sources=sources,
+                me=me,
+                H=H,
+                step_now=step_now,
+                policy=policy,
+                base_entries=final,
+                priority_targets=pending_targets,
+                budget_low=budget_low,
+            )
+            if candidates_m and not budget_low():
+
+                def mission_value(entries: LaunchEntries) -> float:
+                    return self._plan_value(
+                        movement, obs_tensors, entries, opp_entries_by_owner, me
+                    )
+
+                selected_m = self._select_missions_greedy(
+                    base=final,
+                    candidates=candidates_m,
+                    value_fn=mission_value,
+                    min_advantage=float(policy.mission_min_advantage),
+                    budget_low=budget_low,
+                )
+                if selected_m:
+                    final = self._assemble_missions(final, selected_m)
+        if wave_pending_next is not None:
+            # the returned plan used the wave-filtered base: commit the ledger
+            self._wave_pending = wave_pending_next
         return entries_to_sparse_payload(final, planet_ids=planet_ids)
 
 

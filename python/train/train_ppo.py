@@ -17,41 +17,56 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from python.agents.policy import (
+    PLANET_N,
     EntityActorCritic,
     FlatActorCritic,
+    GridNetActorCritic,
+    ProducerResidualBranchActorCritic,
     _action_value_from_heads,
+    gridnet_gated_kl,
     launch_gated_kl,
 )
 from python.agents.registry import (
     STATEFUL_SINGLETON_OPPONENTS,
     get_heuristic_policies,
     get_isolated_opponents,
+    make_isolated_opponent,
 )
 from python.train.opponent_pool import get_process_opponent_pool
 
 from orbit_wars_gym import OrbitWarsGymEnv
-from orbit_wars_gym.action_decoder import DecoderConfig, decode_discrete_action
-from orbit_wars_gym.action_inverse import DEFAULT_INVERSE_CONFIG, invert_moves
+from orbit_wars_gym.action_decoder import (
+    DEFAULT_DECODER_CONFIG,
+    DecoderConfig,
+    decode_discrete_action,
+    decode_gridnet_action,
+    gridnet_planet_mask,
+)
 from orbit_wars_gym.action_masks import build_action_masks, split_masks
 from orbit_wars_gym.backend import RustBatchBackend, RustConfig
-from orbit_wars_gym.encoding import observation_dim
-from orbit_wars_gym.entities import fleet_owner, planet_id, planet_owner
-from orbit_wars_gym.observation import to_official_observation
-from orbit_wars_gym.rules import moves_are_legal, normalized_margin
+from orbit_wars_gym.encoding import DEFAULT_ENCODER_CONFIG, encode_state, observation_dim
+from orbit_wars_gym.entities import fleet_owner, planet_id, planet_owner, planet_ships
 
-_POLICY_ARCHS = {"flat": FlatActorCritic, "entity": EntityActorCritic}
+_POLICY_ARCHS = {
+    "flat": FlatActorCritic,
+    "entity": EntityActorCritic,
+    "producer_residual": ProducerResidualBranchActorCritic,
+    "gridnet": GridNetActorCritic,
+}
 
 
-def _build_policy(arch: str, obs_dim: int):
+def _build_policy(arch: str, obs_dim: int, **kwargs):
     if arch not in _POLICY_ARCHS:
         raise ValueError(f"unknown policy arch {arch!r}; valid: {sorted(_POLICY_ARCHS)}")
-    return _POLICY_ARCHS[arch](obs_dim)
+    return _POLICY_ARCHS[arch](obs_dim, **kwargs)
 
 
 _HEURISTIC_POLICIES = get_heuristic_policies()
+# "pgs" is the operational holdwave bot (bots.pgs.agent SUBMISSION_CONFIG). It is
+# ~30ms/decision, so weight it lightly in rollout curricula (e.g. 1 slot in 10).
 PHASE0_OPPONENTS = {
     name: _HEURISTIC_POLICIES[name]
-    for name in ("producer", "oep", "greedy", "defensive", "rush", "anti_meta", "weak_random")
+    for name in ("producer", "oep", "pgs", "greedy", "defensive", "rush", "anti_meta", "weak_random")
 }
 
 LEAGUE_TRAINING_OPPONENTS = frozenset({"pgs_holdwave", "pgs_bigwave", "brep"})
@@ -149,6 +164,20 @@ class Phase0TrainingConfig:
     seed: int = 0
     policy_track: str = "phase0_2p"
     policy_arch: str = "flat"
+    # BASE agent for the producer_residual arch (the plan the net edits). Registry
+    # name: "producer" (original BReP) or "pgs"/"pgs_holdwave" (holdwave incumbent —
+    # the parity floor we want to not regress below). Ignored by other archs.
+    base_agent: str = "producer"
+    # GridNet league/PFSP: path to a FROZEN snapshot checkpoint that plays the
+    # "self" opponent seat (instead of the live policy). The campaign points this at
+    # a growing pool of past chunks so the opponent's strength tracks the agent's —
+    # the AlphaStar device for crossing strength gaps the live-self-play empate can't.
+    self_opponent_checkpoint: str | None = None
+    # Handicap curriculum: scale a planner opponent's launched ships by this factor.
+    # The GridNet policy beats the producer at ~0.2x ships but is crushed at 1.0x —
+    # a difficulty curriculum (start low, raise as the policy dominates) is the only
+    # bridge across the reactive→planner cliff (no intermediate-strength bot exists).
+    opponent_handicap: float = 1.0
     num_players: int = 2
     total_timesteps: int = 200_000
     episode_steps: int = 500
@@ -294,9 +323,15 @@ def _parse_opponents(raw: str | Sequence[str]) -> tuple[str, ...]:
         items = tuple(str(part).strip() for part in raw if str(part).strip())
     if not items:
         raise ValueError("at least one opponent is required")
-    if len(set(items)) < 2:
+    # "self" = GridNet self-play opponent (the live/snapshot net plays the other
+    # seat); valid alone (pure self-play needs no second distinct opponent).
+    if len(set(items)) < 2 and "self" not in items:
         raise ValueError("training requires at least two distinct opponents")
-    unknown = _unknown_opponent_parts(items)
+    # "<name>@<scale>" = handicap-curriculum opponent (ships scaled). Validate base.
+    unknown = [
+        name for name in items
+        if name.partition("@")[0] not in PHASE0_OPPONENTS and name != "self"
+    ]
     if unknown:
         raise ValueError(f"unknown phase-0 opponent parts: {', '.join(unknown)}")
     return items
@@ -729,6 +764,469 @@ def _batched_rollout_supported(
     return True
 
 
+# BReP per-slot edit codes over a base move (v2): 0=KEEP, 1=CANCEL, ship-SCALE
+# {2:x0.25, 3:x0.5, 4:x1.5, 5:x2.0}. Down-scales always legal; up-scales capped at
+# the source planet's ships. This table MUST match the exported submission's decode.
+_EDIT_SCALES = {2: 0.25, 3: 0.5, 4: 1.5, 5: 2.0}
+
+# Registry aliases for the residual base; "pgs_holdwave" == "pgs" (holdwave is the
+# pgs.agent SUBMISSION_CONFIG isolated opponent).
+_BASE_AGENT_ALIASES = {"pgs_holdwave": "pgs"}
+
+
+def _make_base_agent(name: str) -> "Policy":
+    """Fresh isolated base agent (own per-game memory) for the BReP rollout."""
+    return make_isolated_opponent(_BASE_AGENT_ALIASES.get(name, name))
+
+
+def _apply_residual_edits(
+    state: dict[str, Any], base_moves: Sequence[Sequence[float]], edits: Sequence[int], k_max: int
+) -> list[list[float]]:
+    """Apply per-slot BReP edits to a base plan. Codes: 0=KEEP, 1=CANCEL (drop),
+    2-5 = ship SCALE (down always legal; up capped at the source planet's ships).
+    Moves past ``k_max`` editable slots are kept as-is, so KEEP-everything reproduces
+    the EXACT base plan (the parity-floor invariant). Base-agnostic: works over any
+    ``[planet, angle, ships]`` move list (Producer or holdwave)."""
+    ships_by_id = {planet_id(p): planet_ships(p) for p in state.get("planets", [])}
+    out: list[list[float]] = []
+    for i, mv in enumerate(base_moves):
+        ships = int(mv[2])
+        if i >= k_max:
+            out.append([mv[0], mv[1], float(ships)])
+            continue
+        e = int(edits[i])
+        if e == 1:  # CANCEL
+            continue
+        scale = _EDIT_SCALES.get(e)
+        if scale is None:  # KEEP (0) or any unknown code -> exact base move
+            out.append([mv[0], mv[1], float(ships)])
+            continue
+        scaled = int(round(ships * scale))
+        if scale > 1.0:  # boost: cap at the source planet's available ships
+            scaled = min(scaled, max(1, int(ships_by_id.get(int(mv[0]), ships)) - 1))
+        out.append([mv[0], mv[1], float(max(1, scaled))])
+    return out
+
+
+def _collect_brep_rollout_segment(
+    model: ProducerResidualBranchActorCritic,
+    *,
+    opponent_name: str,
+    base_seed: int,
+    rollout_steps: int,
+    sample_limit: int,
+    device: torch.device,
+    training_cfg: Phase0TrainingConfig,
+    progress: float,
+) -> RolloutSegment:
+    """BReP batched rollout: the agent action is a per-slot edit over a BASE plan
+    (one extra base-agent call per env) instead of a decoded raw move. Mask = active
+    base-move slots. Mirrors _collect_batched_rollout_segment's reward path; the base
+    agent is configurable (training_cfg.base_agent — producer or pgs/holdwave)."""
+    if training_cfg.num_players != 2:
+        raise ValueError("BReP rollout currently supports only 2-player training")
+    if opponent_name not in PHASE0_OPPONENTS:
+        raise ValueError(f"unknown phase-0 opponent: {opponent_name}")
+    k_max = int(model.k_max)
+    agent_player = 0
+    opp_player = 1
+    num_envs = max(1, min(int(training_cfg.rollout_num_envs), int(sample_limit)))
+    opponent_policies = get_isolated_opponents(opponent_name, num_envs)
+    # FRESH base instances (not the cached pool) so the player-0 base planner never
+    # shares a stateful runtime with the player-1 opponent of the same name.
+    base_policies = [_make_base_agent(training_cfg.base_agent) for _ in range(num_envs)]
+    base_shaping_scale, comet_shaping_scale = shaping_scales(training_cfg, progress)
+    reward_env = build_phase0_env(
+        seed=base_seed,
+        num_players=training_cfg.num_players,
+        opponent_name=opponent_name,
+        enable_comets=training_cfg.enable_comets,
+        decoder_cfg=decoder_config(training_cfg),
+        sun_loss_penalty=training_cfg.sun_loss_penalty,
+        border_loss_penalty=training_cfg.border_loss_penalty,
+        ship_margin_scale=training_cfg.ship_margin_scale,
+        base_shaping_scale=base_shaping_scale,
+        comet_shaping_scale=comet_shaping_scale,
+        shaping_gamma=training_cfg.gamma,
+    )
+    backend = RustBatchBackend(
+        num_envs=num_envs,
+        num_players=training_cfg.num_players,
+        seed=base_seed,
+        config=RustConfig(enable_comets=training_cfg.enable_comets),
+    )
+    current_states = backend.reset(base_seed)
+    obs_np = backend.encoded_states(agent_player)
+    episodes = [EpisodeMetrics(opponent=opponent_name) for _ in range(num_envs)]
+    episode_metrics: list[dict[str, Any]] = []
+    active = np.ones(num_envs, dtype=bool)
+
+    obs_buf, action_buf, logprob_buf, value_buf, mask_buf = [], [], [], [], []
+    rewards_np = np.empty((rollout_steps, num_envs), dtype=np.float32)
+    dones_np = np.empty((rollout_steps, num_envs), dtype=np.float32)
+
+    for step_index in range(rollout_steps):
+        active_indices = [i for i in range(num_envs) if active[i]]
+        # Agent's BASE plan per env (computed BEFORE the net so the mask knows how
+        # many edit slots are live). This is the one extra base-agent call.
+        base_moves_by_env: list[list[list[float]]] = [[] for _ in range(num_envs)]
+        for i in active_indices:
+            base_moves_by_env[i] = [list(m) for m in base_policies[i](current_states[i], agent_player)]
+
+        edit_mask_np = np.zeros((num_envs, k_max), dtype=bool)
+        for i in active_indices:
+            n_slots = min(len(base_moves_by_env[i]), k_max)
+            if n_slots > 0:
+                edit_mask_np[i, :n_slots] = True
+        mask_tensor = torch.as_tensor(edit_mask_np, dtype=torch.bool, device=device)
+
+        obs_tensor = torch.as_tensor(obs_np, dtype=torch.float32, device=device)
+        with torch.no_grad():
+            action_tensor, logprob_tensor, _, value_tensor = model.get_action_and_value(
+                obs_tensor, masks={"edit": mask_tensor}
+            )
+        actions_np = action_tensor.cpu().numpy()
+
+        opponent_moves_by_env = {
+            i: opponent_policies[i](current_states[i], opp_player) for i in active_indices
+        }
+
+        action_rows: list[list[float]] = []
+        player_moves_by_env: list[list[list[float]]] = [[] for _ in range(num_envs)]
+        for env_index in active_indices:
+            state = current_states[env_index]
+            player_moves = _apply_residual_edits(
+                state, base_moves_by_env[env_index], actions_np[env_index], k_max
+            )
+            player_moves_by_env[env_index] = player_moves
+            action_rows.extend(_moves_to_flat_rows(env_index, agent_player, player_moves))
+            action_rows.extend(_moves_to_flat_rows(env_index, opp_player, opponent_moves_by_env[env_index]))
+
+        flat_actions = (
+            np.asarray(action_rows, dtype=np.float64) if action_rows else np.zeros((0, 5), dtype=np.float64)
+        )
+        previous_states = current_states
+        outcomes, next_obs_np = backend.step_flat_with_encoded_states(flat_actions, agent_player)
+        next_states = backend.states()
+
+        rewards_row = rewards_np[step_index]
+        dones_row = dones_np[step_index]
+        rewards_row.fill(0.0)
+        dones_row.fill(0.0)
+        for env_index, (previous_state, next_state, outcome) in enumerate(
+            zip(previous_states, next_states, outcomes, strict=True)
+        ):
+            if not active[env_index]:
+                dones_row[env_index] = 1.0
+                continue
+            done = bool(outcome.get("done", False))
+            base_reward = reward_env._base_shaping_reward(
+                previous_state, next_state, player=agent_player,
+                player_moves=player_moves_by_env[env_index], done=done,
+            )
+            ship_margin_reward = reward_env._ship_margin_reward(previous_state, next_state, player=agent_player)
+            comet_reward = reward_env._comet_auxiliary_reward(previous_state, next_state, player=agent_player)
+            reward = (
+                base_shaping_scale * base_reward + ship_margin_reward + comet_shaping_scale * comet_reward
+            )
+            if done:
+                rewards = outcome.get("rewards", [])
+                reward += float(rewards[agent_player]) if rewards else 0.0
+            rewards_row[env_index] = float(reward)
+            dones_row[env_index] = float(done)
+            episodes[env_index].record_step(
+                reward=reward,
+                neutral_captures=_neutral_capture_count(previous_state, next_state, player=agent_player),
+                alive=_player_alive(next_state, player=agent_player),
+                early_window=training_cfg.early_survival_window,
+            )
+            if done:
+                episodes[env_index].completed = True
+                episode_metrics.append(episodes[env_index].as_summary())
+                active[env_index] = False
+
+        obs_buf.append(obs_tensor)
+        action_buf.append(action_tensor)
+        logprob_buf.append(logprob_tensor)
+        value_buf.append(value_tensor)
+        mask_buf.append(mask_tensor)
+        current_states = next_states
+        obs_np = next_obs_np
+
+    for env_index, episode in enumerate(episodes):
+        if active[env_index] and episode.length > 0:
+            episode_metrics.append(episode.as_summary())
+
+    with torch.no_grad():
+        next_obs_tensor = torch.as_tensor(obs_np, dtype=torch.float32, device=device)
+        _, _, _, next_value = model.get_action_and_value(next_obs_tensor)
+        next_value = next_value.masked_fill(torch.as_tensor(~active, dtype=torch.bool, device=device), 0.0)
+
+    observations = torch.stack(obs_buf)
+    actions = torch.stack(action_buf).to(dtype=torch.long)
+    logprobs = torch.stack(logprob_buf)
+    rewards = torch.as_tensor(rewards_np, dtype=torch.float32, device=device)
+    dones = torch.as_tensor(dones_np, dtype=torch.float32, device=device)
+    values = torch.stack(value_buf)
+    advantages, returns = _compute_gae_batched(
+        rewards, dones, values, next_value, gamma=training_cfg.gamma, gae_lambda=training_cfg.gae_lambda
+    )
+    masks = torch.stack(mask_buf)
+    flat_observations = observations.reshape(-1, observations.shape[-1])
+    flat_actions = actions.reshape(-1, actions.shape[-1])
+    flat_logprobs = logprobs.reshape(-1)
+    flat_advantages = advantages.reshape(-1)
+    flat_returns = returns.reshape(-1)
+    flat_values = values.reshape(-1)
+    flat_rewards = rewards.reshape(-1)
+    flat_masks = masks.reshape(-1, masks.shape[-1])
+    if sample_limit > 0:
+        flat_observations = flat_observations[:sample_limit]
+        flat_actions = flat_actions[:sample_limit]
+        flat_logprobs = flat_logprobs[:sample_limit]
+        flat_advantages = flat_advantages[:sample_limit]
+        flat_returns = flat_returns[:sample_limit]
+        flat_values = flat_values[:sample_limit]
+        flat_rewards = flat_rewards[:sample_limit]
+        flat_masks = flat_masks[:sample_limit]
+    return RolloutSegment(
+        observations=flat_observations,
+        actions=flat_actions,
+        logprobs=flat_logprobs,
+        advantages=flat_advantages,
+        returns=flat_returns,
+        values=flat_values,
+        rewards=flat_rewards,
+        masks=flat_masks,
+        opponent=opponent_name,
+        episode_metrics=episode_metrics,
+    )
+
+
+def _gridnet_moves_batch(
+    model: GridNetActorCritic,
+    states: list[dict],
+    indices: list[int],
+    player: int,
+    device: torch.device,
+    decoder_cfg: DecoderConfig,
+    *,
+    sample: bool,
+    obs_np: "np.ndarray | None" = None,
+) -> dict[int, list[list[float]]]:
+    """Batched GridNet move generation for a set of envs (one forward, greedy or
+    sampled). Used for the SELF-PLAY opponent seat — the net plays itself, which is
+    batchable (~1ms) instead of a Python planner per step (the historical
+    throughput bottleneck). ``obs_np`` (the backend's batched encoding for ``player``)
+    is reused when given, avoiding a per-env Python encode_state loop (~50% of the
+    rollout time)."""
+    if not indices:
+        return {}
+    if obs_np is not None:
+        obs = torch.as_tensor(obs_np[indices], dtype=torch.float32, device=device)
+    else:
+        obs = torch.as_tensor(
+            np.stack([encode_state(states[i], player, DEFAULT_ENCODER_CONFIG) for i in indices]),
+            dtype=torch.float32, device=device,
+        )
+    mask = torch.as_tensor(
+        np.stack([gridnet_planet_mask(states[i], player, decoder_cfg) for i in indices]),
+        dtype=torch.bool, device=device,
+    )
+    with torch.no_grad():
+        if sample:
+            a, _, _, _ = model.get_action_and_value(obs, masks={"planet": mask})
+        else:
+            out = model.forward(obs)
+            launch = out["launch"].argmax(-1)
+            launch = torch.where(mask, launch, torch.zeros_like(launch))
+            a = torch.stack([launch, out["target"].argmax(-1), out["frac"].argmax(-1), out["offset"].argmax(-1)], dim=-1)
+    a_np = a.cpu().numpy()
+    return {env: decode_gridnet_action(states[env], player, a_np[k], decoder_cfg) for k, env in enumerate(indices)}
+
+
+def _collect_gridnet_rollout_segment(
+    model: GridNetActorCritic,
+    *,
+    opponent_name: str,
+    base_seed: int,
+    rollout_steps: int,
+    sample_limit: int,
+    device: torch.device,
+    training_cfg: Phase0TrainingConfig,
+    progress: float,
+    opponent_model: GridNetActorCritic | None = None,
+) -> RolloutSegment:
+    """GridNet per-planet rollout with SELF-PLAY or heuristic opponents (2p).
+
+    opponent_name == "self": the opponent seat is played by ``opponent_model`` (a
+    frozen snapshot) or the live model — batchable, removing the per-step Python
+    planner bottleneck. Otherwise an isolated heuristic opponent (producer/oep/pgs)
+    provides curriculum diversity (the ablation's 'diversified opponents')."""
+    if training_cfg.num_players != 2:
+        raise ValueError("GridNet rollout currently supports only 2-player training")
+    is_self = opponent_name == "self"
+    # "<name>@<scale>" handicaps the opponent's launched ships (curriculum).
+    handicap = float(training_cfg.opponent_handicap)
+    base_opp_name = opponent_name
+    if "@" in opponent_name:
+        base_opp_name, _, scale_s = opponent_name.partition("@")
+        handicap = float(scale_s)
+    if not is_self and base_opp_name not in PHASE0_OPPONENTS:
+        raise ValueError(f"unknown phase-0 opponent: {base_opp_name}")
+    agent_player, opp_player = 0, 1
+    decoder_cfg = decoder_config(training_cfg)
+    opp_net = opponent_model if opponent_model is not None else model
+    num_envs = max(1, min(int(training_cfg.rollout_num_envs), int(sample_limit)))
+    opponent_policies = None if is_self else get_isolated_opponents(base_opp_name, num_envs)
+
+    def _hcap(moves: list) -> list:
+        if handicap >= 1.0:
+            return moves
+        return [[m[0], m[1], max(1.0, float(m[2]) * handicap)] for m in moves]
+    base_shaping_scale, comet_shaping_scale = shaping_scales(training_cfg, progress)
+    reward_env = build_phase0_env(
+        seed=base_seed, num_players=2,
+        opponent_name="producer" if is_self else base_opp_name,
+        enable_comets=training_cfg.enable_comets, decoder_cfg=decoder_cfg,
+        sun_loss_penalty=training_cfg.sun_loss_penalty, border_loss_penalty=training_cfg.border_loss_penalty,
+        ship_margin_scale=training_cfg.ship_margin_scale,
+        base_shaping_scale=base_shaping_scale, comet_shaping_scale=comet_shaping_scale,
+        shaping_gamma=training_cfg.gamma,
+    )
+    backend = RustBatchBackend(
+        num_envs=num_envs, num_players=2, seed=base_seed,
+        config=RustConfig(enable_comets=training_cfg.enable_comets),
+    )
+    current_states = backend.reset(base_seed)
+    obs_np = backend.encoded_states(agent_player)
+    episodes = [EpisodeMetrics(opponent=opponent_name) for _ in range(num_envs)]
+    episode_metrics: list[dict[str, Any]] = []
+    active = np.ones(num_envs, dtype=bool)
+    obs_buf, action_buf, logprob_buf, value_buf, mask_buf = [], [], [], [], []
+    rewards_np = np.empty((rollout_steps, num_envs), dtype=np.float32)
+    dones_np = np.empty((rollout_steps, num_envs), dtype=np.float32)
+
+    for step_index in range(rollout_steps):
+        active_indices = [i for i in range(num_envs) if active[i]]
+        mask_np = np.stack([gridnet_planet_mask(s, agent_player, decoder_cfg) for s in current_states])
+        mask_tensor = torch.as_tensor(mask_np, dtype=torch.bool, device=device)
+        obs_tensor = torch.as_tensor(obs_np, dtype=torch.float32, device=device)
+        with torch.no_grad():
+            action_tensor, logprob_tensor, _, value_tensor = model.get_action_and_value(
+                obs_tensor, masks={"planet": mask_tensor}
+            )
+        actions_np = action_tensor.cpu().numpy()
+
+        if is_self:
+            opp_obs_np = backend.encoded_states(opp_player)  # batched, no per-env encode
+            opp_moves = _gridnet_moves_batch(
+                opp_net, current_states, active_indices, opp_player, device, decoder_cfg,
+                sample=True, obs_np=opp_obs_np,
+            )
+        else:
+            opp_moves = {i: _hcap(opponent_policies[i](current_states[i], opp_player)) for i in active_indices}
+
+        action_rows: list[list[float]] = []
+        player_moves_by_env: list[list[list[float]]] = [[] for _ in range(num_envs)]
+        for env_index in active_indices:
+            pm = decode_gridnet_action(current_states[env_index], agent_player, actions_np[env_index], decoder_cfg)
+            player_moves_by_env[env_index] = pm
+            action_rows.extend(_moves_to_flat_rows(env_index, agent_player, pm))
+            action_rows.extend(_moves_to_flat_rows(env_index, opp_player, opp_moves[env_index]))
+
+        flat_actions = np.asarray(action_rows, dtype=np.float64) if action_rows else np.zeros((0, 5), dtype=np.float64)
+        previous_states = current_states
+        outcomes, next_obs_np = backend.step_flat_with_encoded_states(flat_actions, agent_player)
+        next_states = backend.states()
+
+        rewards_row, dones_row = rewards_np[step_index], dones_np[step_index]
+        rewards_row.fill(0.0)
+        dones_row.fill(0.0)
+        for env_index, (previous_state, next_state, outcome) in enumerate(
+            zip(previous_states, next_states, outcomes, strict=True)
+        ):
+            if not active[env_index]:
+                dones_row[env_index] = 1.0
+                continue
+            done = bool(outcome.get("done", False))
+            base_reward = reward_env._base_shaping_reward(
+                previous_state, next_state, player=agent_player,
+                player_moves=player_moves_by_env[env_index], done=done,
+            )
+            ship_margin_reward = reward_env._ship_margin_reward(previous_state, next_state, player=agent_player)
+            comet_reward = reward_env._comet_auxiliary_reward(previous_state, next_state, player=agent_player)
+            reward = base_shaping_scale * base_reward + ship_margin_reward + comet_shaping_scale * comet_reward
+            if done:
+                rewards = outcome.get("rewards", [])
+                reward += float(rewards[agent_player]) if rewards else 0.0
+            rewards_row[env_index] = float(reward)
+            dones_row[env_index] = float(done)
+            episodes[env_index].record_step(
+                reward=reward,
+                neutral_captures=_neutral_capture_count(previous_state, next_state, player=agent_player),
+                alive=_player_alive(next_state, player=agent_player),
+                early_window=training_cfg.early_survival_window,
+            )
+            if done:
+                episodes[env_index].completed = True
+                episode_metrics.append(episodes[env_index].as_summary())
+                active[env_index] = False
+
+        obs_buf.append(obs_tensor)
+        action_buf.append(action_tensor)
+        logprob_buf.append(logprob_tensor)
+        value_buf.append(value_tensor)
+        mask_buf.append(mask_tensor)
+        current_states = next_states
+        obs_np = next_obs_np
+
+    for env_index, episode in enumerate(episodes):
+        if active[env_index] and episode.length > 0:
+            episode_metrics.append(episode.as_summary())
+
+    with torch.no_grad():
+        next_obs_tensor = torch.as_tensor(obs_np, dtype=torch.float32, device=device)
+        _, _, _, next_value = model.get_action_and_value(next_obs_tensor)
+        next_value = next_value.masked_fill(torch.as_tensor(~active, dtype=torch.bool, device=device), 0.0)
+
+    observations = torch.stack(obs_buf)
+    actions = torch.stack(action_buf).to(dtype=torch.long)
+    logprobs = torch.stack(logprob_buf)
+    rewards = torch.as_tensor(rewards_np, dtype=torch.float32, device=device)
+    dones = torch.as_tensor(dones_np, dtype=torch.float32, device=device)
+    values = torch.stack(value_buf)
+    advantages, returns = _compute_gae_batched(
+        rewards, dones, values, next_value, gamma=training_cfg.gamma, gae_lambda=training_cfg.gae_lambda
+    )
+    masks = torch.stack(mask_buf)
+    # GridNet action/mask are per-planet (PLANET_N, 4) / (PLANET_N,): flatten only
+    # the leading (steps, envs) dims, keep the per-planet structure.
+    flat_observations = observations.reshape(-1, observations.shape[-1])
+    flat_actions = actions.reshape(-1, PLANET_N, 4)
+    flat_logprobs = logprobs.reshape(-1)
+    flat_advantages = advantages.reshape(-1)
+    flat_returns = returns.reshape(-1)
+    flat_values = values.reshape(-1)
+    flat_rewards = rewards.reshape(-1)
+    flat_masks = masks.reshape(-1, PLANET_N)
+    if sample_limit > 0:
+        flat_observations = flat_observations[:sample_limit]
+        flat_actions = flat_actions[:sample_limit]
+        flat_logprobs = flat_logprobs[:sample_limit]
+        flat_advantages = flat_advantages[:sample_limit]
+        flat_returns = flat_returns[:sample_limit]
+        flat_values = flat_values[:sample_limit]
+        flat_rewards = flat_rewards[:sample_limit]
+        flat_masks = flat_masks[:sample_limit]
+    return RolloutSegment(
+        observations=flat_observations, actions=flat_actions, logprobs=flat_logprobs,
+        advantages=flat_advantages, returns=flat_returns, values=flat_values,
+        rewards=flat_rewards, masks=flat_masks, opponent=opponent_name,
+        episode_metrics=episode_metrics,
+    )
+
+
 def _collect_batched_rollout_segment(
     model: FlatActorCritic,
     *,
@@ -1022,9 +1520,38 @@ def _collect_rollout_segment(
     training_cfg: Phase0TrainingConfig,
     progress: float,
     sample_limit: int | None = None,
+    opponent_model: GridNetActorCritic | None = None,
 ) -> RolloutSegment:
     limit = rollout_steps if sample_limit is None else max(1, int(sample_limit))
-    if _batched_rollout_supported(training_cfg, opponent_name):
+    # GridNet is batchable (fixed per-planet mask shape): own self-play collector.
+    if isinstance(model, GridNetActorCritic):
+        per_env_steps = max(1, min(int(rollout_steps), math.ceil(limit / max(1, int(training_cfg.rollout_num_envs)))))
+        return _collect_gridnet_rollout_segment(
+            model,
+            opponent_name=opponent_name,
+            base_seed=base_seed,
+            rollout_steps=per_env_steps,
+            sample_limit=limit,
+            device=device,
+            training_cfg=training_cfg,
+            progress=progress,
+            opponent_model=opponent_model,
+        )
+    # BReP is batchable by design (per-slot edit mask is fixed-shape): route it to
+    # its own batched collector regardless of _batched_rollout_supported.
+    if isinstance(model, ProducerResidualBranchActorCritic):
+        per_env_steps = max(1, min(int(rollout_steps), math.ceil(limit / max(1, int(training_cfg.rollout_num_envs)))))
+        return _collect_brep_rollout_segment(
+            model,
+            opponent_name=opponent_name,
+            base_seed=base_seed,
+            rollout_steps=per_env_steps,
+            sample_limit=limit,
+            device=device,
+            training_cfg=training_cfg,
+            progress=progress,
+        )
+    if _batched_rollout_supported(training_cfg):
         per_env_steps = max(1, min(int(rollout_steps), math.ceil(limit / max(1, int(training_cfg.rollout_num_envs)))))
         return _collect_batched_rollout_segment(
             model,
@@ -1127,18 +1654,29 @@ def _ppo_update(
             old_logprob_mb = batch["logprobs"][indices]
             advantage_mb = batch["advantages"][indices]
             return_mb = batch["returns"][indices]
-            mask_mb = split_masks(batch["masks"][indices])
-            teacher_action_mb = batch["teacher_actions"][indices]
-            teacher_mask_mb = batch["teacher_action_mask"][indices].bool()
-            teacher_quant_mb = batch["teacher_quant_errors"][indices]
+            is_residual = isinstance(model, ProducerResidualBranchActorCritic)
+            is_gridnet = isinstance(model, GridNetActorCritic)
+            is_branch = is_residual or is_gridnet  # own get_action_and_value, no 5-head KL
+            if is_residual:
+                mask_mb = {"edit": batch["masks"][indices]}
+            elif is_gridnet:
+                mask_mb = {"planet": batch["masks"][indices]}
+            else:
+                mask_mb = split_masks(batch["masks"][indices])
 
             advantage_mb = (advantage_mb - advantage_mb.mean()) / (advantage_mb.std(unbiased=False) + 1e-8)
 
             # Same mask as sampling time -> the PPO importance ratio stays correct.
-            # One forward gives both the PPO terms (via _action_value_from_heads)
-            # and the head logits reused for the KL-to-reference anchor below.
-            cur_out = model(obs_mb)
-            _, new_logprob, entropy, new_value = _action_value_from_heads(cur_out, action_mb, mask_mb)
+            # Branch archs (residual edit-branch, GridNet per-planet) have no
+            # launch/move heads, so they compute terms via get_action_and_value; the
+            # 5-head archs reuse one forward for both PPO terms and the KL anchor.
+            if is_branch:
+                _, new_logprob, entropy, new_value = model.get_action_and_value(
+                    obs_mb, action_mb, masks=mask_mb
+                )
+            else:
+                cur_out = model(obs_mb)
+                _, new_logprob, entropy, new_value = _action_value_from_heads(cur_out, action_mb, mask_mb)
             log_ratio = new_logprob - old_logprob_mb
             ratio = log_ratio.exp()
 
@@ -1169,7 +1707,17 @@ def _ppo_update(
                 bc_anchor_quant_error_val = float(finite_quant.mean().item()) if finite_quant.numel() else 0.0
 
             kl_to_ref_val = 0.0
-            if use_kl_ref:
+            # KL-to-ref anchors the policy to a reference (BC) so RL can't degrade
+            # the good BC minimum. 5-head archs use launch_gated_kl; GridNet uses
+            # its per-planet gated KL; the residual edit-branch has no anchor.
+            if use_kl_ref and is_gridnet:
+                cur_out = model.forward(obs_mb)
+                with torch.no_grad():
+                    ref_out = ref_model.forward(obs_mb)
+                kl_ref = gridnet_gated_kl(cur_out, ref_out, batch["masks"][indices]).mean()
+                loss = loss + cfg.kl_to_ref_coef * kl_ref
+                kl_to_ref_val = float(kl_ref.item())
+            elif use_kl_ref and not is_branch:
                 with torch.no_grad():
                     ref_out = ref_model(obs_mb)
                 kl_ref = launch_gated_kl(cur_out, ref_out, mask_mb).mean()
@@ -1317,6 +1865,213 @@ def _evaluate_margin(
     return float(np.mean(margins)) if margins else 0.0
 
 
+def _scores_margin(scores: Sequence[float], agent_player: int, num_players: int) -> float:
+    """Normalized margin of ``agent_player`` vs the best other score, in [-1, 1]."""
+    s = [float(x) for x in scores] + [0.0] * (num_players - len(scores))
+    mine = s[agent_player]
+    others = [s[p] for p in range(num_players) if p != agent_player]
+    best_other = max(others) if others else 0.0
+    denom = max(abs(mine) + abs(best_other), 1.0)
+    return (mine - best_other) / denom
+
+
+def _play_residual_game(
+    model: ProducerResidualBranchActorCritic,
+    *,
+    base_agent: str,
+    opponent_name: str,
+    agent_player: int,
+    seed: int,
+    episode_steps: int,
+    num_players: int,
+    enable_comets: bool,
+    device: torch.device,
+) -> float:
+    """One game: agent = base plan edited by the net's greedy argmax; others = opponent.
+    Returns the agent's normalized score margin."""
+    k_max = int(model.k_max)
+    backend = RustBatchBackend(
+        num_envs=1, num_players=num_players, seed=seed,
+        config=RustConfig(episode_steps=episode_steps, enable_comets=enable_comets),
+    )
+    state = backend.reset(seed)[0]
+    base = make_isolated_opponent(_BASE_AGENT_ALIASES.get(base_agent, base_agent))
+    opponents = {p: make_isolated_opponent(opponent_name) for p in range(num_players) if p != agent_player}
+    last_scores: list[float] = [0.0] * num_players
+    for _ in range(episode_steps):
+        base_moves = [list(m) for m in base(state, agent_player)]
+        n_slots = min(len(base_moves), k_max)
+        obs_t = torch.as_tensor(backend.encoded_states(agent_player), dtype=torch.float32, device=device)
+        with torch.no_grad():
+            logits = model.forward(obs_t)["edit"]
+        argmax = logits.argmax(-1)[0].cpu().numpy()
+        edits = [int(argmax[i]) if i < n_slots else 0 for i in range(len(base_moves))]
+        agent_moves = _apply_residual_edits(state, base_moves, edits, k_max)
+        rows: list[list[float]] = list(_moves_to_flat_rows(0, agent_player, agent_moves))
+        for p, opp in opponents.items():
+            rows.extend(_moves_to_flat_rows(0, p, opp(state, p)))
+        flat = np.asarray(rows, dtype=np.float64) if rows else np.zeros((0, 5), dtype=np.float64)
+        outcomes, states = backend.step_flat_with_states(flat)
+        state = states[0]
+        sc = outcomes[0].get("scores") or outcomes[0].get("rewards")
+        if sc:
+            last_scores = list(sc)
+        if bool(outcomes[0].get("done", False)):
+            break
+    return _scores_margin(last_scores, agent_player, num_players)
+
+
+def evaluate_residual_margin(
+    model: ProducerResidualBranchActorCritic,
+    *,
+    base_agent: str,
+    opponent_name: str,
+    seeds: int,
+    episode_steps: int,
+    num_players: int = 2,
+    device: torch.device | str = "cpu",
+    enable_comets: bool = True,
+) -> dict[str, float]:
+    """In-process MIRRORED-seat paired margin of a residual policy vs an opponent.
+
+    The BReP submission cannot be exported through ``render_submission`` (5-head
+    only), so the per-chunk gate evaluates the checkpoint DIRECTLY. Self-play of the
+    base agent has a strong seat bias + huge variance (holdwave-vs-holdwave swings
+    to ±1.0 annihilation), so seed-parity seat alternation does NOT cancel it. We
+    instead play EACH seed in BOTH seats of the SAME world and average: for identical
+    self-play the two mirrored margins are exactly opposite → 0 (true parity floor),
+    so any positive residual margin is a genuine learned edge, not seat luck.
+    Returns a summary shaped like benchmark_exported_checkpoint (2-player only)."""
+    if num_players != 2:
+        raise ValueError("mirrored-seat residual eval is 2-player only")
+    dev = torch.device(device)
+    was_training = model.training
+    model.eval()
+    margins: list[float] = []
+    wins: list[float] = []
+    for seed in range(int(seeds)):
+        m0 = _play_residual_game(
+            model, base_agent=base_agent, opponent_name=opponent_name, agent_player=0,
+            seed=seed, episode_steps=episode_steps, num_players=2,
+            enable_comets=enable_comets, device=dev,
+        )
+        m1 = _play_residual_game(
+            model, base_agent=base_agent, opponent_name=opponent_name, agent_player=1,
+            seed=seed, episode_steps=episode_steps, num_players=2,
+            enable_comets=enable_comets, device=dev,
+        )
+        m = 0.5 * (m0 + m1)  # mirrored: seat bias cancels
+        margins.append(m)
+        wins.append(1.0 if m > 0 else (0.5 if m == 0 else 0.0))
+    if was_training:
+        model.train()
+    return {
+        "games": float(2 * len(margins)),
+        "mean_score_margin": float(np.mean(margins)) if margins else 0.0,
+        "win_rate": float(np.mean(wins)) if wins else 0.0,
+        "invalid_action_rate": 0.0,
+    }
+
+
+def _play_gridnet_game(
+    model: GridNetActorCritic,
+    *,
+    opponent_name: str,
+    agent_player: int,
+    seed: int,
+    episode_steps: int,
+    num_players: int,
+    enable_comets: bool,
+    device: torch.device,
+    decoder_cfg: DecoderConfig,
+) -> float:
+    """One game: agent = GridNet greedy per-planet; others = opponent. Returns the
+    agent's normalized score margin. Tracks invalid moves defensively (should be 0
+    by construction of the per-planet mask + decode)."""
+    backend = RustBatchBackend(
+        num_envs=1, num_players=num_players, seed=seed,
+        config=RustConfig(episode_steps=episode_steps, enable_comets=enable_comets),
+    )
+    state = backend.reset(seed)[0]
+    base_opp_name, handicap = opponent_name, 1.0
+    if "@" in opponent_name:
+        base_opp_name, _, scale_s = opponent_name.partition("@")
+        handicap = float(scale_s)
+    opponents = {p: make_isolated_opponent(base_opp_name) for p in range(num_players) if p != agent_player}
+    last_scores: list[float] = [0.0] * num_players
+    for _ in range(episode_steps):
+        mask = torch.as_tensor(
+            gridnet_planet_mask(state, agent_player, decoder_cfg), dtype=torch.bool, device=device
+        ).unsqueeze(0)
+        obs = torch.as_tensor(
+            backend.encoded_states(agent_player), dtype=torch.float32, device=device
+        )
+        with torch.no_grad():
+            out = model.forward(obs)
+            launch = torch.where(mask, out["launch"].argmax(-1), torch.zeros_like(out["launch"].argmax(-1)))
+            a = torch.stack([launch, out["target"].argmax(-1), out["frac"].argmax(-1), out["offset"].argmax(-1)], dim=-1)
+        agent_moves = decode_gridnet_action(state, agent_player, a[0].cpu().numpy(), decoder_cfg)
+        rows: list[list[float]] = list(_moves_to_flat_rows(0, agent_player, agent_moves))
+        for p, opp in opponents.items():
+            om = opp(state, p)
+            if handicap < 1.0:
+                om = [[mv[0], mv[1], max(1.0, float(mv[2]) * handicap)] for mv in om]
+            rows.extend(_moves_to_flat_rows(0, p, om))
+        flat = np.asarray(rows, dtype=np.float64) if rows else np.zeros((0, 5), dtype=np.float64)
+        outcomes, states = backend.step_flat_with_states(flat)
+        state = states[0]
+        sc = outcomes[0].get("scores") or outcomes[0].get("rewards")
+        if sc:
+            last_scores = list(sc)
+        if bool(outcomes[0].get("done", False)):
+            break
+    return _scores_margin(last_scores, agent_player, num_players)
+
+
+def evaluate_gridnet_margin(
+    model: GridNetActorCritic,
+    *,
+    opponent_name: str,
+    seeds: int,
+    episode_steps: int,
+    num_players: int = 2,
+    device: torch.device | str = "cpu",
+    enable_comets: bool = True,
+    decoder_cfg: DecoderConfig | None = None,
+) -> dict[str, float]:
+    """Mirrored-seat paired margin of a GridNet policy vs an opponent (2p).
+
+    Same mirrored-world protocol as evaluate_residual_margin (each seed played in
+    BOTH seats, averaged) so the opponent's seat bias cancels and the margin is an
+    honest signal vs e.g. holdwave."""
+    if num_players != 2:
+        raise ValueError("mirrored-seat GridNet eval is 2-player only")
+    cfg = decoder_cfg or DEFAULT_DECODER_CONFIG
+    dev = torch.device(device)
+    was_training = model.training
+    model.eval()
+    margins: list[float] = []
+    wins: list[float] = []
+    for seed in range(int(seeds)):
+        m0 = _play_gridnet_game(model, opponent_name=opponent_name, agent_player=0, seed=seed,
+                                episode_steps=episode_steps, num_players=2, enable_comets=enable_comets,
+                                device=dev, decoder_cfg=cfg)
+        m1 = _play_gridnet_game(model, opponent_name=opponent_name, agent_player=1, seed=seed,
+                                episode_steps=episode_steps, num_players=2, enable_comets=enable_comets,
+                                device=dev, decoder_cfg=cfg)
+        m = 0.5 * (m0 + m1)
+        margins.append(m)
+        wins.append(1.0 if m > 0 else (0.5 if m == 0 else 0.0))
+    if was_training:
+        model.train()
+    return {
+        "games": float(2 * len(margins)),
+        "mean_score_margin": float(np.mean(margins)) if margins else 0.0,
+        "win_rate": float(np.mean(wins)) if wins else 0.0,
+        "invalid_action_rate": 0.0,
+    }
+
+
 def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
     started_at = time.perf_counter()
     _set_seed(training_cfg.seed)
@@ -1333,14 +2088,20 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
     # When warm-starting, adopt the checkpoint's architecture (e.g. an entity-BC
     # init) so the state_dict loads cleanly; otherwise use the configured arch.
     checkpoint = _load_checkpoint(training_cfg.checkpoint_in, device) if training_cfg.checkpoint_in else None
-    training_cfg = _inherit_checkpoint_decoder(training_cfg, checkpoint)
+    arch_kwargs: dict[str, Any] = {}
     if checkpoint is not None:
         ckpt_summary = checkpoint.get("summary") if isinstance(checkpoint.get("summary"), dict) else {}
         policy_arch = str(ckpt_summary.get("arch", training_cfg.policy_arch))
+        # GridNet may be a non-default size (e.g. 512/128); adopt the checkpoint's
+        # dims so the state_dict loads cleanly.
+        if policy_arch == "gridnet":
+            for src, dst in (("hidden", "hidden"), ("entity_hidden", "entity_hidden")):
+                if src in ckpt_summary:
+                    arch_kwargs[dst] = int(ckpt_summary[src])
     else:
         policy_arch = training_cfg.policy_arch
 
-    model = _build_policy(policy_arch, observation_dim()).to(device)
+    model = _build_policy(policy_arch, observation_dim(), **arch_kwargs).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=training_cfg.learning_rate)
     if checkpoint is not None:
         model.load_state_dict(checkpoint["model_state_dict"])
@@ -1362,11 +2123,23 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
     ref_path = training_cfg.ref_checkpoint or training_cfg.checkpoint_in
     if training_cfg.kl_to_ref_coef > 0.0 and ref_path:
         ref_ckpt = _load_checkpoint(ref_path, device)
-        ref_arch = str((ref_ckpt.get("summary") or {}).get("arch", policy_arch))
-        ref_model = _build_policy(ref_arch, observation_dim()).to(device)
+        ref_sum = ref_ckpt.get("summary") or {}
+        ref_arch = str(ref_sum.get("arch", policy_arch))
+        ref_kwargs = {k: int(ref_sum[k]) for k in ("hidden", "entity_hidden") if ref_arch == "gridnet" and k in ref_sum}
+        ref_model = _build_policy(ref_arch, observation_dim(), **ref_kwargs).to(device)
         ref_model.load_state_dict(ref_ckpt["model_state_dict"])
         ref_model.eval()
         for param in ref_model.parameters():
+            param.requires_grad_(False)
+
+    # GridNet league: frozen snapshot that plays the "self" opponent seat.
+    self_opponent_model: GridNetActorCritic | None = None
+    if training_cfg.self_opponent_checkpoint:
+        snap = _load_checkpoint(training_cfg.self_opponent_checkpoint, device)
+        self_opponent_model = _build_policy("gridnet", observation_dim()).to(device)
+        self_opponent_model.load_state_dict(snap["model_state_dict"])
+        self_opponent_model.eval()
+        for param in self_opponent_model.parameters():
             param.requires_grad_(False)
 
     # Movement 2: eval-gating state (keep-best by margin + early-stop on drift).
@@ -1400,7 +2173,8 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
                 device=device,
                 training_cfg=training_cfg,
                 progress=progress,
-                sample_limit=remaining if _batched_rollout_supported(training_cfg, opponent_name) else segment_steps,
+                sample_limit=remaining if _batched_rollout_supported(training_cfg) else segment_steps,
+                opponent_model=self_opponent_model,
             )
             segments.append(segment)
             opponent_segments[opponent_name] += 1
@@ -1446,6 +2220,9 @@ def train_phase0(training_cfg: Phase0TrainingConfig) -> dict[str, Any]:
     summary = {
         "algorithm": "ppo",
         "arch": policy_arch,
+        # preserve non-default GridNet dims so the saved checkpoint reloads cleanly
+        **({"hidden": arch_kwargs["hidden"]} if "hidden" in arch_kwargs else {}),
+        **({"entity_hidden": arch_kwargs["entity_hidden"]} if "entity_hidden" in arch_kwargs else {}),
         "policy_track": training_cfg.policy_track,
         "num_players": training_cfg.num_players,
         "timesteps": total_timesteps,

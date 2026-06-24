@@ -4,13 +4,9 @@ from __future__ import annotations
 # ruff: noqa: E402,I001
 
 import argparse
-import contextlib
-import io
 import importlib.util
 import json
 import sys
-import tarfile
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -37,35 +33,6 @@ def _load_module(path: Path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-def _write_submission_tarball(submission_path: Path, tarball_path: Path) -> None:
-    source = submission_path.read_text(encoding="utf-8")
-    data = source.encode("utf-8")
-    info = tarfile.TarInfo("main.py")
-    info.size = len(data)
-    tarball_path.parent.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(tarball_path, "w:gz") as tar:
-        tar.addfile(info, io.BytesIO(data))
-
-
-@contextlib.contextmanager
-def _loaded_tarball_module(tarball_path: Path):
-    with tempfile.TemporaryDirectory(prefix="ppo_export_parity_") as tmp_name:
-        tmp = Path(tmp_name)
-        with tarfile.open(tarball_path) as tar:
-            names = {member.name for member in tar.getmembers()}
-            if "main.py" not in names:
-                raise ValueError(f"PPO submission tarball is missing main.py: {tarball_path}")
-            tar.extractall(tmp, filter="data")
-        inserted = str(tmp) not in sys.path
-        if inserted:
-            sys.path.insert(0, str(tmp))
-        try:
-            yield _load_module(tmp / "main.py")
-        finally:
-            if inserted:
-                sys.path.remove(str(tmp))
 
 
 def _checkpoint_arch(checkpoint: dict[str, Any]) -> str:
@@ -95,8 +62,6 @@ def _decoder_config(payload: dict[str, Any]) -> DecoderConfig:
         max_moves_per_turn=int(decoder.get("max_moves_per_turn", 8)),
         min_ships_to_launch=int(decoder.get("min_ships_to_launch", 2)),
         reserve_home_ships=int(decoder.get("reserve_home_ships", 8)),
-        force_target_rank=(None if decoder.get("force_target_rank") is None
-                           else int(decoder["force_target_rank"])),
     )
 
 
@@ -139,40 +104,6 @@ def _moves_close(left: list[list[float]], right: list[list[float]], *, atol: flo
     return True
 
 
-_DEGRADATION_STATS = {
-    "fallbacks",
-    "timeouts",
-    "timeout_thread_blocks",
-    "fallback_errors",
-    "illegal_moves",
-    "policy_illegal_moves",
-    "invalid_actions",
-}
-
-
-def _submission_stats_snapshot(module: Any) -> dict[str, int]:
-    stats = getattr(module, "SUBMISSION_STATS", None)
-    if not isinstance(stats, dict):
-        return {}
-    out: dict[str, int] = {}
-    for key, value in stats.items():
-        try:
-            out[str(key)] = int(value)
-        except (TypeError, ValueError):
-            continue
-    return out
-
-
-def _degradation_delta(before: dict[str, int], after: dict[str, int]) -> dict[str, int]:
-    bad: dict[str, int] = {}
-    for key, value in after.items():
-        if key in _DEGRADATION_STATS or key.endswith("_fallbacks"):
-            delta = int(value) - int(before.get(key, 0))
-            if delta > 0:
-                bad[key] = delta
-    return bad
-
-
 def _snapshot_states(*, num_players: int, seeds: list[int], steps: int) -> list[dict[str, Any]]:
     policies = get_heuristic_policies()
     driver = policies["greedy"]
@@ -203,108 +134,49 @@ def check_checkpoint_export_parity(
     checkpoint_path: Path,
     *,
     submission_path: Path,
-    tarball_path: Path | None = None,
-    checkpoint_4p_path: Path | None = None,
-    four_player_policy: str = "neural",
     seeds: list[int],
     steps: int,
     player_counts: tuple[int, ...] = (2, 4),
 ) -> dict[str, Any]:
-    if four_player_policy not in {"neural", "template"}:
-        raise ValueError("four_player_policy must be 'neural' or 'template'")
     checkpoint, model = _load_model(checkpoint_path)
     decoder_cfg = _decoder_config(_decoder_payload(checkpoint))
-    checkpoint_4p = None
-    model_4p = None
-    decoder_cfg_4p = None
-    if checkpoint_4p_path is not None:
-        checkpoint_4p, model_4p = _load_model(checkpoint_4p_path)
-        decoder_cfg_4p = _decoder_config(_decoder_payload(checkpoint_4p))
     template = Path("python/submission/submission_template.py").read_text(encoding="utf-8")
     submission_path.parent.mkdir(parents=True, exist_ok=True)
-    submission_path.write_text(
-        render_submission(
-            template,
-            checkpoint=str(checkpoint_path),
-            checkpoint_4p=str(checkpoint_4p_path) if checkpoint_4p_path is not None else None,
-            four_player_policy=four_player_policy,
-        ),
-        encoding="utf-8",
-    )
+    submission_path.write_text(render_submission(template, checkpoint=str(checkpoint_path)), encoding="utf-8")
     module = _load_module(submission_path)
-    tarball_path = tarball_path or submission_path.with_suffix(".tar.gz")
-    _write_submission_tarball(submission_path, tarball_path)
 
     mismatches: list[dict[str, Any]] = []
     checked = 0
-    with _loaded_tarball_module(tarball_path) as tarball_module:
-        for num_players in player_counts:
-            for state in _snapshot_states(num_players=int(num_players), seeds=seeds, steps=steps):
-                for player in range(int(num_players)):
-                    obs = to_official_observation(state, player)
-                    tarball_stats_before = _submission_stats_snapshot(tarball_module)
-                    tarball_moves = [list(move) for move in tarball_module.agent(obs)]
-                    tarball_bad_stats = _degradation_delta(
-                        tarball_stats_before,
-                        _submission_stats_snapshot(tarball_module),
+    for num_players in player_counts:
+        for state in _snapshot_states(num_players=int(num_players), seeds=seeds, steps=steps):
+            for player in range(int(num_players)):
+                obs = to_official_observation(state, player)
+                local_action = _local_action(model, obs, player, decoder_cfg)
+                exported_action = [int(value) for value in module._neural_action(obs, player)]
+                local_moves = decode_discrete_action(obs, player, local_action, decoder_cfg)
+                exported_moves = module._neural_decode(obs, player, exported_action)
+                checked += 1
+                if local_action != exported_action or not _moves_close(local_moves, exported_moves):
+                    mismatches.append(
+                        {
+                            "num_players": int(num_players),
+                            "player": int(player),
+                            "step": int(obs.get("step", 0)),
+                            "local_action": local_action,
+                            "exported_action": exported_action,
+                            "local_moves": local_moves,
+                            "exported_moves": exported_moves,
+                        }
                     )
-                    checked += 1
-                    if int(num_players) >= 4 and four_player_policy == "template" and checkpoint_4p_path is None:
-                        local_action = None
-                        exported_action = None
-                        local_moves = None
-                        exported_moves = None
-                        illegal = not bool(tarball_module._moves_are_legal(obs, player, tarball_moves))
-                        mismatch = bool(illegal or tarball_bad_stats)
-                    else:
-                        use_4p_model = int(num_players) >= 4 and model_4p is not None
-                        active_model = model_4p if use_4p_model else model
-                        active_decoder = decoder_cfg_4p if use_4p_model else decoder_cfg
-                        if active_model is None or active_decoder is None:
-                            raise AssertionError("active PPO model/decoder was not resolved")
-                        local_action = _local_action(active_model, obs, player, active_decoder)
-                        if use_4p_model:
-                            exported_action = [int(value) for value in module._neural_action_4p(obs, player)]
-                            exported_moves = module._neural_decode_4p(obs, player, exported_action)
-                        else:
-                            exported_action = [int(value) for value in module._neural_action(obs, player)]
-                            exported_moves = module._neural_decode(obs, player, exported_action)
-                        local_moves = decode_discrete_action(obs, player, local_action, active_decoder)
-                        illegal = False
-                        mismatch = bool(
-                            local_action != exported_action
-                            or not _moves_close(local_moves, exported_moves)
-                            or not _moves_close(local_moves, tarball_moves)
-                            or tarball_bad_stats
-                        )
-                    if mismatch:
-                        mismatches.append(
-                            {
-                                "num_players": int(num_players),
-                                "player": int(player),
-                                "step": int(obs.get("step", 0)),
-                                "four_player_policy": four_player_policy,
-                                "local_action": local_action,
-                                "exported_action": exported_action,
-                                "local_moves": local_moves,
-                                "exported_moves": exported_moves,
-                                "tarball_moves": tarball_moves,
-                                "tarball_illegal_moves": illegal,
-                                "tarball_degradation_stats": tarball_bad_stats,
-                            }
-                        )
-                        break
-                if mismatches:
                     break
             if mismatches:
                 break
+        if mismatches:
+            break
 
     return {
         "checkpoint": str(checkpoint_path),
-        "checkpoint_4p": str(checkpoint_4p_path) if checkpoint_4p_path is not None else None,
-        "four_player_policy": four_player_policy,
         "submission": str(submission_path),
-        "tarball": str(tarball_path),
         "seeds": [int(seed) for seed in seeds],
         "steps": int(steps),
         "player_counts": [int(value) for value in player_counts],
@@ -317,10 +189,7 @@ def check_checkpoint_export_parity(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", required=True)
-    parser.add_argument("--checkpoint-4p", default=None)
-    parser.add_argument("--four-player-policy", choices=("neural", "template"), default="neural")
     parser.add_argument("--submission-out", default="artifacts/ppo/export_parity/submission.py")
-    parser.add_argument("--tarball-out", default=None)
     parser.add_argument("--out", default="artifacts/ppo/export_parity/report.json")
     parser.add_argument("--seeds", type=int, default=2)
     parser.add_argument("--steps", type=int, default=16)
@@ -330,9 +199,6 @@ def main(argv: list[str] | None = None) -> int:
     report = check_checkpoint_export_parity(
         Path(args.checkpoint),
         submission_path=Path(args.submission_out),
-        tarball_path=Path(args.tarball_out) if args.tarball_out else None,
-        checkpoint_4p_path=Path(args.checkpoint_4p) if args.checkpoint_4p else None,
-        four_player_policy=args.four_player_policy,
         seeds=list(range(max(1, int(args.seeds)))),
         steps=int(args.steps),
         player_counts=tuple(int(value) for value in args.players),
@@ -340,17 +206,7 @@ def main(argv: list[str] | None = None) -> int:
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
-    print(
-        json.dumps(
-            {
-                "out": str(out),
-                "passed": report["passed"],
-                "checked": report["checked_observations"],
-                "tarball": report["tarball"],
-            },
-            indent=2,
-        )
-    )
+    print(json.dumps({"out": str(out), "passed": report["passed"], "checked": report["checked_observations"]}, indent=2))
     if not report["passed"]:
         raise SystemExit("PPO export parity failed")
     return 0

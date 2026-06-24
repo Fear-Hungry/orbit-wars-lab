@@ -38,15 +38,7 @@ from python.orbit_wars_gym.encoding import observation_dim
 _ARCHS = {"flat": FlatActorCritic, "entity": EntityActorCritic}
 
 _HEAD_COLS = {"source": 1, "target": 2, "frac": 3, "offset": 4}
-_EXPERT_NAMES = {
-    0: "producer",
-    1: "oep",
-    2: "pgs_holdwave",
-    3: "pgs_bigwave",
-    4: "brep",
-    5: "greedy",
-    6: "rush",
-}
+_EXPERT_NAMES = {0: "producer", 1: "oep", 2: "pgs", 3: "mahoraga"}
 
 
 def _decoder_summary(dataset: Path | None = None) -> dict[str, Any]:
