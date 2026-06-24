@@ -30,7 +30,6 @@ def notify_fallback_applied() -> None:
 
 
 def runtime_stats() -> dict[str, int]:
-    """Degradation counters of the live runtime (e.g. budget_floor_returns)."""
     if _RUNTIME is None:
         return {}
     return _RUNTIME.runtime_stats()

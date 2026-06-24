@@ -62,19 +62,25 @@ def _submission_stats_increment(name, amount=1):
     SUBMISSION_STATS[name] = int(SUBMISSION_STATS.get(name, 0)) + int(amount)
 
 
+# PGSRuntime counters are cumulative per runtime and the runtime is rebuilt at
+# step 0, so accumulate per-call DELTAS (treating a drop as a counter reset).
+_LAST_RUNTIME_STATS = [{{}}]
+
+
 def _accumulate_runtime_stats():
     try:
-        stats = _pgs_agent.runtime_stats()
+        cur = _pgs_agent.runtime_stats()
     except Exception:
         return
-    for key, value in stats.items():
-        value = int(value)
-        seen = int(_runtime_stats_seen.get(key, 0))
-        if value < seen:  # runtime was recreated (new game): counter restarted
-            seen = 0
-        if value > seen:
-            _submission_stats_increment(key, value - seen)
-        _runtime_stats_seen[key] = value
+    prev = _LAST_RUNTIME_STATS[0]
+    for key, value in cur.items():
+        base = int(prev.get(key, 0))
+        if int(value) < base:
+            base = 0
+        delta = int(value) - base
+        if delta > 0:
+            _submission_stats_increment(key, delta)
+    _LAST_RUNTIME_STATS[0] = dict(cur)
 
 
 def _timeout_thread_still_alive():

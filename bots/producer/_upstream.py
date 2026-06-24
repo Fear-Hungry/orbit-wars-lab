@@ -373,13 +373,12 @@ def plan_lite_waves(
     )  # [C]
     score = torch.where(cand_valid, score, torch.full_like(score, float("-inf")))
 
-    # Tactical spend cap: cumulative sends per source may not exceed safe_drain
-    # (each candidate is sized to drain, but two waves from the same source could
-    # otherwise sum past it and drop the source below holding strength).
+    # Spend cap per source = safe_drain ([S] shortlist -> [P] slots). The raw
+    # garrison alone would let TWO same-source waves each fund against it and
+    # jointly overdrain a threatened planet (drain << ships regime).
     spend_budget = torch.zeros(P, dtype=dtype, device=device)
-    spend_budget[source_idx[source_exists]] = (
-        drain.floor().clamp(min=0.0)[source_exists]
-    )
+    spend_budget[source_idx[source_exists]] = drain.floor()[source_exists].clamp(min=0.0)
+
     wave_entries, leftover = _greedy_select(
         P=P,
         W=W,

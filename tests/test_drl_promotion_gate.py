@@ -55,14 +55,20 @@ def test_run_drl_promotion_gate_passes_frozen_requirements(monkeypatch, tmp_path
     def fake_build_report(candidates, task_results, **kwargs):
         calls["required_2p_winrates"] = kwargs["required_2p_winrates"]
         return {
-            "recommended_candidate": "cand",
+            "local_veto_passes": ["cand"],
+            "selector_candidate": None,
+            "selection_status": "VETO_ONLY",
+            "promotion_order_valid": False,
             "ranking": [
                 {
                     "candidate": "cand",
                     "verdict": "PASS_LOCAL",
-                    "overall_score": 1.0,
-                    "score_2p": 1.0,
-                    "score_4p": 1.0,
+                    "field_advantage": 1.0,
+                    "score_2p_fixed": 1.0,
+                    "score_2p_peer": None,
+                    "score_4p_fixed": 1.0,
+                    "worst_bucket_score": 1.0,
+                    "risk_penalty": 0.0,
                 }
             ],
             "candidates": {},

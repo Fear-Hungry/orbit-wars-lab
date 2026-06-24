@@ -253,6 +253,7 @@ def _write_report(
         "mode": f"{len(names)}p",
         "games": games,
         "decision_ms_p95": {k: float(np.percentile(v, 95)) for k, v in decision_ms.items() if v},
+        "decision_ms_max": {k: float(max(v)) for k, v in decision_ms.items() if v},
         "crashes": crashes,
     }
     if metadata:

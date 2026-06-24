@@ -35,20 +35,52 @@ ROOT = Path(__file__).resolve().parent.parent
 GATE_REFERENCE = "producer"
 INCUMBENT = "pgs_holdwave"  # LB record 1228.8 (ref=53537753)
 
-# real Kaggle ratings of our submitted configs (refreshed 2026-06-11 via
-# Kaggle CLI). NEVER trust these without a refresh: s100 moved 1036->1109->1138
-# across reads the same day.
+# real Kaggle ratings of our submitted configs (refreshed 2026-06-12 via
+# Kaggle CLI). NEVER trust these without a refresh: s100 moved 1036->1109->1146
+# ->1136 across reads.
 LB_ANCHORS = {
     "producer": 1173.1,       # ref=53366194
-    "oep": 1182.7,            # ref=53433131
+    "oep": 1182.7,            # ref=53433131 (resubmit 53582886 w/ new wrapper: 1161.5)
     "brep": 1156.1,           # ref=53513962
     "pgs_allscripts": 1021.5, # ref=53519882 (accidental all-scripts default)
     "pgs_holdwave": 1228.8,   # ref=53537753 (T+7h, ESTABILIZADO — nível do recorde)
     "pgs_hold": 1057.6,       # ref=53541125 (stable across refreshes T+2h..T+5h)
-    "pgs_wave_s100": 1146.1,  # ref=53542864 (CLI 2026-06-11; climbed 1036->1109->1138->1146)
-    # ref=53542884 (holdwave RESUBMIT, identical config to 53537753): current 1156.7
-    # while converging — treat as a Kaggle NOISE measurement (~±60), not a new anchor.
+    "pgs_wave_s100": 1136.3,  # ref=53542864 (CLI 2026-06-12; 1036->1109->1138->1146->1136)
+    # TENSION (2026-06-12): TWO holdwave-config resubmits now read ~1145
+    # (53542884: 1147.5; 53582859 new wrapper: 1144.0) vs the 1228.8 original —
+    # spread ~85 > the ±60 noise budget. Either the original was a lucky high
+    # or the field moved. Calibration checks that assume "holdwave is top"
+    # inherit this uncertainty; surface it, don't silently re-anchor.
 }
+
+# Style buckets for the submission selector. A candidate's mean score hides
+# style-specific collapses (a bot that beats our lineage but folds to rush
+# pressure is not submittable); the selector aggregates per bucket and treats a
+# total failure in any CRITICAL bucket as disqualifying, whatever the mean says.
+# four_player_survivor / counterpunch are reserved: no pool member fits yet.
+AGENT_BUCKETS = {
+    "producer": "own_lineage",
+    "oep": "own_lineage",
+    "brep": "own_lineage",
+    "pgs_hold": "own_lineage",
+    "pgs_holdwave": "own_lineage",
+    "pgs_holdwave_half2p": "own_lineage",
+    "pgs_wave_s100": "own_lineage",
+    "pgs_wave_s50": "own_lineage",
+    "pgs_wave_4pfloor": "own_lineage",
+    "pgs_valuenet": "own_lineage",
+    "pgs_allscripts": "rejected_floor",
+    "rusher": "rush_pressure",
+    "rush": "rush_pressure",
+    "pgs_bigwave": "bigwave_hoard",
+    "ext_lb1050": "external_lb_proxy",
+    "ext_hellburner": "external_lb_proxy",
+}
+CRITICAL_BUCKETS = {"rejected_floor", "rush_pressure", "bigwave_hoard", "external_lb_proxy"}
+
+
+def bucket_of(name: str) -> str | None:
+    return AGENT_BUCKETS.get(name)
 
 _EXT_N = [0]
 
@@ -258,6 +290,23 @@ def _tarball_agent(tar_path: Path, cache_name: str):
 
 _BREP_TAR = Path.home() / "projects/Kaggle/orbit-wars-lab-B/artifacts/submission_brep.tar.gz"
 
+# Single source of truth for file-backed references; the selector preflight
+# (league_submission_selector.py) checks these BEFORE any multi-hour run so a
+# missing external dies at decision time, not 6 hours into a schedule.
+REQUIRED_EXTERNAL_PATHS = {
+    "ext_lb1050": "artifacts/opponents/top5_proxy/lb-1050-heuristic-simulation-agent-test-3/agent.py",
+    "ext_hellburner": "artifacts/opponents/top5_proxy/hellburner/agent.py",
+    "brep": _BREP_TAR,
+}
+
+
+def external_path(name: str) -> Path | None:
+    raw = REQUIRED_EXTERNAL_PATHS.get(name)
+    if raw is None:
+        return None
+    p = Path(raw)
+    return p if p.is_absolute() else ROOT / p
+
 
 def _brep():
     return _tarball_agent(_BREP_TAR, "brep")
@@ -321,15 +370,8 @@ FACTORIES = {
     "pgs_holdwave_half2p": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=150,
                                         half_in_2p=True),
     "pgs_allscripts": lambda: _pgs(),
-    "ext_lb1050": _external("artifacts/opponents/top5_proxy/lb-1050-heuristic-simulation-agent-test-3/agent.py"),
-    "ext_hellburner": _external("artifacts/opponents/top5_proxy/hellburner/agent.py"),
-    # Strong public LB proxies (the top-range of configs/eval_top5_proxy.yaml).
-    # Registered so the seat-rotated league can run them directly (top5_proxy
-    # separation probe), not only via the seat-0-pinned benchmark_submission path.
-    "ext_lb1224": _external("artifacts/opponents/top5_proxy/orbit-star-wars-lb-max-1224/agent.py"),
-    "ext_lb1110": _external("artifacts/opponents/top5_proxy/orbit-wars-heuristic-lb-1110/agent.py"),
-    "ext_lb1100": _external("artifacts/opponents/top5_proxy/distance-prioritized-agent-lb-max-score-1100/agent.py"),
-    "ext_rulebase_ml": _external("artifacts/opponents/top5_proxy/orbit-wars-rule-base-ml-shot-validator-hybrid/agent.py"),
+    "ext_lb1050": _external(str(REQUIRED_EXTERNAL_PATHS["ext_lb1050"])),
+    "ext_hellburner": _external(str(REQUIRED_EXTERNAL_PATHS["ext_hellburner"])),
     # H-P5 league-guided wave round (one round, pre-registered; /goal 2026-06-10)
     "pgs_wave_s100": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=100),
     "pgs_wave_s50": lambda: _pgs(scripts="hold", wave_min_ships=60.0, wave_start_step=50),

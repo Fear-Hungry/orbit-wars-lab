@@ -138,20 +138,22 @@ def test_timeout_blocks_until_thread_finishes_then_resumes_pgs(monkeypatch):
     }
 
 
-def test_runtime_budget_floor_counter_is_folded_into_submission_stats(monkeypatch):
-    """The wrapper must surface the planner's internal budget_floor_returns —
-    including across the step-0 runtime recreation (counter restarts)."""
-    counters = iter([1, 3, 1])  # game 1: 1→3; new runtime (reset): 1
+def test_budget_floor_returns_accumulated_as_delta(monkeypatch):
+    """PGSRuntime counters are cumulative and reset with the runtime at step 0;
+    the wrapper must fold per-call DELTAS into SUBMISSION_STATS and treat a
+    counter drop as a reset (new game), never double-count."""
+    pgs_moves = [[1, 0.0, 2]]
+    counter = {"budget_floor_returns": 0}
+    agent, ns = _render_agent(monkeypatch, lambda obs: pgs_moves)
+    ns["_pgs_agent"].runtime_stats = lambda: dict(counter)
 
-    def healthy(obs):
-        return [[1, 0.0, 2]]
-
-    agent, ns = _render_agent(monkeypatch, healthy)
-    ns["_pgs_agent"].runtime_stats = lambda: {"budget_floor_returns": next(counters)}
-    for _ in range(3):
-        agent({"player": 0})
-    # deltas: +1 (0→1), +2 (1→3), +1 (3→reset→1)
-    assert ns["SUBMISSION_STATS"]["budget_floor_returns"] == 4
+    agent({"player": 0})                      # delta 0
+    counter["budget_floor_returns"] = 2
+    agent({"player": 0})                      # delta +2
+    agent({"player": 0})                      # unchanged -> delta 0
+    counter["budget_floor_returns"] = 1       # runtime rebuilt mid-episode
+    agent({"player": 0})                      # reset detected -> delta +1
+    assert ns["SUBMISSION_STATS"]["budget_floor_returns"] == 3
 
 
 def test_packager_rejects_unbundled_value_net_config(monkeypatch, tmp_path):

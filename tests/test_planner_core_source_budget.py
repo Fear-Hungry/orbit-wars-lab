@@ -1,68 +1,87 @@
-"""_greedy_select must respect the TACTICAL spend budget (safe_drain) cumulatively.
+"""Regression: _greedy_select must cap per-source SPEND at source_spend_budget.
 
-Regression for the confirmed overspend: each candidate is individually sized to
-safe_drain, but two waves funded by the SAME source could sum past it (memory:
-safe_drain_overspend_confirmed — producer financed 2+ waves from one threatened
-source). With ``source_spend_budget`` the cumulative spend per source is capped
-while the returned leftover still reflects the physical garrison.
+Locked-down bug (2026-06-11 /diagnose, DEBUG-sd01): funding was checked against
+``source_budget`` (raw garrison) only, so two same-source waves could each pass
+``can_fund`` and jointly draw 2x the safe_drain from a threatened planet —
+exactly the losing regime (drain << ships under attack; measured live in
+producer 4p+rusher and OEP vs rusher). The fix threads a second budget
+(``source_spend_budget``) that caps the per-turn draw, while ``source_budget``
+keeps its _plan_regroup contract (real physical leftover).
 """
 from __future__ import annotations
 
 import torch
-
 from orbit_lite.planner_core import _greedy_select
 
 
-def _two_candidates_same_source(send: float = 40.0):
-    """P=3: planet 0 is the source (100 ships); targets at slots 1 and 2."""
+def _run_select(sends, scores, *, source_budget, spend_budget, W=4):
+    """Two-target setup: C candidates, all from planet 0, one per target."""
     device = torch.device("cpu")
     dtype = torch.float32
-    C, L = 2, 1
-    return dict(
-        P=3,
-        W=2,
+    C = len(sends)
+    P = C + 1  # planet 0 = the single source; planets 1..C = targets
+    L = 1
+    kwargs = dict(
+        P=P,
+        W=W,
         device=device,
         dtype=dtype,
-        score=torch.tensor([10.0, 9.0]),
+        score=torch.tensor(scores, dtype=dtype),
         cand_src=torch.zeros(C, L, dtype=torch.long),
-        cand_send=torch.full((C, L), float(send), dtype=dtype),
+        cand_send=torch.tensor(sends, dtype=dtype).view(C, L),
         cand_angle=torch.zeros(C, L, dtype=dtype),
-        cand_eta=torch.full((C, L), 3.0, dtype=dtype),
+        cand_eta=torch.ones(C, L, dtype=dtype),
         cand_active=torch.ones(C, L, dtype=torch.bool),
-        cand_tgt_slot=torch.tensor([1, 2], dtype=torch.long),
-        cand_tgt_short=torch.tensor([0, 1], dtype=torch.long),
-        cand_is_def=torch.tensor([False, False]),
-        source_budget=torch.tensor([100.0, 0.0, 0.0], dtype=dtype),
-        target_exists=torch.tensor([True, True]),
+        cand_tgt_slot=torch.arange(1, C + 1, dtype=torch.long),
+        cand_tgt_short=torch.arange(C, dtype=torch.long),
+        cand_is_def=torch.zeros(C, dtype=torch.bool),
+        source_budget=torch.tensor(source_budget, dtype=dtype),
+        target_exists=torch.ones(C, dtype=torch.bool),
         roi_threshold=0.0,
     )
+    if spend_budget is not None:
+        kwargs["source_spend_budget"] = torch.tensor(spend_budget, dtype=dtype)
+    entries, leftover = _greedy_select(**kwargs)
+    sent = float(entries.ships[entries.valid].sum().item())
+    waves = int(entries.valid.sum().item())
+    return waves, sent, leftover
 
 
-def _spent_by_source(entries, source: int) -> float:
-    sel = entries.valid & (entries.source_slots == source)
-    return float(entries.ships[sel].sum().item())
+def test_spend_budget_caps_same_source_double_drain():
+    # source has 100 ships but safe_drain=40; two 40-ship candidates from it.
+    waves, sent, leftover = _run_select(
+        sends=[40.0, 40.0],
+        scores=[10.0, 9.0],
+        source_budget=[100.0, 5.0, 5.0],
+        spend_budget=[40.0, 0.0, 0.0],
+    )
+    assert waves == 1, "second same-source wave must fail can_fund on the spend budget"
+    assert sent <= 40.0
+    assert float(leftover[0].item()) == 60.0, "leftover stays PHYSICAL (regroup contract)"
 
 
-def test_without_spend_budget_overspends_physical_source():
-    """Documents the legacy behavior: physical budget alone funds both waves."""
-    entries, leftover = _greedy_select(**_two_candidates_same_source())
-    assert _spent_by_source(entries, 0) == 80.0
+def test_spend_budget_caps_oep_style_fractions():
+    # OEP-style: full-drain (40) and half-drain (20) candidates of one source,
+    # spend cap 40 -> only the full-drain wave fires (was 1.5x overdrain live).
+    waves, sent, _ = _run_select(
+        sends=[40.0, 20.0],
+        scores=[10.0, 9.0],
+        source_budget=[100.0, 5.0, 5.0],
+        spend_budget=[40.0, 0.0, 0.0],
+    )
+    assert waves == 1
+    assert sent <= 40.0
+
+
+def test_default_none_reproduces_legacy_single_budget():
+    # Compat lock: without source_spend_budget both waves fund against the raw
+    # garrison (the historical behavior this fix makes opt-out).
+    waves, sent, leftover = _run_select(
+        sends=[40.0, 40.0],
+        scores=[10.0, 9.0],
+        source_budget=[100.0, 5.0, 5.0],
+        spend_budget=None,
+    )
+    assert waves == 2
+    assert sent == 80.0
     assert float(leftover[0].item()) == 20.0
-
-
-def test_spend_budget_caps_cumulative_spend_per_source():
-    kwargs = _two_candidates_same_source()
-    spend = torch.tensor([40.0, 0.0, 0.0], dtype=kwargs["dtype"])
-    entries, leftover = _greedy_select(**kwargs, source_spend_budget=spend)
-    # at most ONE of the two 40-ship waves may fire from source 0
-    assert _spent_by_source(entries, 0) <= 40.0
-    assert int((entries.valid & (entries.source_slots == 0)).sum().item()) == 1
-    # leftover still reflects the PHYSICAL garrison (used by _plan_regroup)
-    assert float(leftover[0].item()) == 60.0
-
-
-def test_spend_budget_zero_blocks_all_waves_from_source():
-    kwargs = _two_candidates_same_source()
-    spend = torch.zeros(3, dtype=kwargs["dtype"])
-    entries, _ = _greedy_select(**kwargs, source_spend_budget=spend)
-    assert _spent_by_source(entries, 0) == 0.0

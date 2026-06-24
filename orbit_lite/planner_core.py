@@ -367,18 +367,19 @@ def reachable_mask(
 def _greedy_select(
     *, P, W, device, dtype, score, cand_src, cand_send, cand_angle, cand_eta,
     cand_active, cand_tgt_slot, cand_tgt_short, cand_is_def, source_budget,
-    source_spend_budget=None,
-    target_exists, roi_threshold, should_stop: Callable[[], bool] | None = None,
+    source_spend_budget=None, target_exists, roi_threshold,
+    should_stop: Callable[[], bool] | None = None,
 ) -> LaunchEntries:
     """Masking-only greedy over [C, L] candidates: pick the best wave each iter,
     one per target, source-budget aware across all L contributors. Enforces the
     role mutex: a reinforced planet can't also be a source, and vice-versa.
 
-    ``source_budget`` is the PHYSICAL budget (ships present) and is what the
-    returned leftover reflects; ``source_spend_budget`` is the TACTICAL cap per
-    source (e.g. safe_drain) that funding is checked against — without it, two
-    waves from the same source can each fit under safe_drain individually while
-    their sum drains the source below holding strength."""
+    ``source_budget`` [P] is the physical ships-per-planet pool and is returned
+    as the real leftover (the ``_plan_regroup`` contract). ``source_spend_budget``
+    [P] caps how much the selection may DRAW per source this turn (e.g. the
+    Producer's ``safe_drain``): without it, two same-source waves could each
+    fund against the raw garrison and jointly overdrain a threatened planet.
+    ``None`` keeps the legacy single-budget behavior."""
     L = int(cand_src.shape[1])
     if source_spend_budget is None:
         source_spend_budget = source_budget.clone()
@@ -421,7 +422,8 @@ def _greedy_select(
         w_tgt[w] = cand_tgt_slot[best_c]
         w_active[w] = sel_active
 
-        # debit all contributors' sends from both budgets (physical + tactical).
+        # debit all contributors' sends from BOTH budgets: the physical pool
+        # (leftover for regroup) and the per-turn spend cap.
         debit = torch.zeros_like(source_budget)
         debit.scatter_add_(0, sel_src, torch.where(sel_active, sel_send, torch.zeros_like(sel_send)))
         source_budget = (source_budget - debit).clamp(min=0.0)
