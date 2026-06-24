@@ -1,5 +1,9 @@
 # Submissão Kaggle
 
+> **Status pós-competição.** Este documento preserva o checklist operacional e o
+> histórico de submissões. Para a narrativa curta de portfólio, leia
+> [`PORTFOLIO_POST.md`](PORTFOLIO_POST.md).
+
 A **regra e a justificativa** da submissão sem Rust são donas de D10/D11 em
 [`DECISIONS.md`](DECISIONS.md). Esta página é o *operacional*: estrutura, checklist
 e estado do ciclo.
@@ -35,6 +39,14 @@ deve falhar com `fallback_rate > 0`.
 ## Estado do ciclo (snapshot)
 
 > Instantâneo manual; o registro vivo de experimentos fica no DB `experiments.duckdb` (`make experiments-report`).
+
+> **⚠️ Candidato vivo = `artifacts/submission_pgs.tar.gz` (PGS holdwave: `scripts="hold"`,
+> `wave_min_ships=60`, `wave_start_step=150` — ver `bots/pgs/agent.py`).** O snapshot
+> abaixo (`artifacts/submission.py`, 2026-06-02) é uma cópia **stale**: margem **−1.0 vs
+> Producer** (`EXPERIMENTS_REVALIDATION.md`). Esse `.py` é mantido **apenas** como baseline
+> de gate (default `--baseline` em `scripts/gate_check.py`) e slot arquitetural D10/D11 —
+> **NÃO submeta ele direto**. Promoção do candidato vivo passa por `validate_pgs_tarball`
+> + `league_submit_ruler` (seat-rotacionado), não por este `.py`.
 
 - Data: 2026-06-02 · Commit `c4b9467` · Kaggle ref `53290356`
 - Arquivo: `artifacts/submission.py`
