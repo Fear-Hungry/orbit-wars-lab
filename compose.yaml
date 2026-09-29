@@ -1,10 +1,10 @@
 x-shared-caches:
-  pip: &shared-cache-pip ${HOME}/.cache/docker-shared/pip:/home/orbit/.cache/pip
-  uv: &shared-cache-uv ${HOME}/.cache/docker-shared/uv:/home/orbit/.cache/uv
-  torch: &shared-cache-torch ${HOME}/.cache/docker-shared/torch:/home/orbit/.cache/torch
-  huggingface: &shared-cache-huggingface ${HOME}/.cache/docker-shared/huggingface:/home/orbit/.cache/huggingface
-  cargo-registry: &shared-cache-cargo-registry ${HOME}/.cache/docker-shared/cargo-registry:/home/orbit/.cargo/registry
-  cargo-git: &shared-cache-cargo-git ${HOME}/.cache/docker-shared/cargo-git:/home/orbit/.cargo/git
+  pip: &shared-cache-pip ${DOCKER_SHARED_CACHE_ROOT}/pip:/home/orbit/.cache/pip
+  uv: &shared-cache-uv ${DOCKER_SHARED_CACHE_ROOT}/uv:/home/orbit/.cache/uv
+  torch: &shared-cache-torch ${DOCKER_SHARED_CACHE_ROOT}/torch:/home/orbit/.cache/torch
+  huggingface: &shared-cache-huggingface ${DOCKER_SHARED_CACHE_ROOT}/huggingface:/home/orbit/.cache/huggingface
+  cargo-registry: &shared-cache-cargo-registry ${DOCKER_SHARED_CACHE_ROOT}/cargo-registry:/home/orbit/.cargo/registry
+  cargo-git: &shared-cache-cargo-git ${DOCKER_SHARED_CACHE_ROOT}/cargo-git:/home/orbit/.cargo/git
 
 x-lab-common: &lab-common
   working_dir: /workspace
